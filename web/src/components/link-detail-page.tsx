@@ -1,3 +1,4 @@
+import { useState, useMemo } from 'react'
 import { useParams, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Loader2, Cable, AlertCircle, ArrowLeft } from 'lucide-react'
@@ -5,14 +6,23 @@ import { fetchLink } from '@/lib/api'
 import { LinkInfoContent } from '@/components/shared/LinkInfoContent'
 import { linkDetailToInfo } from '@/components/shared/link-info-converters'
 import { SingleLinkStatusRow } from '@/components/single-link-status-row'
-import { TrafficCharts } from '@/components/topology/TrafficCharts'
+import { InterfaceCharts } from '@/components/topology/InterfaceCharts'
 import { LatencyCharts } from '@/components/topology/LatencyCharts'
 import { LinkStatusCharts } from '@/components/topology/LinkStatusCharts'
+import { TimeRangeSelector, TrafficFilters } from '@/components/topology/TimeRangeSelector'
+import type { TimeRange, BucketSize } from '@/components/topology/utils'
+import { bucketLabels, resolveAutoBucket, timeRangeToString, type TimeRangePreset } from '@/components/topology/utils'
 import { useDocumentTitle } from '@/hooks/use-document-title'
 
 export function LinkDetailPage() {
   const { pk } = useParams<{ pk: string }>()
   const navigate = useNavigate()
+  const [timeRange, setTimeRange] = useState<TimeRange>({ preset: '24h' })
+  const [bucket, setBucket] = useState<BucketSize>('auto')
+
+  const effectiveBucketLabel = bucket === 'auto'
+    ? bucketLabels[resolveAutoBucket(timeRange.preset as TimeRangePreset)]
+    : undefined
 
   const { data: link, isLoading, error } = useQuery({
     queryKey: ['link', pk],
@@ -21,6 +31,18 @@ export function LinkDetailPage() {
   })
 
   useDocumentTitle(link?.code || 'Link')
+
+  const interfaceLabels = useMemo(() => {
+    if (!link) return undefined
+    const map = new Map<string, string>()
+    if (link.side_a_iface_name) {
+      map.set(`A:${link.side_a_iface_name}`, `A: ${link.side_a_code} · ${link.side_a_iface_name}`)
+    }
+    if (link.side_z_iface_name) {
+      map.set(`Z:${link.side_z_iface_name}`, `Z: ${link.side_z_code} · ${link.side_z_iface_name}`)
+    }
+    return map
+  }, [link])
 
   if (isLoading) {
     return (
@@ -75,25 +97,36 @@ export function LinkDetailPage() {
         <LinkInfoContent link={linkDetailToInfo(link)} hideStatusRow hideCharts />
       </div>
 
-      {/* Status row */}
-      <div className="max-w-[1200px] mx-auto px-4 sm:px-8 pb-6">
-        <SingleLinkStatusRow linkPk={link.pk} />
-      </div>
-
-      {/* Charts - constrained width */}
+      {/* Filters + status row + charts */}
       <div className="max-w-[1200px] mx-auto px-4 sm:px-8 pb-8 space-y-6">
-        {/* Charts row - side by side on large screens */}
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          <div>
-            <TrafficCharts entityType="link" entityPk={link.pk} />
-          </div>
-          <div>
-            <LatencyCharts linkPk={link.pk} />
-          </div>
+        <div className="flex justify-end gap-2">
+          <TrafficFilters
+            bucket={bucket}
+            onBucketChange={setBucket}
+            effectiveBucketLabel={effectiveBucketLabel}
+          />
+          <TimeRangeSelector value={timeRange} onChange={setTimeRange} />
         </div>
 
+        {/* Status row */}
+        <SingleLinkStatusRow linkPk={link.pk} timeRange={timeRangeToString(timeRange)} />
+
         {/* Link status charts (packet loss, interface issues) */}
-        <LinkStatusCharts linkPk={link.pk} />
+        <LinkStatusCharts linkPk={link.pk} timeRange={timeRangeToString(timeRange)} bucket={bucket} className="rounded-lg border border-border p-4" />
+
+        {/* Interface traffic charts */}
+        <InterfaceCharts
+          entityType="link"
+          entityPk={link.pk}
+          timeRange={timeRange}
+          interfaceLabels={interfaceLabels}
+          bucket={bucket}
+          onBucketChange={setBucket}
+          className="rounded-lg border border-border p-4"
+        />
+
+        {/* Latency charts */}
+        <LatencyCharts linkPk={link.pk} timeRange={timeRange} bucket={bucket} className="rounded-lg border border-border p-4" />
       </div>
     </div>
   )
