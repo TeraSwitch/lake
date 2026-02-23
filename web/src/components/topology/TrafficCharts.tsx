@@ -1,30 +1,116 @@
+import { useState, useMemo, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid } from 'recharts'
-import { useTheme } from '@/hooks/use-theme'
-import { fetchTrafficHistory, formatChartAxisRate, formatChartTooltipRate } from './utils'
+import uPlot from 'uplot'
+import { useChartLegend } from '@/hooks/use-chart-legend'
+import { useUPlotChart } from '@/hooks/use-uplot-chart'
+import { useUPlotLegendSync } from '@/hooks/use-uplot-legend-sync'
+import { ChartLegend, type ChartLegendSeries } from './ChartLegend'
+import { fetchTrafficHistory, formatChartAxisRate, formatChartAxisPps, bucketLabels, resolveAutoBucket, type TimeRange, type TimeRangePreset, type BucketSize, type TrafficMetric } from './utils'
+import { TrafficFilters } from './TimeRangeSelector'
+
+const COLOR = '#3b82f6'
 
 interface TrafficChartsProps {
   entityType: 'link' | 'device' | 'validator'
   entityPk: string
+  timeRange?: TimeRange
+  /** Additional CSS classes for the outer wrapper */
+  className?: string
 }
 
-export function TrafficCharts({ entityType, entityPk }: TrafficChartsProps) {
-  const { resolvedTheme } = useTheme()
-  const isDark = resolvedTheme === 'dark'
+export function TrafficCharts({ entityType, entityPk, timeRange, className }: TrafficChartsProps) {
+  const effectiveRange = timeRange ?? { preset: '24h' as const }
 
-  const { data: trafficData, isLoading } = useQuery({
-    queryKey: ['topology-traffic', entityType, entityPk],
-    queryFn: () => fetchTrafficHistory(entityType, entityPk),
+
+  const [metric, setMetric] = useState<TrafficMetric>('throughput')
+  const [bucket, setBucket] = useState<BucketSize>('auto')
+  const [trafficView, setTrafficView] = useState<'avg' | 'peak'>('avg')
+
+  const chartRef = useRef<HTMLDivElement>(null)
+
+  const { data: trafficData, isLoading, error } = useQuery({
+    queryKey: ['topology-traffic', entityType, entityPk, effectiveRange, bucket, metric],
+    queryFn: () => fetchTrafficHistory(entityType, entityPk, effectiveRange, bucket, metric),
     refetchInterval: 60000,
+    retry: 2,
   })
 
-  const chartColor = isDark ? '#60a5fa' : '#2563eb'
-  const chartColorSecondary = isDark ? '#f97316' : '#ea580c'
+  const isPps = metric === 'packets'
+  const axisFormatter = isPps ? formatChartAxisPps : formatChartAxisRate
+
+  // Build columnar uPlot data: timestamps, avg in, avg out (negated), peak in, peak out (negated)
+  const chartData = useMemo(() => {
+    if (!trafficData || trafficData.length === 0) return [[]] as uPlot.AlignedData
+
+    const timestamps = trafficData.map(row => new Date(row.time).getTime() / 1000)
+    const avgIn = trafficData.map(row => row.avgIn)
+    const avgOut = trafficData.map(row => -row.avgOut)
+    const peakIn = trafficData.map(row => row.peakIn)
+    const peakOut = trafficData.map(row => -row.peakOut)
+
+    return [timestamps, avgIn, avgOut, peakIn, peakOut] as uPlot.AlignedData
+  }, [trafficData])
+
+  // Series config: show avg or peak based on trafficView
+  const series = useMemo((): uPlot.Series[] => {
+    const isAvg = trafficView === 'avg'
+    return [
+      {}, // x-axis
+      { label: 'Avg In', stroke: COLOR, width: 1.5, points: { show: false }, show: isAvg },
+      { label: 'Avg Out', stroke: COLOR, width: 1.5, dash: [4, 2], points: { show: false }, show: isAvg },
+      { label: 'Peak In', stroke: COLOR, width: 1.5, points: { show: false }, show: !isAvg },
+      { label: 'Peak Out', stroke: COLOR, width: 1.5, dash: [4, 2], points: { show: false }, show: !isAvg },
+    ]
+  }, [trafficView])
+
+  // Legend keys: in and out
+  const legend = useChartLegend()
+
+  const axes = useMemo((): uPlot.Axis[] => [
+    {},
+    {
+      values: (_u: uPlot, vals: number[]) => vals.map((v) => axisFormatter(Math.abs(v))),
+    },
+  ], [axisFormatter])
+
+  const { plotRef } = useUPlotChart({
+    containerRef: chartRef,
+    data: chartData,
+    series,
+    height: 176,
+    axes,
+  })
+
+  // Sync legend visibility to chart series
+  useUPlotLegendSync(plotRef, legend, trafficView === 'avg'
+    ? ['in', 'out', 'in', 'out'] // avg in, avg out, peak in (hidden), peak out (hidden)
+    : ['in', 'out', 'in', 'out'] // avg in (hidden), avg out (hidden), peak in, peak out
+  )
+
+  // Legend display values
+  const legendSeries = useMemo((): ChartLegendSeries[] => [
+    { key: 'in', color: COLOR, label: 'In' },
+    { key: 'out', color: COLOR, label: 'Out', dashed: true },
+  ], [])
+
+  const effectiveBucketLabel = bucket === 'auto'
+    ? bucketLabels[resolveAutoBucket(effectiveRange.preset as TimeRangePreset)]
+    : undefined
+
+  const metricLabel = isPps ? 'Packet Rate' : 'Traffic Rate'
 
   if (isLoading) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
         Loading traffic data...
+      </div>
+    )
+  }
+
+  if (error) {
+    return (
+      <div className="text-sm text-muted-foreground text-center py-4">
+        Unable to load traffic data
       </div>
     )
   }
@@ -38,130 +124,23 @@ export function TrafficCharts({ entityType, entityPk }: TrafficChartsProps) {
   }
 
   return (
-    <div className="space-y-4">
-      {/* Average Traffic Chart */}
-      <div>
-        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
-          Avg Traffic Rate (24h)
+    <div className={className}>
+      <div className="flex items-center justify-between mb-2">
+        <div className="text-xs text-muted-foreground uppercase tracking-wider">
+          {trafficView === 'avg' ? 'Avg' : 'Peak'} {metricLabel}
         </div>
-        <div className="h-36">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={trafficData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-              <XAxis
-                dataKey="time"
-                tick={{ fontSize: 9 }}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                tick={{ fontSize: 9 }}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={(v) => formatChartAxisRate(v)}
-                width={40}
-              />
-              <RechartsTooltip
-                contentStyle={{
-                  backgroundColor: 'var(--card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                }}
-                formatter={(value) => formatChartTooltipRate(value as number)}
-              />
-              <Line
-                type="monotone"
-                dataKey="avgIn"
-                stroke={chartColor}
-                strokeWidth={1.5}
-                dot={false}
-                name="In"
-              />
-              <Line
-                type="monotone"
-                dataKey="avgOut"
-                stroke={chartColorSecondary}
-                strokeWidth={1.5}
-                dot={false}
-                name="Out"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="flex justify-center gap-4 text-xs mt-1">
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: chartColor }} />
-            In
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: chartColorSecondary }} />
-            Out
-          </span>
-        </div>
+        <TrafficFilters
+          bucket={bucket}
+          onBucketChange={setBucket}
+          metric={metric}
+          onMetricChange={setMetric}
+          effectiveBucketLabel={effectiveBucketLabel}
+          trafficView={trafficView}
+          onTrafficViewChange={setTrafficView}
+        />
       </div>
-
-      {/* Peak Traffic Chart */}
-      <div>
-        <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
-          Peak Traffic Rate (24h)
-        </div>
-        <div className="h-36">
-          <ResponsiveContainer width="100%" height="100%">
-            <LineChart data={trafficData}>
-              <CartesianGrid strokeDasharray="3 3" stroke="var(--border)" opacity={0.5} />
-              <XAxis
-                dataKey="time"
-                tick={{ fontSize: 9 }}
-                tickLine={false}
-                axisLine={false}
-              />
-              <YAxis
-                tick={{ fontSize: 9 }}
-                tickLine={false}
-                axisLine={false}
-                tickFormatter={(v) => formatChartAxisRate(v)}
-                width={40}
-              />
-              <RechartsTooltip
-                contentStyle={{
-                  backgroundColor: 'var(--card)',
-                  border: '1px solid var(--border)',
-                  borderRadius: '6px',
-                  fontSize: '11px',
-                }}
-                formatter={(value) => formatChartTooltipRate(value as number)}
-              />
-              <Line
-                type="monotone"
-                dataKey="peakIn"
-                stroke={chartColor}
-                strokeWidth={1.5}
-                dot={false}
-                name="In"
-              />
-              <Line
-                type="monotone"
-                dataKey="peakOut"
-                stroke={chartColorSecondary}
-                strokeWidth={1.5}
-                dot={false}
-                name="Out"
-              />
-            </LineChart>
-          </ResponsiveContainer>
-        </div>
-        <div className="flex justify-center gap-4 text-xs mt-1">
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: chartColor }} />
-            In
-          </span>
-          <span className="flex items-center gap-1">
-            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: chartColorSecondary }} />
-            Out
-          </span>
-        </div>
-      </div>
+      <div ref={chartRef} className="h-44" />
+      <ChartLegend series={legendSeries} legend={legend} />
     </div>
   )
 }

@@ -1107,7 +1107,7 @@ func GetLinkHistory(w http.ResponseWriter, r *http.Request) {
 	// Parse optional bucket count (for responsive display)
 	requestedBuckets := 72 // default
 	if b := r.URL.Query().Get("buckets"); b != "" {
-		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 168 {
+		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 10000 {
 			requestedBuckets = n
 		}
 	}
@@ -1960,7 +1960,7 @@ func GetDeviceHistory(w http.ResponseWriter, r *http.Request) {
 	// Parse optional bucket count (for responsive display)
 	requestedBuckets := 72 // default
 	if b := r.URL.Query().Get("buckets"); b != "" {
-		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 168 {
+		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 10000 {
 			requestedBuckets = n
 		}
 	}
@@ -2490,7 +2490,7 @@ func GetDeviceInterfaceHistory(w http.ResponseWriter, r *http.Request) {
 	bucketsStr := r.URL.Query().Get("buckets")
 	requestedBuckets := 72 // default
 	if bucketsStr != "" {
-		if b, err := strconv.Atoi(bucketsStr); err == nil && b > 0 && b <= 168 {
+		if b, err := strconv.Atoi(bucketsStr); err == nil && b > 0 && b <= 10000 {
 			requestedBuckets = b
 		}
 	}
@@ -2699,7 +2699,7 @@ func GetSingleLinkHistory(w http.ResponseWriter, r *http.Request) {
 	// Parse optional bucket count
 	requestedBuckets := 24 // default
 	if b := r.URL.Query().Get("buckets"); b != "" {
-		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 168 {
+		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 10000 {
 			requestedBuckets = n
 		}
 	}
@@ -2767,8 +2767,12 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 	linkQuery := `
 		SELECT l.code, l.bandwidth_bps, l.committed_rtt_ns / 1000.0 as committed_rtt_us,
 			   l.side_a_pk, l.side_z_pk, l.side_a_iface_name, l.side_z_iface_name,
-			   l.link_type, l.side_a_metro, l.side_z_metro
+			   l.link_type,
+			   COALESCE(da.metro_pk, '') as side_a_metro,
+			   COALESCE(dz.metro_pk, '') as side_z_metro
 		FROM dz_links_current l
+		LEFT JOIN dz_devices_current da ON l.side_a_pk = da.pk
+		LEFT JOIN dz_devices_current dz ON l.side_z_pk = dz.pk
 		WHERE l.pk = ?
 	`
 	var code string
@@ -3037,7 +3041,7 @@ func GetSingleDeviceHistory(w http.ResponseWriter, r *http.Request) {
 	// Parse optional bucket count
 	requestedBuckets := 24 // default
 	if b := r.URL.Query().Get("buckets"); b != "" {
-		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 168 {
+		if n, err := strconv.Atoi(b); err == nil && n >= 12 && n <= 10000 {
 			requestedBuckets = n
 		}
 	}
