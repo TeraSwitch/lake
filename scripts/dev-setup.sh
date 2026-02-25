@@ -70,9 +70,30 @@ if ! command -v go &> /dev/null; then
 else
     echo "go: $(go version | awk '{print $3}')"
 fi
+
+if ! command -v cargo &> /dev/null; then
+    echo "cargo is not installed. Install Rust via https://rustup.rs"
+    echo ""
+else
+    echo "cargo: $(cargo --version | awk '{print $2}')"
+fi
 echo ""
 
-# Step 5: Print next steps
+# Step 5: Build shapley-cli (Rust binary for rewards simulation)
+SHAPLEY_BIN="$ROOT_DIR/shapley-cli/target/release/shapley-cli"
+if [[ -f "$SHAPLEY_BIN" ]]; then
+    echo "=== shapley-cli already built, skipping ==="
+elif ! command -v cargo &> /dev/null; then
+    echo "=== Skipping shapley-cli build (cargo not installed) ==="
+    echo "Install Rust via https://rustup.rs to enable rewards simulation"
+else
+    echo "=== Building shapley-cli ==="
+    (cd "$ROOT_DIR/shapley-cli" && cargo build --release)
+    echo "Built shapley-cli at: $SHAPLEY_BIN"
+fi
+echo ""
+
+# Step 6: Print next steps
 echo "=== Setup complete! ==="
 echo ""
 echo "Next steps:"

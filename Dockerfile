@@ -1,6 +1,18 @@
 FROM golang:1.25-bookworm AS builder-base
 
 # -----------------------------------------------------------------------------
+# Rust builder (shapley-cli)
+# -----------------------------------------------------------------------------
+FROM rust:1-bookworm AS builder-rust
+
+WORKDIR /shapley-cli
+COPY shapley-cli/ .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/shapley-cli/target \
+    cargo build --release && \
+    cp target/release/shapley-cli /shapley-cli-bin
+
+# -----------------------------------------------------------------------------
 # Go builder
 # -----------------------------------------------------------------------------
 FROM builder-base AS builder-go
@@ -71,8 +83,11 @@ RUN apt update -qq && \
 
 ENV PATH="/lake/bin:${PATH}"
 
-# Copy binaries from the builder stage.
+# Copy binaries from the builder stages.
 COPY --from=builder-go /lake/bin/. /lake/bin/.
+COPY --from=builder-rust /shapley-cli-bin /lake/bin/shapley-cli
+
+ENV SHAPLEY_CLI_PATH=/lake/bin/shapley-cli
 
 # Copy pre-built web assets (built by deploy script, uploaded to S3)
 COPY web/dist /lake/web/dist
