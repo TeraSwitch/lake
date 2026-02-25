@@ -20,6 +20,7 @@ func setupStatsSchema(t *testing.T) {
 	// Create minimal tables for stats queries
 	tables := []string{
 		`CREATE TABLE IF NOT EXISTS dz_users_current (
+			client_ip String,
 			dz_ip String,
 			status String
 		) ENGINE = Memory`,
@@ -45,7 +46,8 @@ func setupStatsSchema(t *testing.T) {
 		`CREATE TABLE IF NOT EXISTS solana_vote_accounts_current (
 			vote_pubkey String,
 			node_pubkey String,
-			activated_stake_lamports UInt64
+			activated_stake_lamports UInt64,
+			epoch_vote_account String
 		) ENGINE = Memory`,
 		`CREATE TABLE IF NOT EXISTS fact_dz_device_interface_counters (
 			event_ts DateTime,
@@ -96,7 +98,7 @@ func TestGetStats_WithData(t *testing.T) {
 	ctx := t.Context()
 
 	// Insert test data for users
-	err := config.DB.Exec(ctx, `INSERT INTO dz_users_current (dz_ip, status) VALUES ('1.2.3.4', 'activated'), ('5.6.7.8', 'activated')`)
+	err := config.DB.Exec(ctx, `INSERT INTO dz_users_current (client_ip, dz_ip, status) VALUES ('1.2.3.4', '1.2.3.4', 'activated'), ('5.6.7.8', '5.6.7.8', 'activated')`)
 	require.NoError(t, err)
 
 	// Insert test data for devices
@@ -162,7 +164,7 @@ func TestGetStats_ValidatorsWithStake(t *testing.T) {
 
 	// Set up the chain: dz_user -> gossip_node -> vote_account
 	// User with gossip IP
-	err := config.DB.Exec(ctx, `INSERT INTO dz_users_current (dz_ip, status) VALUES ('10.0.0.1', 'activated')`)
+	err := config.DB.Exec(ctx, `INSERT INTO dz_users_current (client_ip, dz_ip, status) VALUES ('10.0.0.1', '10.0.0.1', 'activated')`)
 	require.NoError(t, err)
 
 	// Gossip node matching the user's IP
@@ -170,15 +172,15 @@ func TestGetStats_ValidatorsWithStake(t *testing.T) {
 	require.NoError(t, err)
 
 	// Vote account for the gossip node with stake
-	err = config.DB.Exec(ctx, `INSERT INTO solana_vote_accounts_current (vote_pubkey, node_pubkey, activated_stake_lamports) VALUES
-		('vote_1', 'node_pubkey_1', 10000000000000)`) // 10000 SOL in lamports
+	err = config.DB.Exec(ctx, `INSERT INTO solana_vote_accounts_current (vote_pubkey, node_pubkey, activated_stake_lamports, epoch_vote_account) VALUES
+		('vote_1', 'node_pubkey_1', 10000000000000, 'true')`) // 10000 SOL in lamports
 	require.NoError(t, err)
 
 	// Also add a vote account without matching user for total stake calculation
 	err = config.DB.Exec(ctx, `INSERT INTO solana_gossip_nodes_current (pubkey, gossip_ip) VALUES ('node_pubkey_2', '20.0.0.1')`)
 	require.NoError(t, err)
-	err = config.DB.Exec(ctx, `INSERT INTO solana_vote_accounts_current (vote_pubkey, node_pubkey, activated_stake_lamports) VALUES
-		('vote_2', 'node_pubkey_2', 10000000000000)`) // Another 10000 SOL
+	err = config.DB.Exec(ctx, `INSERT INTO solana_vote_accounts_current (vote_pubkey, node_pubkey, activated_stake_lamports, epoch_vote_account) VALUES
+		('vote_2', 'node_pubkey_2', 10000000000000, 'true')`) // Another 10000 SOL
 	require.NoError(t, err)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/stats", nil)
