@@ -96,13 +96,18 @@ func GetValidators(w http.ResponseWriter, r *http.Request) {
 			WHERE epoch_vote_account = 'true'
 		),
 		dz_ip_info AS (
-			SELECT u.dz_ip, u.tunnel_id, d.code as device_code, m.code as metro_code
+			SELECT
+				u.client_ip,
+				any(u.tunnel_id) as tunnel_id,
+				any(d.code) as device_code,
+				any(m.code) as metro_code
 			FROM dz_users_current u
 			JOIN dz_devices_current d ON u.device_pk = d.pk
 			LEFT JOIN dz_metros_current m ON d.metro_pk = m.pk
 			WHERE u.status = 'activated'
-				AND u.dz_ip IS NOT NULL
-				AND u.dz_ip != ''
+				AND u.client_ip IS NOT NULL
+				AND u.client_ip != ''
+			GROUP BY u.client_ip
 		),
 		traffic_rates AS (
 			SELECT
@@ -151,7 +156,7 @@ func GetValidators(w http.ResponseWriter, r *http.Request) {
 				END as stake_share,
 				COALESCE(v.commission_percentage, 0) as commission,
 				g.gossip_ip,
-				g.gossip_ip IN (SELECT dz_ip FROM dz_ip_info) as on_dz,
+				g.gossip_ip IN (SELECT client_ip FROM dz_ip_info) as on_dz,
 				COALESCE(geo.city, '') as city,
 				COALESCE(geo.country, '') as country,
 				COALESCE(sr.skip_rate, 0) as skip_rate,
@@ -162,6 +167,7 @@ func GetValidators(w http.ResponseWriter, r *http.Request) {
 			LEFT JOIN geoip_records_current geo ON g.gossip_ip = geo.ip
 			LEFT JOIN skip_rates sr ON v.node_pubkey = sr.leader_identity_pubkey
 			WHERE v.epoch_vote_account = 'true'
+				AND v.activated_stake_lamports > 0
 		),
 		validators_data AS (
 			SELECT
@@ -181,13 +187,13 @@ func GetValidators(w http.ResponseWriter, r *http.Request) {
 				vg.skip_rate,
 				vg.version
 			FROM validators_with_gossip vg
-			LEFT JOIN dz_ip_info di ON vg.gossip_ip = di.dz_ip
+			LEFT JOIN dz_ip_info di ON vg.gossip_ip = di.client_ip
 			LEFT JOIN traffic_rates tr ON di.tunnel_id = tr.user_tunnel_id
 		)
 	`
 
 	// Get total count (with filter)
-	countQuery := baseQuery + `SELECT count(*) FROM validators_data WHERE 1=1` + whereFilter
+	countQuery := baseQuery + `SELECT count(DISTINCT vote_pubkey) FROM validators_data WHERE 1=1` + whereFilter
 	var total uint64
 	if err := envDB(ctx).QueryRow(ctx, countQuery, filterArgs...).Scan(&total); err != nil {
 		log.Printf("Validators count error: %v", err)
@@ -196,7 +202,7 @@ func GetValidators(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Get on_dz count (with filter)
-	onDZCountQuery := baseQuery + `SELECT count(*) FROM validators_data WHERE on_dz = true` + whereFilter
+	onDZCountQuery := baseQuery + `SELECT count(DISTINCT vote_pubkey) FROM validators_data WHERE on_dz = true` + whereFilter
 	var onDZCount uint64
 	if err := envDB(ctx).QueryRow(ctx, onDZCountQuery, filterArgs...).Scan(&onDZCount); err != nil {
 		log.Printf("Validators on_dz count error: %v", err)
@@ -333,14 +339,20 @@ func GetValidator(w http.ResponseWriter, r *http.Request) {
 			WHERE epoch_vote_account = 'true'
 		),
 		dz_ip_info AS (
-			SELECT u.dz_ip, u.tunnel_id, u.device_pk, d.code as device_code,
-				d.metro_pk, m.code as metro_code
+			SELECT
+				u.client_ip,
+				any(u.tunnel_id) as tunnel_id,
+				any(u.device_pk) as device_pk,
+				any(d.code) as device_code,
+				any(d.metro_pk) as metro_pk,
+				any(m.code) as metro_code
 			FROM dz_users_current u
 			JOIN dz_devices_current d ON u.device_pk = d.pk
 			LEFT JOIN dz_metros_current m ON d.metro_pk = m.pk
 			WHERE u.status = 'activated'
-				AND u.dz_ip IS NOT NULL
-				AND u.dz_ip != ''
+				AND u.client_ip IS NOT NULL
+				AND u.client_ip != ''
+			GROUP BY u.client_ip
 		),
 		traffic_rates AS (
 			SELECT
@@ -386,7 +398,7 @@ func GetValidator(w http.ResponseWriter, r *http.Request) {
 				ELSE 0
 			END as stake_share,
 			COALESCE(v.commission_percentage, 0) as commission,
-			g.gossip_ip IN (SELECT dz_ip FROM dz_ip_info) as on_dz,
+			g.gossip_ip IN (SELECT client_ip FROM dz_ip_info) as on_dz,
 			COALESCE(di.device_pk, '') as device_pk,
 			COALESCE(di.device_code, '') as device_code,
 			COALESCE(di.metro_pk, '') as metro_pk,
@@ -403,7 +415,7 @@ func GetValidator(w http.ResponseWriter, r *http.Request) {
 		CROSS JOIN total_stake ts
 		LEFT JOIN solana_gossip_nodes_current g ON v.node_pubkey = g.pubkey
 		LEFT JOIN geoip_records_current geo ON g.gossip_ip = geo.ip
-		LEFT JOIN dz_ip_info di ON g.gossip_ip = di.dz_ip
+		LEFT JOIN dz_ip_info di ON g.gossip_ip = di.client_ip
 		LEFT JOIN traffic_rates tr ON di.tunnel_id = tr.user_tunnel_id
 		LEFT JOIN skip_rates sr ON v.node_pubkey = sr.leader_identity_pubkey
 		WHERE v.vote_pubkey = ?

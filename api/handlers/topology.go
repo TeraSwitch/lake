@@ -154,11 +154,12 @@ func GetTopology(w http.ResponseWriter, r *http.Request) {
 					COUNT(DISTINCT va.vote_pubkey) as validator_count,
 					COALESCE(SUM(va.activated_stake_lamports), 0) / 1e9 as stake_sol
 				FROM dz_users_current u
-				LEFT JOIN solana_gossip_nodes_current gn ON u.dz_ip = gn.gossip_ip
+				LEFT JOIN solana_gossip_nodes_current gn ON u.client_ip = gn.gossip_ip
 				LEFT JOIN solana_vote_accounts_current va ON gn.pubkey = va.node_pubkey
 					AND va.epoch_vote_account = 'true'
 					AND va.activated_stake_lamports > 0
 				WHERE u.status = 'activated'
+					AND u.client_ip != ''
 				GROUP BY u.device_pk
 			)
 			SELECT
@@ -282,14 +283,23 @@ func GetTopology(w http.ResponseWriter, r *http.Request) {
 	// Fetch validators on DZ with their GeoIP locations and traffic rates
 	g.Go(func() error {
 		query := `
-			WITH total_dz_stake AS (
+			WITH dz_user_ips AS (
+				SELECT
+					client_ip,
+					any(device_pk) as device_pk,
+					any(tunnel_id) as tunnel_id
+				FROM dz_users_current
+				WHERE status = 'activated'
+					AND client_ip != ''
+				GROUP BY client_ip
+			),
+			total_dz_stake AS (
 				SELECT COALESCE(SUM(va.activated_stake_lamports), 0) as total_lamports
-				FROM dz_users_current u
-				JOIN solana_gossip_nodes_current gn ON u.dz_ip = gn.gossip_ip
+				FROM dz_user_ips u
+				JOIN solana_gossip_nodes_current gn ON u.client_ip = gn.gossip_ip
 				JOIN solana_vote_accounts_current va ON gn.pubkey = va.node_pubkey
 					AND va.epoch_vote_account = 'true'
 					AND va.activated_stake_lamports > 0
-				WHERE u.status = 'activated'
 			),
 			user_traffic AS (
 				SELECT
@@ -326,16 +336,15 @@ func GetTopology(w http.ResponseWriter, r *http.Request) {
 				COALESCE(gn.tpuquic_port, 0) as tpu_quic_port,
 				COALESCE(traffic.in_bps, 0) as in_bps,
 				COALESCE(traffic.out_bps, 0) as out_bps
-			FROM dz_users_current u
-			JOIN solana_gossip_nodes_current gn ON u.dz_ip = gn.gossip_ip
+			FROM dz_user_ips u
+			JOIN solana_gossip_nodes_current gn ON u.client_ip = gn.gossip_ip
 			JOIN solana_vote_accounts_current va ON gn.pubkey = va.node_pubkey
 				AND va.epoch_vote_account = 'true'
 				AND va.activated_stake_lamports > 0
 			LEFT JOIN geoip_records_current geo ON gn.gossip_ip = geo.ip
 			LEFT JOIN user_traffic traffic ON u.tunnel_id = traffic.user_tunnel_id
 			CROSS JOIN total_dz_stake ts
-			WHERE u.status = 'activated'
-				AND geo.latitude IS NOT NULL
+			WHERE geo.latitude IS NOT NULL
 				AND geo.longitude IS NOT NULL
 		`
 		rows, err := envDB(ctx).Query(ctx, query)
