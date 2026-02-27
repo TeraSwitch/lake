@@ -5,9 +5,11 @@ interface PaginationProps {
   limit: number
   offset: number
   onOffsetChange: (offset: number) => void
+  pageSizeOptions?: number[]
+  onPageSizeChange?: (size: number) => void
 }
 
-export function Pagination({ total, limit, offset, onOffsetChange }: PaginationProps) {
+export function Pagination({ total, limit, offset, onOffsetChange, pageSizeOptions, onPageSizeChange }: PaginationProps) {
   const currentPage = Math.floor(offset / limit) + 1
   const totalPages = Math.ceil(total / limit)
   const startItem = offset + 1
@@ -21,50 +23,64 @@ export function Pagination({ total, limit, offset, onOffsetChange }: PaginationP
     onOffsetChange(Math.max(0, Math.min(newOffset, (totalPages - 1) * limit)))
   }
 
-  if (totalPages <= 1) return null
+  const hasPageSizeSelector = pageSizeOptions && onPageSizeChange
+  if (totalPages <= 1 && !hasPageSizeSelector) return null
 
   return (
     <div className="flex items-center justify-between px-4 py-3 border-t border-border">
-      <div className="text-sm text-muted-foreground">
-        Showing {startItem.toLocaleString()} - {endItem.toLocaleString()} of {total.toLocaleString()}
+      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <span>Showing {startItem.toLocaleString()} - {endItem.toLocaleString()} of {total.toLocaleString()}</span>
+        {hasPageSizeSelector && (
+          <select
+            value={limit}
+            onChange={(e) => onPageSizeChange(Number(e.target.value))}
+            className="bg-background border border-border rounded px-1.5 py-0.5 text-sm text-foreground"
+          >
+            {pageSizeOptions.map(size => (
+              <option key={size} value={size}>{size} / page</option>
+            ))}
+          </select>
+        )}
       </div>
-      <div className="flex items-center gap-1">
-        <button
-          onClick={() => goToPage(1)}
-          disabled={!canGoPrev}
-          className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="First page"
-        >
-          <ChevronsLeft className="h-4 w-4" />
-        </button>
-        <button
-          onClick={() => goToPage(currentPage - 1)}
-          disabled={!canGoPrev}
-          className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="Previous page"
-        >
-          <ChevronLeft className="h-4 w-4" />
-        </button>
-        <span className="px-3 text-sm">
-          Page {currentPage} of {totalPages}
-        </span>
-        <button
-          onClick={() => goToPage(currentPage + 1)}
-          disabled={!canGoNext}
-          className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="Next page"
-        >
-          <ChevronRight className="h-4 w-4" />
-        </button>
-        <button
-          onClick={() => goToPage(totalPages)}
-          disabled={!canGoNext}
-          className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
-          title="Last page"
-        >
-          <ChevronsRight className="h-4 w-4" />
-        </button>
-      </div>
+      {totalPages > 1 && (
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => goToPage(1)}
+            disabled={!canGoPrev}
+            className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="First page"
+          >
+            <ChevronsLeft className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => goToPage(currentPage - 1)}
+            disabled={!canGoPrev}
+            className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Previous page"
+          >
+            <ChevronLeft className="h-4 w-4" />
+          </button>
+          <span className="px-3 text-sm">
+            Page {currentPage} of {totalPages}
+          </span>
+          <button
+            onClick={() => goToPage(currentPage + 1)}
+            disabled={!canGoNext}
+            className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Next page"
+          >
+            <ChevronRight className="h-4 w-4" />
+          </button>
+          <button
+            onClick={() => goToPage(totalPages)}
+            disabled={!canGoNext}
+            className="p-1.5 rounded-md hover:bg-muted disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            title="Last page"
+          >
+            <ChevronsRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
     </div>
   )
 }
