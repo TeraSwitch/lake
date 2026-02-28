@@ -1063,9 +1063,9 @@ func GetLatencyComparison(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-// fetchLatencyComparisonData fetches DZ vs Internet latency comparison data.
+// FetchLatencyComparisonData fetches DZ vs Internet latency comparison data.
 // Used by both the handler and the cache.
-func fetchLatencyComparisonData(ctx context.Context) (*LatencyComparisonResponse, error) {
+func FetchLatencyComparisonData(ctx context.Context) (*LatencyComparisonResponse, error) {
 	start := time.Now()
 
 	query := `

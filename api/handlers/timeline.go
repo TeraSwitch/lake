@@ -3646,7 +3646,7 @@ func mustParseTime(s string) time.Time {
 // fetchDefaultTimelineData fetches timeline data with default parameters for caching.
 // This returns the same data as GetTimeline with default params: 24h range, all categories,
 // all entity types except gossip_node, dz_filter="on_dz", limit=50, offset=0.
-func fetchDefaultTimelineData(ctx context.Context) *TimelineResponse {
+func FetchDefaultTimelineData(ctx context.Context) *TimelineResponse {
 	now := time.Now().UTC()
 	startTime := now.Add(-24 * time.Hour)
 	endTime := now

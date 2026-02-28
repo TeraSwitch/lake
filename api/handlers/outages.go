@@ -1540,7 +1540,7 @@ func floatVal(f *float64) float64 {
 // fetchDefaultOutagesData fetches outages data with default parameters for caching.
 // This returns the same data as GetLinkOutages with default params:
 // range=24h, threshold=10, type=all, no filters.
-func fetchDefaultOutagesData(ctx context.Context) *LinkOutagesResponse {
+func FetchDefaultOutagesData(ctx context.Context) *LinkOutagesResponse {
 	duration := 24 * time.Hour
 	threshold := 10.0
 	var filters []OutageFilter // empty = no filters

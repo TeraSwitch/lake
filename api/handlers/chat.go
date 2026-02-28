@@ -16,6 +16,8 @@ import (
 	"github.com/malbeclabs/lake/agent/pkg/workflow"
 	v3 "github.com/malbeclabs/lake/agent/pkg/workflow/v3"
 	"github.com/malbeclabs/lake/api/config"
+	chatpkg "github.com/malbeclabs/lake/worker/pkg/chat"
+	temporalclient "go.temporal.io/sdk/client"
 )
 
 // ChatMessage represents a single message in conversation history.
@@ -419,8 +421,8 @@ func ChatStream(w http.ResponseWriter, r *http.Request) {
 	chatStreamV3(ctx, req, history, sendEvent)
 }
 
-// chatStreamV3 handles the v3 workflow streaming using background execution.
-// The workflow runs in a background goroutine and continues even if the client disconnects.
+// chatStreamV3 handles the v3 workflow streaming using Temporal for background execution.
+// The workflow runs in Temporal and continues even if the client disconnects.
 func chatStreamV3(ctx context.Context, req ChatRequest, history []workflow.ConversationMessage, sendEvent func(string, any)) {
 	// Validate session_id is provided (required for background execution)
 	if req.SessionID == "" {
@@ -440,63 +442,42 @@ func chatStreamV3(ctx context.Context, req ChatRequest, history []workflow.Conve
 		env = DZEnv(sessionEnv)
 	}
 
-	// Start the workflow in background
-	workflowID, err := Manager.StartWorkflow(sessionUUID, req.Message, history, req.Format, env)
+	// Create workflow run in PG
+	run, err := CreateWorkflowRun(ctx, sessionUUID, req.Message, string(env))
 	if err != nil {
-		slog.Error("Failed to start background workflow", "session_id", req.SessionID, "error", err)
-		// Don't expose internal errors to the UI
+		slog.Error("Failed to create workflow run", "session_id", req.SessionID, "error", err)
+		sendEvent("error", map[string]string{"error": "Failed to start workflow. Please try again."})
+		return
+	}
+
+	// Start Temporal workflow
+	temporalWorkflowID := "chat-" + run.ID.String()
+	_, err = config.TemporalClient.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
+		ID:        temporalWorkflowID,
+		TaskQueue: chatpkg.TaskQueue,
+	}, chatpkg.ChatWorkflow, chatpkg.ChatWorkflowInput{
+		WorkflowRunID: run.ID.String(),
+		SessionID:     sessionUUID.String(),
+		Question:      req.Message,
+		History:       history,
+		Format:        req.Format,
+		Env:           string(env),
+	})
+	if err != nil {
+		slog.Error("Failed to start Temporal workflow", "session_id", req.SessionID, "error", err)
+		_ = FailWorkflowRun(ctx, run.ID, "Failed to start Temporal workflow")
 		sendEvent("error", map[string]string{"error": "Failed to start workflow. Please try again."})
 		return
 	}
 
 	// Send workflow_started event immediately
 	sendEvent("workflow_started", map[string]string{
-		"workflow_id": workflowID.String(),
+		"workflow_id": run.ID.String(),
 	})
-	slog.Info("Started background workflow from chat", "workflow_id", workflowID, "session_id", req.SessionID)
+	slog.Info("Started Temporal chat workflow", "workflow_id", run.ID, "temporal_id", temporalWorkflowID, "session_id", req.SessionID)
 
-	// Subscribe to workflow events
-	sub := Manager.Subscribe(workflowID)
-	if sub == nil {
-		// Workflow already completed (shouldn't happen, but handle gracefully)
-		sendEvent("error", map[string]string{"error": "Workflow not found"})
-		return
-	}
-	defer Manager.Unsubscribe(workflowID, sub)
-
-	// Send periodic heartbeats to keep connection alive through proxies
-	heartbeatTicker := time.NewTicker(15 * time.Second)
-	defer heartbeatTicker.Stop()
-
-	// Forward events from workflow to SSE stream
-	for {
-		select {
-		case event, ok := <-sub.Events:
-			if !ok {
-				// Channel closed, workflow done
-				return
-			}
-			sendEvent(event.Type, event.Data)
-			// If this is the final event, we're done
-			if event.Type == "done" || event.Type == "error" {
-				return
-			}
-
-		case <-sub.Done:
-			// Workflow completed (either success or error was already sent)
-			return
-
-		case <-heartbeatTicker.C:
-			sendEvent("heartbeat", map[string]string{})
-
-		case <-ctx.Done():
-			// Client disconnected - workflow continues in background
-			slog.Info("Client disconnected, workflow continues in background",
-				"workflow_id", workflowID,
-				"session_id", req.SessionID)
-			return
-		}
-	}
+	// Poll PG for progress
+	pollWorkflowSSE(ctx, run.ID, sendEvent)
 }
 
 // CompleteRequest is the request for a simple LLM completion.

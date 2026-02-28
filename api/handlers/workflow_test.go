@@ -241,38 +241,6 @@ func TestGetLatestWorkflowForSession(t *testing.T) {
 	assert.Equal(t, run2.ID, latest.ID)
 }
 
-func TestGetIncompleteWorkflows(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
-	ctx := t.Context()
-
-	// Clean up any existing workflows from other tests
-	_, err := config.PgPool.Exec(ctx, "DELETE FROM workflow_runs")
-	require.NoError(t, err)
-
-	// Create sessions and workflows
-	for i := 0; i < 3; i++ {
-		sessionID := uuid.New()
-		_, err := config.PgPool.Exec(ctx, `
-			INSERT INTO sessions (id, type, name, content)
-			VALUES ($1, 'chat', 'Test Session', '[]')
-		`, sessionID)
-		require.NoError(t, err)
-
-		_, err = handlers.CreateWorkflowRun(ctx, sessionID, "Test question")
-		require.NoError(t, err)
-	}
-
-	// Get incomplete workflows
-	runs, err := handlers.GetIncompleteWorkflows(ctx)
-	require.NoError(t, err)
-	assert.Len(t, runs, 3)
-
-	// All should be running
-	for _, run := range runs {
-		assert.Equal(t, "running", run.Status)
-	}
-}
-
 func TestGetWorkflow_HTTPHandler(t *testing.T) {
 	apitesting.SetupTestDB(t, testPgDB)
 	ctx := t.Context()

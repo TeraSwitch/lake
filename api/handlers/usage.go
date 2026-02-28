@@ -380,22 +380,6 @@ func RunCleanupTasks(ctx context.Context) {
 	}
 }
 
-// StartCleanupWorker starts a background worker that periodically cleans up expired data
-func StartCleanupWorker(ctx context.Context) {
-	ticker := time.NewTicker(1 * time.Hour)
-	go func() {
-		for {
-			select {
-			case <-ctx.Done():
-				ticker.Stop()
-				return
-			case <-ticker.C:
-				RunCleanupTasks(ctx)
-			}
-		}
-	}()
-}
-
 // InitUsageMetrics initializes usage metrics on startup
 func InitUsageMetrics(ctx context.Context) {
 	limit := GetGlobalDailyLimit()

@@ -215,7 +215,7 @@ func GetStatus(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
-	resp := fetchStatusData(ctx)
+	resp := FetchStatusData(ctx)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
@@ -223,9 +223,9 @@ func GetStatus(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fetchStatusData performs the actual status data fetch from the database.
+// FetchStatusData performs the actual status data fetch from the database.
 // This is called by both the cache refresh and direct requests.
-func fetchStatusData(ctx context.Context) *StatusResponse {
+func FetchStatusData(ctx context.Context) *StatusResponse {
 	start := time.Now()
 
 	resp := &StatusResponse{
@@ -1143,9 +1143,9 @@ func GetLinkHistory(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	resp, err := fetchLinkHistoryData(ctx, timeRange, requestedBuckets)
+	resp, err := FetchLinkHistoryData(ctx, timeRange, requestedBuckets)
 	if err != nil {
-		log.Printf("fetchLinkHistoryData error: %v", err)
+		log.Printf("FetchLinkHistoryData error: %v", err)
 		http.Error(w, "Failed to fetch link history", http.StatusInternalServerError)
 		return
 	}
@@ -1156,9 +1156,9 @@ func GetLinkHistory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fetchLinkHistoryData performs the actual link history data fetch from the database.
+// FetchLinkHistoryData performs the actual link history data fetch from the database.
 // This is called by both the cache refresh and direct requests.
-func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBuckets int) (*LinkHistoryResponse, error) {
+func FetchLinkHistoryData(ctx context.Context, timeRange string, requestedBuckets int) (*LinkHistoryResponse, error) {
 	start := time.Now()
 
 	// Configure bucket size based on time range and requested bucket count
@@ -1879,7 +1879,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 		BucketCount:   bucketCount,
 	}
 
-	log.Printf("fetchLinkHistoryData completed in %v (range=%s, buckets=%d, links=%d)",
+	log.Printf("FetchLinkHistoryData completed in %v (range=%s, buckets=%d, links=%d)",
 		time.Since(start), timeRange, bucketCount, len(links))
 
 	return resp, nil
@@ -1996,9 +1996,9 @@ func GetDeviceHistory(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
-	resp, err := fetchDeviceHistoryData(ctx, timeRange, requestedBuckets)
+	resp, err := FetchDeviceHistoryData(ctx, timeRange, requestedBuckets)
 	if err != nil {
-		log.Printf("fetchDeviceHistoryData error: %v", err)
+		log.Printf("FetchDeviceHistoryData error: %v", err)
 		http.Error(w, "Failed to fetch device history", http.StatusInternalServerError)
 		return
 	}
@@ -2009,8 +2009,8 @@ func GetDeviceHistory(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// fetchDeviceHistoryData performs the actual device history data fetch from the database.
-func fetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuckets int) (*DeviceHistoryResponse, error) {
+// FetchDeviceHistoryData performs the actual device history data fetch from the database.
+func FetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuckets int) (*DeviceHistoryResponse, error) {
 	start := time.Now()
 
 	// Configure bucket size based on time range and requested bucket count
@@ -2315,7 +2315,7 @@ func fetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuck
 		BucketCount:   bucketCount,
 	}
 
-	log.Printf("fetchDeviceHistoryData completed in %v (range=%s, buckets=%d, devices=%d)",
+	log.Printf("FetchDeviceHistoryData completed in %v (range=%s, buckets=%d, devices=%d)",
 		time.Since(start), timeRange, bucketCount, len(devices))
 
 	return resp, nil

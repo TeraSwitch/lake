@@ -28,8 +28,10 @@ import (
 	"github.com/malbeclabs/lake/api/handlers"
 	"github.com/malbeclabs/lake/api/metrics"
 	slackbot "github.com/malbeclabs/lake/slack/bot"
+	"github.com/malbeclabs/lake/worker/pkg/statuscache"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/slack-go/slack/socketmode"
+	"go.temporal.io/sdk/worker"
 )
 
 var (
@@ -270,9 +272,37 @@ func main() {
 		defer func() { _ = config.CloseNeo4j() }()
 	}
 
-	// Initialize status cache for fast page loads
-	handlers.InitStatusCache()
-	// Note: StopStatusCache() is called explicitly before server shutdown, not deferred
+	// Load Temporal (required for chat workflows and status cache)
+	if err := config.LoadTemporal(); err != nil {
+		log.Fatalf("Failed to connect to Temporal: %v", err)
+	}
+	defer config.CloseTemporal()
+
+	// Initialize PG-backed status cache with embedded Temporal worker
+	pgCache := handlers.NewPGStatusCache(config.PgPool)
+
+	// Warm cache synchronously before serving traffic
+	warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	pgCache.WarmCache(warmCtx)
+	warmCancel()
+
+	handlers.SetStatusCache(pgCache)
+
+	// Start embedded Temporal worker for status cache activities
+	scActivities := &statuscache.Activities{PgPool: config.PgPool}
+	statusCacheWorker := worker.New(config.TemporalClient, statuscache.TaskQueue, worker.Options{})
+	statuscache.RegisterWorkflows(statusCacheWorker)
+	statusCacheWorker.RegisterActivity(scActivities)
+	go func() {
+		if err := statusCacheWorker.Run(worker.InterruptCh()); err != nil {
+			log.Printf("Status cache worker error: %v", err)
+		}
+	}()
+
+	// Create Temporal schedules for periodic refreshes
+	if err := statuscache.EnsureSchedules(context.Background(), config.TemporalClient); err != nil {
+		log.Printf("Warning: Failed to create status cache schedules: %v", err)
+	}
 
 	// Start metrics server
 	var metricsServer *http.Server
@@ -604,11 +634,7 @@ func main() {
 		}
 	}()
 
-	// Start auto-resume of incomplete workflows in background
-	go handlers.Manager.ResumeIncompleteWorkflows()
-
-	// Start cleanup worker for expired sessions/nonces
-	handlers.StartCleanupWorker(serverCtx)
+	// Cleanup runs as a Temporal schedule (via statuscache worker)
 
 	// Initialize usage metrics and start daily reset worker
 	handlers.InitUsageMetrics(serverCtx)
@@ -664,8 +690,8 @@ func main() {
 	// This triggers ctx.Done() in all active request handlers
 	serverCancel()
 
-	// Stop background cache goroutines (they may be blocking on DB queries)
-	handlers.StopStatusCache()
+	// Stop embedded status cache Temporal worker
+	statusCacheWorker.Stop()
 
 	// Give existing connections a short time to complete after context cancellation
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

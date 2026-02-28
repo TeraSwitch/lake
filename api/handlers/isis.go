@@ -2138,9 +2138,9 @@ func GetMetroPathLatency(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, response)
 }
 
-// fetchMetroPathLatencyData fetches metro path latency data for the given optimization strategy.
+// FetchMetroPathLatencyData fetches metro path latency data for the given optimization strategy.
 // Used by both the handler and the cache.
-func fetchMetroPathLatencyData(ctx context.Context, optimize string) (*MetroPathLatencyResponse, error) {
+func FetchMetroPathLatencyData(ctx context.Context, optimize string) (*MetroPathLatencyResponse, error) {
 	start := time.Now()
 
 	session := config.Neo4jSession(ctx)
@@ -2345,7 +2345,7 @@ func fetchMetroPathLatencyData(ctx context.Context, optimize string) (*MetroPath
 	response.Summary.MaxImprovementPct = maxImprovement
 
 	duration := time.Since(start)
-	log.Printf("fetchMetroPathLatencyData (%s) returned %d paths in %v",
+	log.Printf("FetchMetroPathLatencyData (%s) returned %d paths in %v",
 		optimize, len(response.Paths), duration)
 
 	return response, nil
