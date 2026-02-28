@@ -661,9 +661,9 @@ function AppContent() {
             {/* Stake analytics route */}
             <Route path="/stake" element={<StakePage />} />
 
-            {/* Rewards simulation (under topology tools) */}
-            <Route path="/topology/rewards" element={<RewardsPage />} />
-            <Route path="/rewards" element={<Navigate to="/topology/rewards" replace />} />
+            {/* Rewards simulation */}
+            <Route path="/rewards" element={<RewardsPage />} />
+            <Route path="/topology/rewards" element={<Navigate to="/rewards" replace />} />
 
             {/* Settings */}
             <Route path="/settings" element={<SettingsPage />} />

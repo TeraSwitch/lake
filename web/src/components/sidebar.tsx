@@ -52,10 +52,10 @@ export function Sidebar() {
   const isChatRoute = location.pathname.startsWith('/chat')
   const isChatSessions = location.pathname === '/chat/sessions'
   const isQueryRoute = location.pathname.startsWith('/query')
-  const isQuerySessions = location.pathname === '/query/sessions'
   const isTopologyRoute = location.pathname === '/topology' || location.pathname.startsWith('/topology/')
   const isPerformanceRoute = location.pathname.startsWith('/performance')
-  const isRewardsRoute = location.pathname === '/topology/rewards'
+  const isToolsRoute = location.pathname === '/rewards' || isQueryRoute
+  const isRewardsRoute = location.pathname === '/rewards'
   const isTrafficRoute = location.pathname.startsWith('/traffic')
   const isDZRoute = location.pathname.startsWith('/dz/')
   const isSolanaRoute = location.pathname.startsWith('/solana/')
@@ -68,7 +68,7 @@ export function Sidebar() {
   const isTopologyRedundancy = location.pathname === '/topology/redundancy'
   const isTopologyMetroConnectivity = location.pathname === '/topology/metro-connectivity'
   const isTopologyMaintenance = location.pathname === '/topology/maintenance'
-  const isTopologyTool = isTopologyPathCalculator || isTopologyRedundancy || isTopologyMetroConnectivity || isTopologyMaintenance || isRewardsRoute
+  const isTopologyTool = isTopologyPathCalculator || isTopologyRedundancy || isTopologyMetroConnectivity || isTopologyMaintenance
 
   // Performance sub-routes
   const isPerformanceDzVsInternet = location.pathname === '/performance/dz-vs-internet'
@@ -223,19 +223,9 @@ export function Sidebar() {
           <Link to="/outages" className={collapsedIconClass(isOutagesRoute)} title="Outages">
             <AlertTriangle className="h-4 w-4" />
           </Link>
-          <button
-            onClick={(e) => {
-              if (e.metaKey || e.ctrlKey) {
-                window.open('/query', '_blank')
-              } else {
-                navigate('/query')
-              }
-            }}
-            className={collapsedIconClass(isQueryRoute)}
-            title="Query"
-          >
-            <Database className="h-4 w-4" />
-          </button>
+          <Link to="/rewards" className={collapsedIconClass(isToolsRoute)} title="Tools">
+            <Wrench className="h-4 w-4" />
+          </Link>
 
           {/* Divider */}
           <div className="w-6 border-t border-border/50 my-2" />
@@ -249,9 +239,6 @@ export function Sidebar() {
               <Landmark className="h-4 w-4" />
             </Link>
           )}
-          <Link to="/topology/rewards" className={collapsedIconClass(isRewardsRoute)} title="Rewards">
-            <Coins className="h-4 w-4" />
-          </Link>
         </div>
 
         {/* Footer */}
@@ -395,10 +382,6 @@ export function Sidebar() {
                           <Wrench className="h-4 w-4" />
                           Maintenance
                         </Link>
-                        <Link to="/topology/rewards" className={subNavItemClass(isRewardsRoute, true)}>
-                          <Coins className="h-4 w-4" />
-                          Rewards
-                        </Link>
                       </>
                     )}
                   </>
@@ -451,23 +434,17 @@ export function Sidebar() {
               <AlertTriangle className="h-4 w-4" />
               Outages
             </Link>
-
-            {/* Query with inline sub-items */}
-            <button
-              onClick={(e) => {
-                if (e.metaKey || e.ctrlKey) {
-                  window.open('/query', '_blank')
-                } else {
-                  navigate('/query')
-                }
-              }}
-              className={isQueryRoute ? navItemExpandedClass : navItemClass(false)}
-            >
-              <Database className="h-4 w-4" />
-              Query
-            </button>
-            {isQueryRoute && (
+            {/* Tools with inline sub-items */}
+            <Link to="/rewards" className={isToolsRoute ? navItemExpandedClass : navItemClass(false)}>
+              <Wrench className="h-4 w-4" />
+              Tools
+            </Link>
+            {isToolsRoute && (
               <>
+                <Link to="/rewards" className={subNavItemClass(isRewardsRoute)}>
+                  <Coins className="h-4 w-4" />
+                  Rewards Simulator
+                </Link>
                 <button
                   onClick={(e) => {
                     if (e.metaKey || e.ctrlKey) {
@@ -476,13 +453,11 @@ export function Sidebar() {
                       navigate('/query')
                     }
                   }}
-                  className={subNavItemClass(!isQuerySessions && (location.pathname === '/query' || !!location.pathname.match(/^\/query\/[^/]+$/)))}
+                  className={subNavItemClass(isQueryRoute)}
                 >
-                  New query
+                  <Database className="h-4 w-4" />
+                  Query Editor
                 </button>
-                <Link to="/query/sessions" className={subNavItemClass(isQuerySessions)}>
-                  History
-                </Link>
               </>
             )}
 
