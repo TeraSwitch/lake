@@ -18,14 +18,14 @@ type scheduleSpec struct {
 func EnsureSchedules(ctx context.Context, tc client.Client) error {
 	sc := tc.ScheduleClient()
 	schedules := []scheduleSpec{
-		{"status-refresh", RefreshStatusWorkflow, 30 * time.Second},
-		{"timeline-refresh", RefreshTimelineWorkflow, 30 * time.Second},
-		{"outages-refresh", RefreshOutagesWorkflow, 60 * time.Second},
-		{"link-history-refresh", RefreshLinkHistoryWorkflow, 60 * time.Second},
-		{"device-history-refresh", RefreshDeviceHistoryWorkflow, 60 * time.Second},
-		{"latency-refresh", RefreshLatencyComparisonWorkflow, 120 * time.Second},
-		{"metro-path-refresh", RefreshMetroPathLatencyWorkflow, 120 * time.Second},
-		{"cleanup", CleanupWorkflow, 1 * time.Hour},
+		{"status-cache-refresh", RefreshStatusWorkflow, 2 * time.Minute},
+		{"timeline-cache-refresh", RefreshTimelineWorkflow, 2 * time.Minute},
+		{"outages-cache-refresh", RefreshOutagesWorkflow, 5 * time.Minute},
+		{"link-history-cache-refresh", RefreshLinkHistoryWorkflow, 5 * time.Minute},
+		{"device-history-cache-refresh", RefreshDeviceHistoryWorkflow, 5 * time.Minute},
+		{"latency-cache-refresh", RefreshLatencyComparisonWorkflow, 5 * time.Minute},
+		{"metro-path-cache-refresh", RefreshMetroPathLatencyWorkflow, 5 * time.Minute},
+		{"db-cleanup", CleanupWorkflow, 1 * time.Hour},
 	}
 
 	for _, s := range schedules {
