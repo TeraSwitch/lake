@@ -5,11 +5,21 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"math"
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
+
+	"golang.org/x/sync/errgroup"
 )
+
+// maxSimParallel limits concurrent shapley-cli processes.
+// shapley-cli is internally multi-threaded and saturates all cores, so running
+// many in parallel causes heavy contention. A small limit (2-3) balances
+// wall-clock time vs CPU thrashing.
+var maxSimParallel = 2
 
 // PrivateLink represents a direct connection between two devices.
 type PrivateLink struct {
@@ -70,19 +80,19 @@ type OperatorValue struct {
 
 // CompareResult holds baseline vs modified simulation results with deltas.
 type CompareResult struct {
-	BaselineResults  []OperatorValue `json:"baseline_results"`
-	ModifiedResults  []OperatorValue `json:"modified_results"`
-	Deltas           []OperatorDelta `json:"deltas"`
-	BaselineTotal    float64         `json:"baseline_total"`
-	ModifiedTotal    float64         `json:"modified_total"`
+	BaselineResults []OperatorValue `json:"baseline_results"`
+	ModifiedResults []OperatorValue `json:"modified_results"`
+	Deltas          []OperatorDelta `json:"deltas"`
+	BaselineTotal   float64         `json:"baseline_total"`
+	ModifiedTotal   float64         `json:"modified_total"`
 }
 
 // OperatorDelta shows the change between baseline and modified for an operator.
 type OperatorDelta struct {
-	Operator         string  `json:"operator"`
-	BaselineValue    float64 `json:"baseline_value"`
-	ModifiedValue    float64 `json:"modified_value"`
-	ValueDelta       float64 `json:"value_delta"`
+	Operator           string  `json:"operator"`
+	BaselineValue      float64 `json:"baseline_value"`
+	ModifiedValue      float64 `json:"modified_value"`
+	ValueDelta         float64 `json:"value_delta"`
 	BaselineProportion float64 `json:"baseline_proportion"`
 	ModifiedProportion float64 `json:"modified_proportion"`
 	ProportionDelta    float64 `json:"proportion_delta"`
@@ -239,6 +249,8 @@ func BuildCompareResult(baselineResults, modifiedResults []OperatorValue) *Compa
 // cachedBaselineResults, if non-nil, skips the baseline simulation in the approx path.
 // This ports the Python network_linkestimate.py logic to Go.
 func LinkEstimate(ctx context.Context, operatorFocus string, input ShapleyInput, cachedBaselineResults []OperatorValue) (*LinkEstimateResult, error) {
+	start := time.Now()
+
 	// Build device-to-operator lookup
 	deviceOperator := make(map[string]string)
 	for _, d := range input.Devices {
@@ -254,8 +266,16 @@ func LinkEstimate(ctx context.Context, operatorFocus string, input ShapleyInput,
 			opLinkCount++
 		}
 	}
+
+	slog.Info("link-estimate: starting", "operator", operatorFocus, "operator_links", opLinkCount,
+		"method", func() string { if opLinkCount > 15 { return "approx" }; return "exact" }())
+
 	if opLinkCount > 15 {
-		return linkEstimateApprox(ctx, operatorFocus, input, deviceOperator, cachedBaselineResults)
+		result, err := linkEstimateApprox(ctx, operatorFocus, input, deviceOperator, cachedBaselineResults)
+		if err == nil {
+			slog.Info("link-estimate: complete", "operator", operatorFocus, "duration", time.Since(start))
+		}
+		return result, err
 	}
 
 	// Retag links: each link of the focus operator becomes a pseudo-operator (numbered "1", "2", ...),
@@ -487,6 +507,8 @@ func LinkEstimate(ctx context.Context, operatorFocus string, input ShapleyInput,
 		}
 	}
 
+	slog.Info("link-estimate: complete", "operator", operatorFocus, "links", len(linkResults), "duration", time.Since(start))
+
 	return &LinkEstimateResult{
 		Results:    linkResults,
 		TotalValue: totalValue,
@@ -498,6 +520,8 @@ func LinkEstimate(ctx context.Context, operatorFocus string, input ShapleyInput,
 // value of each link is the difference between the baseline and the reduced network.
 // cachedBaseline, if non-nil, skips the initial baseline simulation.
 func linkEstimateApprox(ctx context.Context, operatorFocus string, input ShapleyInput, deviceOperator map[string]string, cachedBaseline []OperatorValue) (*LinkEstimateResult, error) {
+	totalStart := time.Now()
+
 	// Identify which links belong to the focus operator, deduplicating bidirectional pairs
 	type opLink struct {
 		index int
@@ -523,14 +547,25 @@ func linkEstimateApprox(ctx context.Context, operatorFocus string, input Shapley
 		}
 	}
 
-	// Use cached baseline if available, otherwise run baseline simulation
+	slog.Info("link-estimate-approx: starting",
+		"operator", operatorFocus, "links", len(focusLinks),
+		"total_private_links", len(input.PrivateLinks), "devices", len(input.Devices),
+		"max_parallel", maxSimParallel)
+
+	// Use cached baseline if available, otherwise run collapsed simulation
 	baselineResults := cachedBaseline
 	if baselineResults == nil {
+		baselineStart := time.Now()
+		const collapseThreshold = 5
+		collapsed := CollapseSmallOperators(input, collapseThreshold)
 		var err error
-		baselineResults, err = Simulate(ctx, input)
+		baselineResults, err = Simulate(ctx, collapsed)
 		if err != nil {
 			return nil, fmt.Errorf("baseline simulation: %w", err)
 		}
+		slog.Info("link-estimate-approx: baseline done", "duration", time.Since(baselineStart))
+	} else {
+		slog.Info("link-estimate-approx: using cached baseline", "results", len(cachedBaseline))
 	}
 
 	// Find baseline value for the focus operator
@@ -542,60 +577,73 @@ func linkEstimateApprox(ctx context.Context, operatorFocus string, input Shapley
 		}
 	}
 
-	// For each focus link, remove it and re-simulate
-	var linkResults []LinkResult
-	totalMarginal := 0.0
+	// For each focus link, remove it and re-simulate (in parallel).
+	// Each simulation is independent — we remove one link at a time and
+	// measure the marginal drop in the focus operator's Shapley value.
+	linkResults := make([]LinkResult, len(focusLinks))
 
-	for _, fl := range focusLinks {
-		// Build input without this link
-		reduced := ShapleyInput{
-			Devices:          input.Devices,
-			Demands:          input.Demands,
-			PublicLinks:      input.PublicLinks,
-			OperatorUptime:   input.OperatorUptime,
-			ContiguityBonus:  input.ContiguityBonus,
-			DemandMultiplier: input.DemandMultiplier,
-		}
-		for i, link := range input.PrivateLinks {
-			if i != fl.index {
-				reduced.PrivateLinks = append(reduced.PrivateLinks, link)
-			}
-		}
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(maxSimParallel)
 
-		reducedResults, err := Simulate(ctx, reduced)
-		if err != nil {
-			// If removing this link breaks the simulation, assign zero value
-			linkResults = append(linkResults, LinkResult{
-				Device1:   fl.link.Device1,
-				Device2:   fl.link.Device2,
-				Bandwidth: fl.link.Bandwidth,
-				Latency:   fl.link.Latency,
-				Value:     0,
-			})
-			continue
-		}
-
-		reducedValue := 0.0
-		for _, r := range reducedResults {
-			if r.Operator == operatorFocus {
-				reducedValue = r.Value
-				break
-			}
-		}
-
-		marginal := math.Max(baselineValue-reducedValue, 0)
-		totalMarginal += marginal
-
-		linkResults = append(linkResults, LinkResult{
+	for idx, fl := range focusLinks {
+		linkResults[idx] = LinkResult{
 			Device1:   fl.link.Device1,
 			Device2:   fl.link.Device2,
 			Bandwidth: fl.link.Bandwidth,
 			Latency:   fl.link.Latency,
-			Value:     marginal,
+		}
+
+		g.Go(func() error {
+			simStart := time.Now()
+
+			// Build input without this link, then collapse small operators
+			reduced := ShapleyInput{
+				Devices:          input.Devices,
+				Demands:          input.Demands,
+				PublicLinks:      input.PublicLinks,
+				OperatorUptime:   input.OperatorUptime,
+				ContiguityBonus:  input.ContiguityBonus,
+				DemandMultiplier: input.DemandMultiplier,
+			}
+			for i, link := range input.PrivateLinks {
+				if i != fl.index {
+					reduced.PrivateLinks = append(reduced.PrivateLinks, link)
+				}
+			}
+			const collapseThreshold = 5
+			reduced = CollapseSmallOperators(reduced, collapseThreshold)
+
+			reducedResults, err := Simulate(gctx, reduced)
+			if err != nil {
+				slog.Warn("link-estimate-approx: sim failed", "sim", idx+1, "total", len(focusLinks), "duration", time.Since(simStart), "err", err)
+				return nil
+			}
+
+			reducedValue := 0.0
+			for _, r := range reducedResults {
+				if r.Operator == operatorFocus {
+					reducedValue = r.Value
+					break
+				}
+			}
+
+			linkResults[idx].Value = math.Max(baselineValue-reducedValue, 0)
+			slog.Info("link-estimate-approx: sim done", "sim", idx+1, "total", len(focusLinks), "duration", time.Since(simStart))
+			return nil
 		})
 	}
 
-	// Compute percentages
+	if err := g.Wait(); err != nil {
+		return nil, fmt.Errorf("parallel link simulations: %w", err)
+	}
+
+	slog.Info("link-estimate-approx: complete", "simulations", len(focusLinks), "duration", time.Since(totalStart))
+
+	// Compute totals and percentages
+	totalMarginal := 0.0
+	for _, lr := range linkResults {
+		totalMarginal += lr.Value
+	}
 	for i := range linkResults {
 		if totalMarginal > 0 {
 			linkResults[i].Percent = linkResults[i].Value / totalMarginal

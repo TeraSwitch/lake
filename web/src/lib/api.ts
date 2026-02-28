@@ -4403,16 +4403,28 @@ export async function fetchRewardsSimulate(): Promise<RewardsSimulateResponse> {
   return res.json()
 }
 
-export async function fetchRewardsCompare(
+// Workflow response from async POST endpoints
+export interface RewardsWorkflowResponse {
+  workflow_id: string
+  run_id: string
+}
+
+// Workflow result polling response
+export interface RewardsWorkflowResult<T = unknown> {
+  status: 'running' | 'completed' | 'failed'
+  workflow_id: string
+  result?: T
+  error?: string
+}
+
+export async function startRewardsCompare(
   baseline: RewardsNetwork,
   modified: RewardsNetwork,
-  signal?: AbortSignal,
-): Promise<RewardsCompareResponse> {
+): Promise<RewardsWorkflowResponse> {
   const res = await fetchWithRetry('/api/rewards/compare', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ baseline, modified }),
-    signal,
   })
   if (!res.ok) {
     const text = await res.text()
@@ -4421,66 +4433,38 @@ export async function fetchRewardsCompare(
   return res.json()
 }
 
-export async function fetchRewardsLinkEstimate(
+export type LinkEstimateResponse =
+  | { status: 'completed'; result: RewardsLinkEstimateResponse }
+  | { status: 'started'; workflow_id: string; run_id: string }
+
+export async function startRewardsLinkEstimate(
   operator: string,
   network: RewardsNetwork,
-  signal?: AbortSignal,
-): Promise<RewardsLinkEstimateResponse> {
+): Promise<LinkEstimateResponse> {
   const res = await fetchWithRetry('/api/rewards/link-estimate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ operator, network }),
-    signal,
   })
   if (!res.ok) {
     const text = await res.text()
     throw new Error(text || 'Link estimate failed')
   }
-  return res.json()
+  const data = await res.json()
+  if (res.status === 200 && data.status === 'completed') {
+    return { status: 'completed', result: data.result }
+  }
+  return { status: 'started', workflow_id: data.workflow_id, run_id: data.run_id }
 }
 
-// Temporal-based async simulation types and functions
-
-export interface SimulationParams {
-  operator_uptime: number
-  contiguity_bonus: number
-  demand_multiplier: number
-}
-
-export interface SimulationStatusResponse {
-  id: string
-  workflow_id: string
-  run_id: string
-  status: string
-  params?: SimulationParams
-  results?: OperatorValue[]
-  error?: string
-  created_at: string
-  completed_at?: string
-}
-
-export async function startRewardsSimulation(
-  params: SimulationParams,
-): Promise<SimulationStatusResponse> {
-  const res = await fetchWithRetry('/api/rewards/simulations', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(params),
-  })
+export async function fetchRewardsWorkflowResult<T>(
+  workflowId: string,
+): Promise<RewardsWorkflowResult<T>> {
+  const res = await apiFetch(`/api/rewards/workflows/${workflowId}`)
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || 'Failed to start simulation')
+    throw new Error(text || 'Failed to fetch workflow result')
   }
   return res.json()
 }
 
-export async function fetchSimulationStatus(
-  id: string,
-): Promise<SimulationStatusResponse> {
-  const res = await fetchWithRetry(`/api/rewards/simulations/${id}`)
-  if (!res.ok) {
-    const text = await res.text()
-    throw new Error(text || 'Failed to fetch simulation status')
-  }
-  return res.json()
-}

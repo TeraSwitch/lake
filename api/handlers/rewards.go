@@ -3,13 +3,11 @@ package handlers
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"time"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/google/uuid"
 	"go.temporal.io/sdk/client"
 
 	"github.com/malbeclabs/lake/api/config"
@@ -17,43 +15,93 @@ import (
 	"github.com/malbeclabs/lake/api/metrics"
 	"github.com/malbeclabs/lake/api/rewards"
 	workerrewards "github.com/malbeclabs/lake/worker/pkg/rewards"
-	"golang.org/x/sync/errgroup"
 )
-
-// rewardsCache holds the background-computed Shapley results.
-var rewardsCache *rewards.RewardsCache
-
-// SetRewardsCache sets the global rewards cache instance.
-func SetRewardsCache(rc *rewards.RewardsCache) {
-	rewardsCache = rc
-}
 
 // maxRewardsBody limits request body size for rewards POST endpoints (5 MB).
 const maxRewardsBody = 5 * 1024 * 1024
 
+// WorkflowResponse is returned by POST endpoints that start a Temporal workflow.
+type WorkflowResponse struct {
+	WorkflowID string `json:"workflow_id"`
+	RunID      string `json:"run_id"`
+}
+
 // GetRewardsSimulate handles GET /api/rewards/simulate.
-// Returns pre-computed Shapley results from the background cache.
+// Returns the latest Shapley results from PostgreSQL.
+// If no result exists or the cached topology hash is stale vs the current
+// live network, triggers SimulateCronWorkflow on-demand using a deterministic
+// workflow ID so concurrent requests coalesce.
 func GetRewardsSimulate(w http.ResponseWriter, r *http.Request) {
-	if rewardsCache == nil || !rewardsCache.IsReady() {
+	if config.PgPool == nil {
+		http.Error(w, "database not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	cached, err := rewards.FetchLatestSimulation(ctx, config.PgPool)
+	if err != nil {
+		// No cached result at all — trigger computation if Temporal is available
+		if config.TemporalClient != nil {
+			triggerBaselineSimulation(r.Context())
+		}
 		http.Error(w, "rewards simulation is computing, please try again shortly", http.StatusServiceUnavailable)
 		return
 	}
 
-	results, total, computedAt, epoch := rewardsCache.GetSimulation()
+	refreshing := false
+
+	// Check if the cached topology hash is stale vs the current live network
+	if config.TemporalClient != nil {
+		liveCtx, liveCancel := context.WithTimeout(r.Context(), 15*time.Second)
+		defer liveCancel()
+
+		liveNet, err := rewards.FetchLiveNetwork(liveCtx, envDB(liveCtx))
+		if err == nil {
+			currentHash := rewards.TopologyHash(liveNet.Network)
+			if cached.TopologyHash == "" || currentHash != cached.TopologyHash {
+				refreshing = true
+				triggerBaselineSimulation(r.Context())
+			}
+		}
+	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"results":     results,
-		"total_value": total,
-		"computed_at": computedAt.UTC().Format(time.RFC3339),
-		"epoch":       epoch,
+		"results":     cached.Results,
+		"total_value": cached.TotalValue,
+		"computed_at": cached.ComputedAt.UTC().Format(time.RFC3339),
+		"epoch":       cached.Epoch,
+		"refreshing":  refreshing,
 	})
+}
+
+// triggerBaselineSimulation fires off a SimulateCronWorkflow with a fixed
+// workflow ID so that concurrent callers coalesce onto the same run.
+func triggerBaselineSimulation(_ context.Context) {
+	go func() {
+		triggerCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		_, err := config.TemporalClient.ExecuteWorkflow(triggerCtx, client.StartWorkflowOptions{
+			ID:        "rewards-simulate",
+			TaskQueue: workerrewards.TaskQueue,
+		}, workerrewards.SimulateCronWorkflow)
+		if err != nil {
+			log.Printf("rewards: on-demand simulate trigger: %v", err)
+		}
+	}()
 }
 
 // PostRewardsCompare handles POST /api/rewards/compare.
 // Body: { "baseline": <ShapleyInput>, "modified": <ShapleyInput> }
-// Uses cached baseline results when available (skips one ~2min simulation).
+// Starts a Temporal workflow and returns the workflow ID immediately.
 func PostRewardsCompare(w http.ResponseWriter, r *http.Request) {
+	if config.TemporalClient == nil {
+		http.Error(w, "temporal not available", http.StatusServiceUnavailable)
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxRewardsBody)
 
 	var req struct {
@@ -66,55 +114,52 @@ func PostRewardsCompare(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	var baselineResults, modifiedResults []rewards.OperatorValue
+	input := workerrewards.CompareInput{
+		Baseline: req.Baseline,
+		Modified: req.Modified,
+	}
 
-	g, gctx := errgroup.WithContext(ctx)
-	g.Go(func() error {
-		// Use cached baseline when available (the frontend always sends the
-		// unmodified live network as baseline, which matches the cache).
-		if rewardsCache != nil && rewardsCache.IsReady() {
-			cachedResults, _, _, _ := rewardsCache.GetSimulation()
-			baselineResults = cachedResults
-			return nil
+	// Use cached baseline from PG if available
+	if config.PgPool != nil {
+		if cached, err := rewards.FetchLatestSimulation(ctx, config.PgPool); err == nil {
+			input.CachedBaseline = cached.Results
 		}
-		const collapseThreshold = 5
-		baseline := rewards.CollapseSmallOperators(req.Baseline, collapseThreshold)
-		var err error
-		baselineResults, err = rewards.Simulate(gctx, baseline)
-		if err != nil {
-			return fmt.Errorf("baseline simulation: %w", err)
-		}
-		return nil
-	})
-	g.Go(func() error {
-		const collapseThreshold = 5
-		modified := rewards.CollapseSmallOperators(req.Modified, collapseThreshold)
-		var err error
-		modifiedResults, err = rewards.Simulate(gctx, modified)
-		if err != nil {
-			return fmt.Errorf("modified simulation: %w", err)
-		}
-		return nil
-	})
+	}
 
-	if err := g.Wait(); err != nil {
-		log.Printf("rewards: compare: %v", err)
+	// Compare uses a random ID — inputs are user-modified networks so no dedup
+	run, err := config.TemporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        "rewards-compare-" + rewards.TopologyHash(req.Modified)[:12],
+		TaskQueue: workerrewards.TaskQueue,
+	}, workerrewards.CompareWorkflow, input)
+	if err != nil {
+		log.Printf("rewards: compare: failed to start workflow: %v", err)
 		http.Error(w, "comparison failed", http.StatusInternalServerError)
 		return
 	}
 
-	result := rewards.BuildCompareResult(baselineResults, modifiedResults)
-
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(WorkflowResponse{
+		WorkflowID: run.GetID(),
+		RunID:      run.GetRunID(),
+	})
 }
 
 // PostRewardsLinkEstimate handles POST /api/rewards/link-estimate.
 // Body: { "operator": "name", "network": <ShapleyInput> }
+// Checks the PG cache first; if a cached result exists for the topology hash,
+// returns it immediately. Otherwise starts a Temporal workflow with a
+// deterministic ID so concurrent requests for the same operator+topology
+// coalesce onto one run.
 func PostRewardsLinkEstimate(w http.ResponseWriter, r *http.Request) {
+	if config.TemporalClient == nil {
+		http.Error(w, "temporal not available", http.StatusServiceUnavailable)
+		return
+	}
+
 	r.Body = http.MaxBytesReader(w, r.Body, maxRewardsBody)
 
 	var req struct {
@@ -132,34 +177,156 @@ func PostRewardsLinkEstimate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
-	// Pass cached baseline results to skip redundant baseline simulation (approx path)
-	var cachedBaseline []rewards.OperatorValue
-	if rewardsCache != nil && rewardsCache.IsReady() {
-		cachedBaseline, _, _, _ = rewardsCache.GetSimulation()
+	// Check PG cache by topology hash
+	topologyHash := rewards.TopologyHash(req.Network)
+	if config.PgPool != nil {
+		cached, err := rewards.FetchCachedLinkEstimate(ctx, config.PgPool, req.Operator, topologyHash)
+		if err == nil && cached != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"status": "completed",
+				"result": cached,
+			})
+			return
+		}
 	}
 
-	result, err := rewards.LinkEstimate(ctx, req.Operator, req.Network, cachedBaseline)
+	// No cache hit — start workflow with deterministic ID for dedup
+	input := workerrewards.LinkEstimateInput{
+		Operator:     req.Operator,
+		Network:      req.Network,
+		TopologyHash: topologyHash,
+	}
+
+	// Use cached baseline from PG if available
+	if config.PgPool != nil {
+		if cached, err := rewards.FetchLatestSimulation(ctx, config.PgPool); err == nil {
+			input.CachedBaseline = cached.Results
+		}
+	}
+
+	workflowID := "rewards-link-estimate-" + req.Operator + "-" + topologyHash[:12]
+	run, err := config.TemporalClient.ExecuteWorkflow(ctx, client.StartWorkflowOptions{
+		ID:        workflowID,
+		TaskQueue: workerrewards.TaskQueue,
+	}, workerrewards.LinkEstimateWorkflow, input)
 	if err != nil {
-		log.Printf("rewards: link estimate: %v", err)
+		log.Printf("rewards: link estimate: failed to start workflow: %v", err)
 		http.Error(w, "link estimate failed", http.StatusInternalServerError)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(result)
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(WorkflowResponse{
+		WorkflowID: run.GetID(),
+		RunID:      run.GetRunID(),
+	})
+}
+
+// GetRewardsWorkflowResult handles GET /api/rewards/workflows/{id}.
+// Polls the Temporal workflow for status and returns results when complete.
+func GetRewardsWorkflowResult(w http.ResponseWriter, r *http.Request) {
+	if config.TemporalClient == nil {
+		http.Error(w, "temporal not available", http.StatusServiceUnavailable)
+		return
+	}
+
+	workflowID := chi.URLParam(r, "id")
+	if workflowID == "" {
+		http.Error(w, "missing workflow id", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	defer cancel()
+
+	// Describe the workflow to get its status
+	desc, err := config.TemporalClient.DescribeWorkflowExecution(ctx, workflowID, "")
+	if err != nil {
+		log.Printf("rewards: workflow %s: describe failed: %v", workflowID, err)
+		http.Error(w, "workflow not found", http.StatusNotFound)
+		return
+	}
+
+	status := desc.WorkflowExecutionInfo.Status.String()
+
+	switch status {
+	case "Running":
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":      "running",
+			"workflow_id": workflowID,
+		})
+
+	case "Completed":
+		// Fetch the result. We need to know the workflow type to deserialize properly.
+		// Use the workflow type name to determine what to decode into.
+		typeName := desc.WorkflowExecutionInfo.Type.Name
+		run := config.TemporalClient.GetWorkflow(ctx, workflowID, "")
+
+		var result any
+		switch typeName {
+		case "CompareWorkflow":
+			var r rewards.CompareResult
+			if err := run.Get(ctx, &r); err != nil {
+				log.Printf("rewards: workflow %s: get result failed: %v", workflowID, err)
+				http.Error(w, "failed to get result", http.StatusInternalServerError)
+				return
+			}
+			result = &r
+		case "LinkEstimateWorkflow":
+			var r rewards.LinkEstimateResult
+			if err := run.Get(ctx, &r); err != nil {
+				log.Printf("rewards: workflow %s: get result failed: %v", workflowID, err)
+				http.Error(w, "failed to get result", http.StatusInternalServerError)
+				return
+			}
+			result = &r
+		default:
+			http.Error(w, "unsupported workflow type: "+typeName, http.StatusBadRequest)
+			return
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":      "completed",
+			"workflow_id": workflowID,
+			"result":      result,
+		})
+
+	default: // Failed, Terminated, TimedOut, Canceled
+		// Try to get the error message
+		run := config.TemporalClient.GetWorkflow(ctx, workflowID, "")
+		errMsg := "workflow " + status
+		if err := run.Get(ctx, nil); err != nil {
+			errMsg = err.Error()
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"status":      "failed",
+			"workflow_id": workflowID,
+			"error":       errMsg,
+		})
+	}
 }
 
 // GetRewardsLiveNetwork handles GET /api/rewards/live-network.
-// Returns the current network topology, preferring the cache.
+// Returns the current network topology, preferring the cached version from PG.
 func GetRewardsLiveNetwork(w http.ResponseWriter, r *http.Request) {
-	// Serve from cache if available
-	if rewardsCache != nil {
-		if cached := rewardsCache.GetLiveNetwork(); cached != nil {
+	// Try cached version from PG first
+	if config.PgPool != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+		defer cancel()
+
+		if cached, err := rewards.FetchLatestSimulation(ctx, config.PgPool); err == nil && cached.LiveNetwork != nil {
 			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(cached)
+			_ = json.NewEncoder(w).Encode(cached.LiveNetwork)
 			return
 		}
 	}
@@ -179,152 +346,4 @@ func GetRewardsLiveNetwork(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(liveNet)
-}
-
-// --- Temporal-based simulation endpoints ---
-
-// StartSimulationRequest is the JSON body for POST /api/rewards/simulations.
-type StartSimulationRequest struct {
-	OperatorUptime   float64 `json:"operator_uptime"`
-	ContiguityBonus  float64 `json:"contiguity_bonus"`
-	DemandMultiplier float64 `json:"demand_multiplier"`
-}
-
-// SimulationStatusResponse is returned by both POST and GET simulation endpoints.
-type SimulationStatusResponse struct {
-	ID          string                  `json:"id"`
-	WorkflowID  string                  `json:"workflow_id"`
-	RunID       string                  `json:"run_id"`
-	Status      string                  `json:"status"`
-	Params      *StartSimulationRequest `json:"params,omitempty"`
-	Results     []rewards.OperatorValue `json:"results,omitempty"`
-	Error       string                  `json:"error,omitempty"`
-	CreatedAt   time.Time               `json:"created_at"`
-	CompletedAt *time.Time              `json:"completed_at,omitempty"`
-}
-
-// PostStartSimulation starts a new rewards simulation via Temporal workflow.
-func PostStartSimulation(w http.ResponseWriter, r *http.Request) {
-	if config.TemporalClient == nil {
-		http.Error(w, `{"error":"temporal not available"}`, http.StatusServiceUnavailable)
-		return
-	}
-
-	var req StartSimulationRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
-		return
-	}
-
-	simID := uuid.New().String()
-
-	workflowOpts := client.StartWorkflowOptions{
-		ID:        "rewards-simulation-" + simID,
-		TaskQueue: workerrewards.TaskQueue,
-	}
-
-	simReq := workerrewards.SimulationRequest{
-		ID:               simID,
-		OperatorUptime:   req.OperatorUptime,
-		ContiguityBonus:  req.ContiguityBonus,
-		DemandMultiplier: req.DemandMultiplier,
-	}
-
-	run, err := config.TemporalClient.ExecuteWorkflow(r.Context(), workflowOpts, workerrewards.RewardsSimulation, simReq)
-	if err != nil {
-		log.Printf("Failed to start rewards simulation workflow: %v", err)
-		http.Error(w, `{"error":"failed to start simulation"}`, http.StatusInternalServerError)
-		return
-	}
-
-	// Record in PostgreSQL
-	params, _ := json.Marshal(req)
-	_, dbErr := config.PgPool.Exec(r.Context(), `
-		INSERT INTO rewards_simulations (id, workflow_id, run_id, status, params)
-		VALUES ($1, $2, $3, $4, $5)
-	`, simID, run.GetID(), run.GetRunID(), "running", params)
-	if dbErr != nil {
-		log.Printf("Failed to record simulation: %v", dbErr)
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(SimulationStatusResponse{
-		ID:         simID,
-		WorkflowID: run.GetID(),
-		RunID:      run.GetRunID(),
-		Status:     "running",
-		Params:     &req,
-		CreatedAt:  time.Now().UTC(),
-	})
-}
-
-// GetSimulationStatus returns the status and results of a rewards simulation.
-func GetSimulationStatus(w http.ResponseWriter, r *http.Request) {
-	simID := chi.URLParam(r, "id")
-	if simID == "" {
-		http.Error(w, `{"error":"missing simulation id"}`, http.StatusBadRequest)
-		return
-	}
-
-	var resp SimulationStatusResponse
-	var paramsJSON []byte
-	var errStr *string
-
-	err := config.PgPool.QueryRow(r.Context(), `
-		SELECT id, workflow_id, run_id, status, params, error, created_at, completed_at
-		FROM rewards_simulations
-		WHERE id = $1
-	`, simID).Scan(
-		&resp.ID, &resp.WorkflowID, &resp.RunID, &resp.Status,
-		&paramsJSON, &errStr, &resp.CreatedAt, &resp.CompletedAt,
-	)
-	if err != nil {
-		http.Error(w, `{"error":"simulation not found"}`, http.StatusNotFound)
-		return
-	}
-
-	if errStr != nil {
-		resp.Error = *errStr
-	}
-
-	var params StartSimulationRequest
-	if err := json.Unmarshal(paramsJSON, &params); err == nil {
-		resp.Params = &params
-	}
-
-	// If completed, fetch results
-	if resp.Status == "completed" {
-		rows, err := config.PgPool.Query(r.Context(), `
-			SELECT operator, value, proportion
-			FROM rewards_simulation_results
-			WHERE simulation_id = $1
-			ORDER BY proportion DESC
-		`, simID)
-		if err == nil {
-			defer rows.Close()
-			for rows.Next() {
-				var ov rewards.OperatorValue
-				if err := rows.Scan(&ov.Operator, &ov.Value, &ov.Proportion); err == nil {
-					resp.Results = append(resp.Results, ov)
-				}
-			}
-		}
-	}
-
-	// If still running, check Temporal for latest status
-	if resp.Status == "running" && config.TemporalClient != nil {
-		desc, err := config.TemporalClient.DescribeWorkflowExecution(r.Context(), resp.WorkflowID, resp.RunID)
-		if err == nil && desc.WorkflowExecutionInfo != nil {
-			switch desc.WorkflowExecutionInfo.Status.String() {
-			case "Completed":
-				resp.Status = "completed"
-			case "Failed", "Terminated", "TimedOut", "Canceled":
-				resp.Status = "failed"
-			}
-		}
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(resp)
 }

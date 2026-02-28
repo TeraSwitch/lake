@@ -283,11 +283,6 @@ func main() {
 		rewards.SetBinaryPath(shapleyBin)
 	}
 
-	// Initialize rewards cache (background epoch-based Shapley computation)
-	rc := rewards.NewRewardsCache(config.DB)
-	handlers.SetRewardsCache(rc)
-	rc.Start()
-
 	// Initialize status cache for fast page loads
 	handlers.InitStatusCache()
 	// Note: StopStatusCache() is called explicitly before server shutdown, not deferred
@@ -482,8 +477,7 @@ func main() {
 		r.Post("/api/rewards/compare", handlers.PostRewardsCompare)
 		r.Post("/api/rewards/link-estimate", handlers.PostRewardsLinkEstimate)
 		r.Get("/api/rewards/live-network", handlers.GetRewardsLiveNetwork)
-		r.Post("/api/rewards/simulations", handlers.PostStartSimulation)
-		r.Get("/api/rewards/simulations/{id}", handlers.GetSimulationStatus)
+		r.Get("/api/rewards/workflows/{id}", handlers.GetRewardsWorkflowResult)
 
 		// Traffic analytics routes
 		r.Get("/api/traffic/data", handlers.GetTrafficData)
@@ -687,8 +681,6 @@ func main() {
 	// This triggers ctx.Done() in all active request handlers
 	serverCancel()
 
-	// Stop background cache goroutines (they may be blocking on DB queries)
-	rc.Stop()
 	handlers.StopStatusCache()
 
 	// Give existing connections a short time to complete after context cancellation

@@ -1,20 +1,35 @@
 package rewards
 
-import "time"
+import apirewards "github.com/malbeclabs/lake/api/rewards"
 
-// SimulationRequest is the workflow input.
-type SimulationRequest struct {
-	ID               string  `json:"id"`
-	OperatorUptime   float64 `json:"operator_uptime"`
-	ContiguityBonus  float64 `json:"contiguity_bonus"`
-	DemandMultiplier float64 `json:"demand_multiplier"`
+// CompareInput is the input for the Compare workflow.
+type CompareInput struct {
+	Baseline       apirewards.ShapleyInput    `json:"baseline"`
+	Modified       apirewards.ShapleyInput    `json:"modified"`
+	CachedBaseline []apirewards.OperatorValue `json:"cached_baseline,omitempty"`
 }
 
-// SimulationResult is the final workflow output stored in PostgreSQL.
-type SimulationResult struct {
-	ID          string     `json:"id"`
-	Status      string     `json:"status"`
-	StartedAt   time.Time  `json:"started_at"`
-	CompletedAt *time.Time `json:"completed_at,omitempty"`
-	Error       string     `json:"error,omitempty"`
+// LinkEstimateInput is the input for the LinkEstimate workflow.
+type LinkEstimateInput struct {
+	Operator       string                     `json:"operator"`
+	Network        apirewards.ShapleyInput    `json:"network"`
+	TopologyHash   string                     `json:"topology_hash,omitempty"`
+	CachedBaseline []apirewards.OperatorValue `json:"cached_baseline,omitempty"`
+}
+
+// StoreCacheInput is the input for the StoreCache activity.
+type StoreCacheInput struct {
+	Epoch        int64                           `json:"epoch"`
+	Results      []apirewards.OperatorValue      `json:"results"`
+	TotalValue   float64                         `json:"total_value"`
+	LiveNetwork  *apirewards.LiveNetworkResponse `json:"live_network"`
+	TopologyHash string                          `json:"topology_hash"`
+}
+
+// StoreLinkEstimateInput is the input for the StoreLinkEstimate activity.
+type StoreLinkEstimateInput struct {
+	Operator     string  `json:"operator"`
+	TopologyHash string  `json:"topology_hash"`
+	Results      []byte  `json:"results"`
+	TotalValue   float64 `json:"total_value"`
 }

@@ -34,6 +34,7 @@ require (
 	github.com/testcontainers/testcontainers-go/modules/clickhouse v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/neo4j v0.40.0
 	github.com/testcontainers/testcontainers-go/modules/postgres v0.40.0
+	go.temporal.io/api v1.62.1
 	go.temporal.io/sdk v1.40.0
 	golang.org/x/sync v0.19.0
 	golang.org/x/time v0.14.0
@@ -163,7 +164,6 @@ require (
 	go.opentelemetry.io/otel v1.39.0 // indirect
 	go.opentelemetry.io/otel/metric v1.39.0 // indirect
 	go.opentelemetry.io/otel/trace v1.39.0 // indirect
-	go.temporal.io/api v1.62.1 // indirect
 	go.uber.org/multierr v1.11.0 // indirect
 	go.uber.org/ratelimit v0.2.0 // indirect
 	go.uber.org/zap v1.27.1 // indirect

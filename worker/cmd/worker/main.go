@@ -126,16 +126,18 @@ func run() error {
 
 	// Create activities with all dependencies
 	activities := &rewards.Activities{
-		ClickHouse:     chConn,
-		PgPool:         pgPool,
-		ShapleyBinPath: envOrDefault("SHAPLEY_CLI_PATH", "./shapley-cli/target/release/shapley-cli"),
+		ClickHouse: chConn,
+		PgPool:     pgPool,
 	}
 
 	// Create and start worker
 	w := worker.New(tc, rewards.TaskQueue, worker.Options{})
 
-	// Register rewards workflow domain
-	w.RegisterWorkflow(rewards.RewardsSimulation)
+	// Register rewards workflows
+	w.RegisterWorkflow(rewards.SimulateWorkflow)
+	w.RegisterWorkflow(rewards.SimulateCronWorkflow)
+	w.RegisterWorkflow(rewards.CompareWorkflow)
+	w.RegisterWorkflow(rewards.LinkEstimateWorkflow)
 	w.RegisterActivity(activities)
 
 	log.Info("starting worker", "task_queue", rewards.TaskQueue)

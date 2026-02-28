@@ -3,16 +3,15 @@ import { useQuery, useMutation } from '@tanstack/react-query'
 import {
   fetchRewardsLiveNetwork,
   fetchRewardsSimulate,
-  fetchRewardsCompare,
-  fetchRewardsLinkEstimate,
-  startRewardsSimulation,
-  fetchSimulationStatus,
+  startRewardsCompare,
+  startRewardsLinkEstimate,
+  fetchRewardsWorkflowResult,
   type RewardsNetwork,
   type OperatorValue,
   type OperatorDelta,
   type RewardsLinkResult,
   type RewardsCompareResponse,
-  type SimulationStatusResponse,
+  type RewardsLinkEstimateResponse,
 } from '@/lib/api'
 import { Loader2, Play, GitCompare, Unlink, Plus, RefreshCw, TrendingUp, TrendingDown, Coins, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { useDelayedLoading } from '@/hooks/use-delayed-loading'
@@ -570,130 +569,6 @@ function ContributorSummary({ network, operatorNames, operatorPks }: { network: 
   )
 }
 
-// Custom async simulation via Temporal
-function CustomSimulation({ operatorNames, operatorPks }: { operatorNames: Map<string, string>; operatorPks: Map<string, string> }) {
-  const [operatorUptime, setOperatorUptime] = useState('1.0')
-  const [contiguityBonus, setContiguityBonus] = useState('0.1')
-  const [demandMultiplier, setDemandMultiplier] = useState('1.0')
-  const [simulation, setSimulation] = useState<SimulationStatusResponse | null>(null)
-  const [isStarting, setIsStarting] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
-  // Clean up polling on unmount
-  useEffect(() => {
-    return () => {
-      if (pollRef.current) clearInterval(pollRef.current)
-    }
-  }, [])
-
-  const startSimulation = async () => {
-    setError(null)
-    setIsStarting(true)
-    try {
-      const result = await startRewardsSimulation({
-        operator_uptime: parseFloat(operatorUptime) || 1.0,
-        contiguity_bonus: parseFloat(contiguityBonus) || 0.1,
-        demand_multiplier: parseFloat(demandMultiplier) || 1.0,
-      })
-      setSimulation(result)
-
-      // Start polling for results
-      if (pollRef.current) clearInterval(pollRef.current)
-      pollRef.current = setInterval(async () => {
-        try {
-          const status = await fetchSimulationStatus(result.id)
-          setSimulation(status)
-          if (status.status !== 'running') {
-            if (pollRef.current) clearInterval(pollRef.current)
-            pollRef.current = null
-          }
-        } catch (e) {
-          // Keep polling on transient errors
-        }
-      }, 3000)
-    } catch (e) {
-      setError(e instanceof Error ? e.message : 'Failed to start simulation')
-    } finally {
-      setIsStarting(false)
-    }
-  }
-
-  const elapsed = useElapsed(simulation?.status === 'running')
-
-  return (
-    <div className="bg-card border border-border rounded-lg p-4 space-y-4">
-      <h3 className="text-sm font-medium">Custom Simulation (Temporal)</h3>
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
-        <div>
-          <label className="block text-xs text-muted-foreground mb-1">Operator Uptime</label>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            max="1"
-            value={operatorUptime}
-            onChange={(e) => setOperatorUptime(e.target.value)}
-            className="w-full px-2 py-1.5 text-sm bg-background border border-border rounded"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-muted-foreground mb-1">Contiguity Bonus</label>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            value={contiguityBonus}
-            onChange={(e) => setContiguityBonus(e.target.value)}
-            className="w-full px-2 py-1.5 text-sm bg-background border border-border rounded"
-          />
-        </div>
-        <div>
-          <label className="block text-xs text-muted-foreground mb-1">Demand Multiplier</label>
-          <input
-            type="number"
-            step="0.1"
-            min="0"
-            value={demandMultiplier}
-            onChange={(e) => setDemandMultiplier(e.target.value)}
-            className="w-full px-2 py-1.5 text-sm bg-background border border-border rounded"
-          />
-        </div>
-        <div className="flex items-end">
-          <button
-            onClick={startSimulation}
-            disabled={isStarting || simulation?.status === 'running'}
-            className="flex items-center gap-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50"
-          >
-            {isStarting || simulation?.status === 'running'
-              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              : <Play className="h-3.5 w-3.5" />}
-            {simulation?.status === 'running'
-              ? `Running... ${elapsed > 0 ? formatElapsed(elapsed) : ''}`
-              : 'Run Simulation'}
-          </button>
-        </div>
-      </div>
-
-      {error && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded p-2 text-sm text-red-500">
-          {error}
-        </div>
-      )}
-
-      {simulation?.status === 'failed' && (
-        <div className="bg-red-500/10 border border-red-500/30 rounded p-2 text-sm text-red-500">
-          Simulation failed: {simulation.error || 'Unknown error'}
-        </div>
-      )}
-
-      {simulation?.status === 'completed' && simulation.results && simulation.results.length > 0 && (
-        <OperatorTable results={simulation.results} title="Custom Simulation Results" operatorNames={operatorNames} operatorPks={operatorPks} />
-      )}
-    </div>
-  )
-}
-
 function RewardsPageSkeleton() {
   return (
     <div className="flex-1 overflow-auto">
@@ -722,13 +597,31 @@ export function RewardsPage() {
   const [modifiedNetwork, setModifiedNetwork] = useState<RewardsNetwork | null>(() => getStoredNetwork())
   const [selectedOperator, setSelectedOperator] = useState<string>('')
 
+  // Workflow IDs stored in URL search params for reconnection on page reload
+  const compareWorkflowId = searchParams.get('compare_wf') ?? ''
+  const linkWorkflowId = searchParams.get('link_wf') ?? ''
+
+  const setCompareWorkflowId = (id: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (id) next.set('compare_wf', id)
+      else next.delete('compare_wf')
+      return next
+    }, { replace: true })
+  }
+
+  const setLinkWorkflowId = (id: string) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev)
+      if (id) next.set('link_wf', id)
+      else next.delete('link_wf')
+      return next
+    }, { replace: true })
+  }
+
   // Simulation results
   const [compareResults, setCompareResults] = useState<RewardsCompareResponse | null>(null)
   const [linkResults, setLinkResults] = useState<RewardsLinkResult[] | null>(null)
-
-  // AbortControllers for cancellation
-  const compareAbortRef = useRef<AbortController | null>(null)
-  const linkAbortRef = useRef<AbortController | null>(null)
 
   // Load live network automatically (fetch once, long stale time since cache handles freshness)
   const liveNetworkQuery = useQuery({
@@ -777,37 +670,90 @@ export function RewardsPage() {
     }
   }
 
-  // Compare mutation
+  // Start compare workflow
   const compareMutation = useMutation({
     mutationFn: async () => {
       if (!baselineNetwork || !modifiedNetwork) throw new Error('Networks not loaded')
-      compareAbortRef.current = new AbortController()
-      return fetchRewardsCompare(baselineNetwork, modifiedNetwork, compareAbortRef.current.signal)
+      return startRewardsCompare(baselineNetwork, modifiedNetwork)
     },
     onSuccess: (data) => {
-      setCompareResults(data)
+      setCompareWorkflowId(data.workflow_id)
     },
   })
 
-  // Link estimate mutation
+  // Poll compare workflow for results
+  const compareWorkflowQuery = useQuery({
+    queryKey: ['rewardsWorkflow', compareWorkflowId],
+    queryFn: () => fetchRewardsWorkflowResult<RewardsCompareResponse>(compareWorkflowId),
+    enabled: !!compareWorkflowId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      if (status === 'completed' || status === 'failed') return false
+      return 2000
+    },
+    refetchOnWindowFocus: false,
+  })
+
+  // When compare workflow completes or fails, store results and clear workflow ID
+  useEffect(() => {
+    if (!compareWorkflowQuery.data) return
+    if (compareWorkflowQuery.data.status === 'completed' && compareWorkflowQuery.data.result) {
+      setCompareResults(compareWorkflowQuery.data.result)
+      setCompareWorkflowId('')
+    } else if (compareWorkflowQuery.data.status === 'failed') {
+      setCompareWorkflowId('')
+    }
+  }, [compareWorkflowQuery.data])
+
+  // Start link estimate workflow (or get cached result)
   const linkEstimateMutation = useMutation({
     mutationFn: async () => {
       if (!baselineNetwork || !selectedOperator) throw new Error('Network or operator not selected')
-      linkAbortRef.current = new AbortController()
-      return fetchRewardsLinkEstimate(selectedOperator, baselineNetwork, linkAbortRef.current.signal)
+      return startRewardsLinkEstimate(selectedOperator, baselineNetwork)
     },
     onSuccess: (data) => {
-      setLinkResults(data.results)
+      if (data.status === 'completed') {
+        setLinkResults(data.result.results)
+      } else {
+        setLinkWorkflowId(data.workflow_id)
+      }
     },
   })
 
+  // Poll link estimate workflow for results
+  const linkWorkflowQuery = useQuery({
+    queryKey: ['rewardsWorkflow', linkWorkflowId],
+    queryFn: () => fetchRewardsWorkflowResult<RewardsLinkEstimateResponse>(linkWorkflowId),
+    enabled: !!linkWorkflowId,
+    refetchInterval: (query) => {
+      const status = query.state.data?.status
+      if (status === 'completed' || status === 'failed') return false
+      return 2000
+    },
+    refetchOnWindowFocus: false,
+  })
+
+  // When link estimate workflow completes or fails, store results and clear workflow ID
+  useEffect(() => {
+    if (!linkWorkflowQuery.data) return
+    if (linkWorkflowQuery.data.status === 'completed' && linkWorkflowQuery.data.result) {
+      setLinkResults(linkWorkflowQuery.data.result.results)
+      setLinkWorkflowId('')
+    } else if (linkWorkflowQuery.data.status === 'failed') {
+      setLinkWorkflowId('')
+    }
+  }, [linkWorkflowQuery.data])
+
+  const compareRunning = !!compareWorkflowId || compareMutation.isPending
+  const linkRunning = !!linkWorkflowId || linkEstimateMutation.isPending
+
   const cancelCompare = useCallback(() => {
-    compareAbortRef.current?.abort()
+    setCompareWorkflowId('')
     compareMutation.reset()
   }, [compareMutation])
 
   const cancelLinkEstimate = useCallback(() => {
-    linkAbortRef.current?.abort()
+    setLinkWorkflowId('')
     linkEstimateMutation.reset()
   }, [linkEstimateMutation])
 
@@ -838,12 +784,19 @@ export function RewardsPage() {
     ).length
   }, [baselineNetwork, selectedOperator])
 
-  const compareElapsed = useElapsed(compareMutation.isPending)
-  const linkElapsed = useElapsed(linkEstimateMutation.isPending)
+  const compareElapsed = useElapsed(compareRunning)
+  const linkElapsed = useElapsed(linkRunning)
 
   const networkLoading = liveNetworkQuery.isFetching
-  const isLoading = networkLoading || compareMutation.isPending || linkEstimateMutation.isPending
-  const error = (simulateQuery.error instanceof Error && simulateQuery.error.message !== 'computing' ? simulateQuery.error : null) || compareMutation.error || linkEstimateMutation.error || liveNetworkQuery.error
+  const isLoading = networkLoading || compareRunning || linkRunning
+
+  const compareError = compareWorkflowQuery.data?.status === 'failed'
+    ? new Error(compareWorkflowQuery.data.error || 'Comparison failed')
+    : compareMutation.error
+  const linkError = linkWorkflowQuery.data?.status === 'failed'
+    ? new Error(linkWorkflowQuery.data.error || 'Link estimate failed')
+    : linkEstimateMutation.error
+  const error = (simulateQuery.error instanceof Error && simulateQuery.error.message !== 'computing' ? simulateQuery.error : null) || compareError || linkError || liveNetworkQuery.error
 
   const showSkeleton = useDelayedLoading(liveNetworkQuery.isLoading && !baselineNetwork)
 
@@ -963,7 +916,6 @@ export function RewardsPage() {
               </div>
             ) : null}
 
-            <CustomSimulation operatorNames={operatorNames} operatorPks={operatorPks} />
           </div>
         )}
 
@@ -1018,13 +970,13 @@ export function RewardsPage() {
                 <div className="flex items-center gap-2">
                   <button
                     onClick={() => compareMutation.mutate()}
-                    disabled={networkLoading || compareMutation.isPending || addedLinks.length === 0}
+                    disabled={networkLoading || compareRunning || addedLinks.length === 0}
                     className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
                   >
-                    {compareMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompare className="h-4 w-4" />}
-                    {compareMutation.isPending ? `Running... ${compareElapsed > 0 ? formatElapsed(compareElapsed) : ''}` : 'Run Comparison (~1 min)'}
+                    {compareRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <GitCompare className="h-4 w-4" />}
+                    {compareRunning ? `Running... ${compareElapsed > 0 ? formatElapsed(compareElapsed) : ''}` : 'Run Comparison (~1 min)'}
                   </button>
-                  {compareMutation.isPending && (
+                  {compareRunning && (
                     <button
                       onClick={cancelCompare}
                       className="flex items-center gap-1 px-2 py-1.5 text-xs border border-border rounded hover:bg-muted/50 transition-colors"
@@ -1072,13 +1024,13 @@ export function RewardsPage() {
                   </select>
                   <button
                     onClick={() => linkEstimateMutation.mutate()}
-                    disabled={networkLoading || linkEstimateMutation.isPending || !selectedOperator}
+                    disabled={networkLoading || linkRunning || !selectedOperator}
                     className="flex items-center gap-2 px-4 py-2 text-sm bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors disabled:opacity-50"
                   >
-                    {linkEstimateMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlink className="h-4 w-4" />}
+                    {linkRunning ? <Loader2 className="h-4 w-4 animate-spin" /> : <Unlink className="h-4 w-4" />}
                     Estimate Link Values
                   </button>
-                  {linkEstimateMutation.isPending && (
+                  {linkRunning && (
                     <button
                       onClick={cancelLinkEstimate}
                       className="flex items-center gap-1 px-2 py-1.5 text-xs border border-border rounded hover:bg-muted/50 transition-colors"
@@ -1087,12 +1039,12 @@ export function RewardsPage() {
                     </button>
                   )}
                 </div>
-                {linkEstimateMutation.isPending && (
+                {linkRunning && (
                   <p className="text-sm text-muted-foreground">
                     Estimating link values ({selectedOperatorLinkCount + 1} simulations, may take a few minutes)... {linkElapsed > 0 && formatElapsed(linkElapsed)}
                   </p>
                 )}
-                {!linkEstimateMutation.isPending && (
+                {!linkRunning && (
                   <p className="text-xs text-muted-foreground">
                     Link values are approximations. They may not sum exactly to the contributor's total Shapley value.
                   </p>

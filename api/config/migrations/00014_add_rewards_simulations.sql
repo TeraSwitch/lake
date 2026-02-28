@@ -1,29 +1,18 @@
 -- +goose Up
 
+-- Stores rewards simulation results computed by the Temporal scheduled workflow.
+-- Only the most recent row matters; older rows are kept for history.
 CREATE TABLE rewards_simulations (
-    id TEXT PRIMARY KEY,
-    workflow_id TEXT NOT NULL,
-    run_id TEXT NOT NULL,
-    status TEXT NOT NULL DEFAULT 'running',
-    params JSONB NOT NULL DEFAULT '{}',
-    error TEXT,
-    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-    completed_at TIMESTAMPTZ
-);
-
-CREATE INDEX idx_rewards_simulations_status ON rewards_simulations(status);
-
-CREATE TABLE rewards_simulation_results (
     id SERIAL PRIMARY KEY,
-    simulation_id TEXT NOT NULL REFERENCES rewards_simulations(id) ON DELETE CASCADE,
-    operator TEXT NOT NULL,
-    value DOUBLE PRECISION NOT NULL,
-    proportion DOUBLE PRECISION NOT NULL
+    epoch BIGINT NOT NULL DEFAULT 0,
+    results JSONB NOT NULL DEFAULT '[]',
+    total_value DOUBLE PRECISION NOT NULL DEFAULT 0,
+    live_network JSONB NOT NULL DEFAULT '{}',
+    computed_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
-CREATE INDEX idx_rewards_simulation_results_sim_id ON rewards_simulation_results(simulation_id);
+CREATE INDEX idx_rewards_simulations_computed_at ON rewards_simulations(computed_at DESC);
 
 -- +goose Down
 
-DROP TABLE IF EXISTS rewards_simulation_results;
 DROP TABLE IF EXISTS rewards_simulations;

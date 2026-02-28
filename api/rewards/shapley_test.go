@@ -233,10 +233,15 @@ func TestCompare_DeltasConsistent(t *testing.T) {
 		Device{Device: "c01-dzx-001", Operator: "gamma", Edge: 10, City: "c"},
 	)
 
-	result, err := Compare(context.Background(), baseline, modified)
+	baselineResults, err := Simulate(context.Background(), baseline)
 	if err != nil {
-		t.Fatalf("Compare: %v", err)
+		t.Fatalf("baseline Simulate: %v", err)
 	}
+	modifiedResults, err := Simulate(context.Background(), modified)
+	if err != nil {
+		t.Fatalf("modified Simulate: %v", err)
+	}
+	result := BuildCompareResult(baselineResults, modifiedResults)
 
 	for _, d := range result.Deltas {
 		expected := d.ModifiedValue - d.BaselineValue
