@@ -59,6 +59,7 @@ services:
       POSTGRES_USER: lakedev
       POSTGRES_PWD: lakedev
       POSTGRES_SEEDS: postgres
+      DEFAULT_NAMESPACE_RETENTION: 24h
     depends_on:
       - postgres
 
