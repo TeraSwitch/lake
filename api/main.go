@@ -271,6 +271,13 @@ func main() {
 		defer func() { _ = config.CloseNeo4j() }()
 	}
 
+	// Load Temporal (optional - log warning if unavailable)
+	if err := config.LoadTemporal(); err != nil {
+		log.Printf("Warning: Temporal not available: %v", err)
+	} else {
+		defer config.CloseTemporal()
+	}
+
 	// Configure shapley-cli binary path for rewards calculations
 	if shapleyBin := os.Getenv("SHAPLEY_CLI_PATH"); shapleyBin != "" {
 		rewards.SetBinaryPath(shapleyBin)
@@ -475,6 +482,8 @@ func main() {
 		r.Post("/api/rewards/compare", handlers.PostRewardsCompare)
 		r.Post("/api/rewards/link-estimate", handlers.PostRewardsLinkEstimate)
 		r.Get("/api/rewards/live-network", handlers.GetRewardsLiveNetwork)
+		r.Post("/api/rewards/simulations", handlers.PostStartSimulation)
+		r.Get("/api/rewards/simulations/{id}", handlers.GetSimulationStatus)
 
 		// Traffic analytics routes
 		r.Get("/api/traffic/data", handlers.GetTrafficData)

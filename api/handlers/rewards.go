@@ -8,9 +8,15 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/go-chi/chi/v5"
+	"github.com/google/uuid"
+	"go.temporal.io/sdk/client"
+
+	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers/dberror"
 	"github.com/malbeclabs/lake/api/metrics"
 	"github.com/malbeclabs/lake/api/rewards"
+	workerrewards "github.com/malbeclabs/lake/worker/pkg/rewards"
 	"golang.org/x/sync/errgroup"
 )
 
@@ -173,4 +179,152 @@ func GetRewardsLiveNetwork(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(liveNet)
+}
+
+// --- Temporal-based simulation endpoints ---
+
+// StartSimulationRequest is the JSON body for POST /api/rewards/simulations.
+type StartSimulationRequest struct {
+	OperatorUptime   float64 `json:"operator_uptime"`
+	ContiguityBonus  float64 `json:"contiguity_bonus"`
+	DemandMultiplier float64 `json:"demand_multiplier"`
+}
+
+// SimulationStatusResponse is returned by both POST and GET simulation endpoints.
+type SimulationStatusResponse struct {
+	ID          string                  `json:"id"`
+	WorkflowID  string                  `json:"workflow_id"`
+	RunID       string                  `json:"run_id"`
+	Status      string                  `json:"status"`
+	Params      *StartSimulationRequest `json:"params,omitempty"`
+	Results     []rewards.OperatorValue `json:"results,omitempty"`
+	Error       string                  `json:"error,omitempty"`
+	CreatedAt   time.Time               `json:"created_at"`
+	CompletedAt *time.Time              `json:"completed_at,omitempty"`
+}
+
+// PostStartSimulation starts a new rewards simulation via Temporal workflow.
+func PostStartSimulation(w http.ResponseWriter, r *http.Request) {
+	if config.TemporalClient == nil {
+		http.Error(w, `{"error":"temporal not available"}`, http.StatusServiceUnavailable)
+		return
+	}
+
+	var req StartSimulationRequest
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, `{"error":"invalid request body"}`, http.StatusBadRequest)
+		return
+	}
+
+	simID := uuid.New().String()
+
+	workflowOpts := client.StartWorkflowOptions{
+		ID:        "rewards-simulation-" + simID,
+		TaskQueue: workerrewards.TaskQueue,
+	}
+
+	simReq := workerrewards.SimulationRequest{
+		ID:               simID,
+		OperatorUptime:   req.OperatorUptime,
+		ContiguityBonus:  req.ContiguityBonus,
+		DemandMultiplier: req.DemandMultiplier,
+	}
+
+	run, err := config.TemporalClient.ExecuteWorkflow(r.Context(), workflowOpts, workerrewards.RewardsSimulation, simReq)
+	if err != nil {
+		log.Printf("Failed to start rewards simulation workflow: %v", err)
+		http.Error(w, `{"error":"failed to start simulation"}`, http.StatusInternalServerError)
+		return
+	}
+
+	// Record in PostgreSQL
+	params, _ := json.Marshal(req)
+	_, dbErr := config.PgPool.Exec(r.Context(), `
+		INSERT INTO rewards_simulations (id, workflow_id, run_id, status, params)
+		VALUES ($1, $2, $3, $4, $5)
+	`, simID, run.GetID(), run.GetRunID(), "running", params)
+	if dbErr != nil {
+		log.Printf("Failed to record simulation: %v", dbErr)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(SimulationStatusResponse{
+		ID:         simID,
+		WorkflowID: run.GetID(),
+		RunID:      run.GetRunID(),
+		Status:     "running",
+		Params:     &req,
+		CreatedAt:  time.Now().UTC(),
+	})
+}
+
+// GetSimulationStatus returns the status and results of a rewards simulation.
+func GetSimulationStatus(w http.ResponseWriter, r *http.Request) {
+	simID := chi.URLParam(r, "id")
+	if simID == "" {
+		http.Error(w, `{"error":"missing simulation id"}`, http.StatusBadRequest)
+		return
+	}
+
+	var resp SimulationStatusResponse
+	var paramsJSON []byte
+	var errStr *string
+
+	err := config.PgPool.QueryRow(r.Context(), `
+		SELECT id, workflow_id, run_id, status, params, error, created_at, completed_at
+		FROM rewards_simulations
+		WHERE id = $1
+	`, simID).Scan(
+		&resp.ID, &resp.WorkflowID, &resp.RunID, &resp.Status,
+		&paramsJSON, &errStr, &resp.CreatedAt, &resp.CompletedAt,
+	)
+	if err != nil {
+		http.Error(w, `{"error":"simulation not found"}`, http.StatusNotFound)
+		return
+	}
+
+	if errStr != nil {
+		resp.Error = *errStr
+	}
+
+	var params StartSimulationRequest
+	if err := json.Unmarshal(paramsJSON, &params); err == nil {
+		resp.Params = &params
+	}
+
+	// If completed, fetch results
+	if resp.Status == "completed" {
+		rows, err := config.PgPool.Query(r.Context(), `
+			SELECT operator, value, proportion
+			FROM rewards_simulation_results
+			WHERE simulation_id = $1
+			ORDER BY proportion DESC
+		`, simID)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var ov rewards.OperatorValue
+				if err := rows.Scan(&ov.Operator, &ov.Value, &ov.Proportion); err == nil {
+					resp.Results = append(resp.Results, ov)
+				}
+			}
+		}
+	}
+
+	// If still running, check Temporal for latest status
+	if resp.Status == "running" && config.TemporalClient != nil {
+		desc, err := config.TemporalClient.DescribeWorkflowExecution(r.Context(), resp.WorkflowID, resp.RunID)
+		if err == nil && desc.WorkflowExecutionInfo != nil {
+			switch desc.WorkflowExecutionInfo.Status.String() {
+			case "Completed":
+				resp.Status = "completed"
+			case "Failed", "Terminated", "TimedOut", "Canceled":
+				resp.Status = "failed"
+			}
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
