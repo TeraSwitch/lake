@@ -5,11 +5,14 @@ import {
   fetchRewardsSimulate,
   fetchRewardsCompare,
   fetchRewardsLinkEstimate,
+  startRewardsSimulation,
+  fetchSimulationStatus,
   type RewardsNetwork,
   type OperatorValue,
   type OperatorDelta,
   type RewardsLinkResult,
   type RewardsCompareResponse,
+  type SimulationStatusResponse,
 } from '@/lib/api'
 import { Loader2, Play, GitCompare, Unlink, Plus, RefreshCw, TrendingUp, TrendingDown, Coins, ChevronUp, ChevronDown, X } from 'lucide-react'
 import { useDelayedLoading } from '@/hooks/use-delayed-loading'
@@ -567,6 +570,130 @@ function ContributorSummary({ network, operatorNames, operatorPks }: { network: 
   )
 }
 
+// Custom async simulation via Temporal
+function CustomSimulation({ operatorNames, operatorPks }: { operatorNames: Map<string, string>; operatorPks: Map<string, string> }) {
+  const [operatorUptime, setOperatorUptime] = useState('1.0')
+  const [contiguityBonus, setContiguityBonus] = useState('0.1')
+  const [demandMultiplier, setDemandMultiplier] = useState('1.0')
+  const [simulation, setSimulation] = useState<SimulationStatusResponse | null>(null)
+  const [isStarting, setIsStarting] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => {
+      if (pollRef.current) clearInterval(pollRef.current)
+    }
+  }, [])
+
+  const startSimulation = async () => {
+    setError(null)
+    setIsStarting(true)
+    try {
+      const result = await startRewardsSimulation({
+        operator_uptime: parseFloat(operatorUptime) || 1.0,
+        contiguity_bonus: parseFloat(contiguityBonus) || 0.1,
+        demand_multiplier: parseFloat(demandMultiplier) || 1.0,
+      })
+      setSimulation(result)
+
+      // Start polling for results
+      if (pollRef.current) clearInterval(pollRef.current)
+      pollRef.current = setInterval(async () => {
+        try {
+          const status = await fetchSimulationStatus(result.id)
+          setSimulation(status)
+          if (status.status !== 'running') {
+            if (pollRef.current) clearInterval(pollRef.current)
+            pollRef.current = null
+          }
+        } catch (e) {
+          // Keep polling on transient errors
+        }
+      }, 3000)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Failed to start simulation')
+    } finally {
+      setIsStarting(false)
+    }
+  }
+
+  const elapsed = useElapsed(simulation?.status === 'running')
+
+  return (
+    <div className="bg-card border border-border rounded-lg p-4 space-y-4">
+      <h3 className="text-sm font-medium">Custom Simulation (Temporal)</h3>
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">Operator Uptime</label>
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            max="1"
+            value={operatorUptime}
+            onChange={(e) => setOperatorUptime(e.target.value)}
+            className="w-full px-2 py-1.5 text-sm bg-background border border-border rounded"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">Contiguity Bonus</label>
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            value={contiguityBonus}
+            onChange={(e) => setContiguityBonus(e.target.value)}
+            className="w-full px-2 py-1.5 text-sm bg-background border border-border rounded"
+          />
+        </div>
+        <div>
+          <label className="block text-xs text-muted-foreground mb-1">Demand Multiplier</label>
+          <input
+            type="number"
+            step="0.1"
+            min="0"
+            value={demandMultiplier}
+            onChange={(e) => setDemandMultiplier(e.target.value)}
+            className="w-full px-2 py-1.5 text-sm bg-background border border-border rounded"
+          />
+        </div>
+        <div className="flex items-end">
+          <button
+            onClick={startSimulation}
+            disabled={isStarting || simulation?.status === 'running'}
+            className="flex items-center gap-2 px-4 py-1.5 text-sm bg-blue-600 text-white rounded hover:bg-blue-700 transition-colors disabled:opacity-50"
+          >
+            {isStarting || simulation?.status === 'running'
+              ? <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              : <Play className="h-3.5 w-3.5" />}
+            {simulation?.status === 'running'
+              ? `Running... ${elapsed > 0 ? formatElapsed(elapsed) : ''}`
+              : 'Run Simulation'}
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded p-2 text-sm text-red-500">
+          {error}
+        </div>
+      )}
+
+      {simulation?.status === 'failed' && (
+        <div className="bg-red-500/10 border border-red-500/30 rounded p-2 text-sm text-red-500">
+          Simulation failed: {simulation.error || 'Unknown error'}
+        </div>
+      )}
+
+      {simulation?.status === 'completed' && simulation.results && simulation.results.length > 0 && (
+        <OperatorTable results={simulation.results} title="Custom Simulation Results" operatorNames={operatorNames} operatorPks={operatorPks} />
+      )}
+    </div>
+  )
+}
+
 function RewardsPageSkeleton() {
   return (
     <div className="flex-1 overflow-auto">
@@ -835,6 +962,8 @@ export function RewardsPage() {
                 No simulation results available
               </div>
             ) : null}
+
+            <CustomSimulation operatorNames={operatorNames} operatorPks={operatorPks} />
           </div>
         )}
 

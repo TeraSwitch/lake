@@ -4438,3 +4438,49 @@ export async function fetchRewardsLinkEstimate(
   }
   return res.json()
 }
+
+// Temporal-based async simulation types and functions
+
+export interface SimulationParams {
+  operator_uptime: number
+  contiguity_bonus: number
+  demand_multiplier: number
+}
+
+export interface SimulationStatusResponse {
+  id: string
+  workflow_id: string
+  run_id: string
+  status: string
+  params?: SimulationParams
+  results?: OperatorValue[]
+  error?: string
+  created_at: string
+  completed_at?: string
+}
+
+export async function startRewardsSimulation(
+  params: SimulationParams,
+): Promise<SimulationStatusResponse> {
+  const res = await fetchWithRetry('/api/rewards/simulations', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(params),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || 'Failed to start simulation')
+  }
+  return res.json()
+}
+
+export async function fetchSimulationStatus(
+  id: string,
+): Promise<SimulationStatusResponse> {
+  const res = await fetchWithRetry(`/api/rewards/simulations/${id}`)
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || 'Failed to fetch simulation status')
+  }
+  return res.json()
+}
