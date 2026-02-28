@@ -62,7 +62,8 @@ type WorkflowRun struct {
 	ThinkingSteps   json.RawMessage `json:"thinking_steps"`   // Legacy - kept for backward compatibility
 	ExecutedQueries json.RawMessage `json:"executed_queries"` // Legacy - kept for backward compatibility
 	Steps           json.RawMessage `json:"steps"`            // Unified timeline of all steps in order
-	FinalAnswer     *string         `json:"final_answer,omitempty"`
+	FinalAnswer       *string         `json:"final_answer,omitempty"`
+	FollowUpQuestions json.RawMessage `json:"follow_up_questions,omitempty"`
 
 	// Metrics
 	LLMCalls     int `json:"llm_calls"`
@@ -106,12 +107,12 @@ func CreateWorkflowRun(ctx context.Context, sessionID uuid.UUID, question string
 		INSERT INTO workflow_runs (session_id, user_question, env)
 		VALUES ($1, $2, $3)
 		RETURNING id, session_id, status, user_question, iteration, messages, thinking_steps,
-		          executed_queries, steps, final_answer, llm_calls, input_tokens, output_tokens,
+		          executed_queries, steps, final_answer, follow_up_questions, llm_calls, input_tokens, output_tokens,
 		          started_at, updated_at, completed_at, env, error
 	`, sessionID, question, workflowEnv).Scan(
 		&run.ID, &run.SessionID, &run.Status, &run.UserQuestion,
 		&run.Iteration, &run.Messages, &run.ThinkingSteps, &run.ExecutedQueries, &run.Steps,
-		&run.FinalAnswer, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
+		&run.FinalAnswer, &run.FollowUpQuestions, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
 		&run.StartedAt, &run.UpdatedAt, &run.CompletedAt, &run.Env, &run.Error,
 	)
 	if err != nil {
@@ -216,14 +217,14 @@ func GetWorkflowRun(ctx context.Context, id uuid.UUID) (*WorkflowRun, error) {
 	var run WorkflowRun
 	err := config.PgPool.QueryRow(ctx, `
 		SELECT id, session_id, status, user_question, iteration, messages, thinking_steps,
-		       executed_queries, steps, final_answer, llm_calls, input_tokens, output_tokens,
+		       executed_queries, steps, final_answer, follow_up_questions, llm_calls, input_tokens, output_tokens,
 		       started_at, updated_at, completed_at, env, error
 		FROM workflow_runs
 		WHERE id = $1
 	`, id).Scan(
 		&run.ID, &run.SessionID, &run.Status, &run.UserQuestion,
 		&run.Iteration, &run.Messages, &run.ThinkingSteps, &run.ExecutedQueries, &run.Steps,
-		&run.FinalAnswer, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
+		&run.FinalAnswer, &run.FollowUpQuestions, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
 		&run.StartedAt, &run.UpdatedAt, &run.CompletedAt, &run.Env, &run.Error,
 	)
 	if err != nil {
@@ -259,7 +260,7 @@ func GetRunningWorkflowForSession(ctx context.Context, sessionID uuid.UUID) (*Wo
 	var run WorkflowRun
 	err := config.PgPool.QueryRow(ctx, `
 		SELECT id, session_id, status, user_question, iteration, messages, thinking_steps,
-		       executed_queries, steps, final_answer, llm_calls, input_tokens, output_tokens,
+		       executed_queries, steps, final_answer, follow_up_questions, llm_calls, input_tokens, output_tokens,
 		       started_at, updated_at, completed_at, env, error
 		FROM workflow_runs
 		WHERE session_id = $1 AND status = 'running'
@@ -268,7 +269,7 @@ func GetRunningWorkflowForSession(ctx context.Context, sessionID uuid.UUID) (*Wo
 	`, sessionID).Scan(
 		&run.ID, &run.SessionID, &run.Status, &run.UserQuestion,
 		&run.Iteration, &run.Messages, &run.ThinkingSteps, &run.ExecutedQueries, &run.Steps,
-		&run.FinalAnswer, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
+		&run.FinalAnswer, &run.FollowUpQuestions, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
 		&run.StartedAt, &run.UpdatedAt, &run.CompletedAt, &run.Env, &run.Error,
 	)
 	if err != nil {
@@ -285,7 +286,7 @@ func GetLatestWorkflowForSession(ctx context.Context, sessionID uuid.UUID) (*Wor
 	var run WorkflowRun
 	err := config.PgPool.QueryRow(ctx, `
 		SELECT id, session_id, status, user_question, iteration, messages, thinking_steps,
-		       executed_queries, steps, final_answer, llm_calls, input_tokens, output_tokens,
+		       executed_queries, steps, final_answer, follow_up_questions, llm_calls, input_tokens, output_tokens,
 		       started_at, updated_at, completed_at, env, error
 		FROM workflow_runs
 		WHERE session_id = $1
@@ -294,7 +295,7 @@ func GetLatestWorkflowForSession(ctx context.Context, sessionID uuid.UUID) (*Wor
 	`, sessionID).Scan(
 		&run.ID, &run.SessionID, &run.Status, &run.UserQuestion,
 		&run.Iteration, &run.Messages, &run.ThinkingSteps, &run.ExecutedQueries, &run.Steps,
-		&run.FinalAnswer, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
+		&run.FinalAnswer, &run.FollowUpQuestions, &run.LLMCalls, &run.InputTokens, &run.OutputTokens,
 		&run.StartedAt, &run.UpdatedAt, &run.CompletedAt, &run.Env, &run.Error,
 	)
 	if err != nil {
@@ -523,6 +524,10 @@ func StreamWorkflow(w http.ResponseWriter, r *http.Request) {
 		}
 		if run.FinalAnswer != nil {
 			response.Answer = *run.FinalAnswer
+		}
+		var followUpQuestions []string
+		if err := json.Unmarshal(run.FollowUpQuestions, &followUpQuestions); err == nil {
+			response.FollowUpQuestions = followUpQuestions
 		}
 
 		// Extract executed queries for response

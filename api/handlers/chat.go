@@ -436,6 +436,26 @@ func chatStreamV3(ctx context.Context, req ChatRequest, history []workflow.Conve
 		return
 	}
 
+	// Ensure session exists (frontend may send session_id before syncing)
+	account := GetAccountFromContext(ctx)
+	var accountID *uuid.UUID
+	var anonymousID *string
+	if account != nil {
+		accountID = &account.ID
+	} else if req.AnonymousID != "" {
+		anonymousID = &req.AnonymousID
+	}
+	_, err = config.PgPool.Exec(ctx, `
+		INSERT INTO sessions (id, type, name, content, account_id, anonymous_id)
+		VALUES ($1, 'chat', 'Untitled', '[]', $2, $3)
+		ON CONFLICT (id) DO NOTHING
+	`, sessionUUID, accountID, anonymousID)
+	if err != nil {
+		slog.Error("Failed to ensure session exists", "session_id", req.SessionID, "error", err)
+		sendEvent("error", map[string]string{"error": "Failed to create session. Please try again."})
+		return
+	}
+
 	// Use session's existing env if available (for followup messages), otherwise use request env
 	env := EnvFromContext(ctx)
 	if sessionEnv, err := GetSessionEnv(ctx, sessionUUID); err == nil && sessionEnv != "" {
@@ -449,6 +469,9 @@ func chatStreamV3(ctx context.Context, req ChatRequest, history []workflow.Conve
 		sendEvent("error", map[string]string{"error": "Failed to start workflow. Please try again."})
 		return
 	}
+
+	// Write streaming placeholder to session content so reconnection works on reload
+	writeStreamingPlaceholder(ctx, sessionUUID, run.ID, req.Message, string(env))
 
 	// Start Temporal workflow
 	temporalWorkflowID := "chat-" + run.ID.String()

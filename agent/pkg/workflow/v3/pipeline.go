@@ -1406,9 +1406,11 @@ func (p *Workflow) synthesizeAnswer(ctx context.Context, llm workflow.ToolLLMCli
 const followUpSystemPrompt = `Given a Q&A exchange about DZ network data, suggest 2-3 follow-up questions.
 
 Rules:
+- Keep questions SHORT — under 10 words each, like casual chat
 - Questions should be related to DZ (DoubleZero) network data and analytics
 - Questions should explore different angles or drill deeper into the data
 - Do NOT suggest questions that are already answered by the response (e.g., if the response lists totals, don't ask "what's the total?")
+- Do NOT ask about historical trends, changes over time, or data older than a day
 - Output ONLY the questions, one per line
 - No preamble, no numbering, no bullet points, no explanation
 - Each line must be a complete question ending with ?`

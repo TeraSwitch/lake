@@ -194,15 +194,93 @@ func (a *Activities) FinalizeChat(ctx context.Context, input FinalizeInput) erro
 		return fmt.Errorf("invalid workflow run ID: %w", err)
 	}
 
+	// Marshal follow-up questions
+	followUpJSON, err := json.Marshal(input.Result.FollowUpQuestions)
+	if err != nil {
+		followUpJSON = []byte("[]")
+	}
+
 	// Mark workflow_runs as completed
 	_, err = a.PgPool.Exec(ctx, `
 		UPDATE workflow_runs
-		SET status = 'completed', final_answer = $2, completed_at = NOW(), updated_at = NOW(),
-		    llm_calls = $3, input_tokens = $4, output_tokens = $5
+		SET status = 'completed', final_answer = $2, follow_up_questions = $3, completed_at = NOW(), updated_at = NOW(),
+		    llm_calls = $4, input_tokens = $5, output_tokens = $6
 		WHERE id = $1
-	`, workflowRunID, input.Result.Answer, input.Result.LLMCalls, input.Result.InputTokens, input.Result.OutputTokens)
+	`, workflowRunID, input.Result.Answer, followUpJSON, input.Result.LLMCalls, input.Result.InputTokens, input.Result.OutputTokens)
 	if err != nil {
 		return fmt.Errorf("failed to complete workflow run: %w", err)
+	}
+
+	// Update session content so reloading the page shows the conversation
+	sessionID, err := uuid.Parse(input.SessionID)
+	if err != nil {
+		return fmt.Errorf("invalid session ID: %w", err)
+	}
+
+	// Read current session content
+	var content json.RawMessage
+	err = a.PgPool.QueryRow(ctx, `SELECT content FROM sessions WHERE id = $1`, sessionID).Scan(&content)
+	if err != nil {
+		slog.Warn("Failed to read session content for finalization", "session_id", input.SessionID, "error", err)
+		return nil // non-fatal
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(content, &messages); err != nil {
+		messages = nil
+	}
+
+	// Filter out any streaming placeholder for this workflow
+	var filtered []json.RawMessage
+	for _, msg := range messages {
+		var m map[string]any
+		if err := json.Unmarshal(msg, &m); err == nil {
+			if m["status"] == "streaming" && m["workflowId"] == workflowRunID.String() {
+				continue
+			}
+		}
+		filtered = append(filtered, msg)
+	}
+
+	// Read steps from workflow_runs for the workflow data
+	var stepsJSON json.RawMessage
+	_ = a.PgPool.QueryRow(ctx, `SELECT steps FROM workflow_runs WHERE id = $1`, workflowRunID).Scan(&stepsJSON)
+
+	// Build workflow data for the assistant message
+	workflowData := map[string]any{
+		"followUpQuestions": input.Result.FollowUpQuestions,
+	}
+	if stepsJSON != nil {
+		var steps []json.RawMessage
+		if json.Unmarshal(stepsJSON, &steps) == nil {
+			workflowData["processingSteps"] = steps
+		}
+	}
+
+	// Add user message
+	userMsg, _ := json.Marshal(map[string]any{
+		"id":      uuid.NewString(),
+		"role":    "user",
+		"content": input.Question,
+		"env":     input.Env,
+	})
+	filtered = append(filtered, userMsg)
+
+	// Add assistant message
+	assistantMsg, _ := json.Marshal(map[string]any{
+		"id":           uuid.NewString(),
+		"role":         "assistant",
+		"content":      input.Result.Answer,
+		"status":       "complete",
+		"workflowId":   workflowRunID.String(),
+		"workflowData": workflowData,
+	})
+	filtered = append(filtered, assistantMsg)
+
+	updatedContent, _ := json.Marshal(filtered)
+	_, err = a.PgPool.Exec(ctx, `UPDATE sessions SET content = $2, updated_at = NOW() WHERE id = $1`, sessionID, updatedContent)
+	if err != nil {
+		slog.Warn("Failed to update session content", "session_id", input.SessionID, "error", err)
 	}
 
 	return nil

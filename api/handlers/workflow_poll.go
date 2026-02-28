@@ -140,6 +140,10 @@ func sendDoneEvent(sendEvent func(string, any), run *WorkflowRun) {
 	if run.FinalAnswer != nil {
 		response.Answer = *run.FinalAnswer
 	}
+	var followUpQuestions []string
+	if err := json.Unmarshal(run.FollowUpQuestions, &followUpQuestions); err == nil {
+		response.FollowUpQuestions = followUpQuestions
+	}
 
 	// Extract executed queries for response
 	for _, eq := range executedQueries {
@@ -155,6 +159,46 @@ func sendDoneEvent(sendEvent func(string, any), run *WorkflowRun) {
 	}
 
 	sendEvent("done", response)
+}
+
+// writeStreamingPlaceholder writes user message + streaming assistant placeholder to session content.
+// This enables the frontend to detect an in-progress workflow on page reload and reconnect.
+func writeStreamingPlaceholder(ctx context.Context, sessionID, workflowRunID uuid.UUID, question, env string) {
+	// Read current session content
+	var content json.RawMessage
+	err := config.PgPool.QueryRow(ctx, `SELECT content FROM sessions WHERE id = $1`, sessionID).Scan(&content)
+	if err != nil {
+		slog.Warn("Failed to read session content for streaming placeholder", "session_id", sessionID, "error", err)
+		return
+	}
+
+	var messages []json.RawMessage
+	if err := json.Unmarshal(content, &messages); err != nil {
+		messages = nil
+	}
+
+	userMsg, _ := json.Marshal(map[string]any{
+		"id":      uuid.NewString(),
+		"role":    "user",
+		"content": question,
+		"env":     env,
+	})
+	messages = append(messages, userMsg)
+
+	assistantMsg, _ := json.Marshal(map[string]any{
+		"id":         uuid.NewString(),
+		"role":       "assistant",
+		"content":    "",
+		"status":     "streaming",
+		"workflowId": workflowRunID.String(),
+	})
+	messages = append(messages, assistantMsg)
+
+	updatedContent, _ := json.Marshal(messages)
+	_, err = config.PgPool.Exec(ctx, `UPDATE sessions SET content = $2, updated_at = NOW() WHERE id = $1`, sessionID, updatedContent)
+	if err != nil {
+		slog.Warn("Failed to write streaming placeholder", "session_id", sessionID, "error", err)
+	}
 }
 
 // CancelChatWorkflow cancels a running chat workflow via Temporal.
