@@ -57,11 +57,11 @@ type WorkflowRun struct {
 	UserQuestion string    `json:"user_question"`
 
 	// Checkpoint state
-	Iteration       int             `json:"iteration"`
-	Messages        json.RawMessage `json:"messages"`
-	ThinkingSteps   json.RawMessage `json:"thinking_steps"`   // Legacy - kept for backward compatibility
-	ExecutedQueries json.RawMessage `json:"executed_queries"` // Legacy - kept for backward compatibility
-	Steps           json.RawMessage `json:"steps"`            // Unified timeline of all steps in order
+	Iteration         int             `json:"iteration"`
+	Messages          json.RawMessage `json:"messages"`
+	ThinkingSteps     json.RawMessage `json:"thinking_steps"`   // Legacy - kept for backward compatibility
+	ExecutedQueries   json.RawMessage `json:"executed_queries"` // Legacy - kept for backward compatibility
+	Steps             json.RawMessage `json:"steps"`            // Unified timeline of all steps in order
 	FinalAnswer       *string         `json:"final_answer,omitempty"`
 	FollowUpQuestions json.RawMessage `json:"follow_up_questions,omitempty"`
 

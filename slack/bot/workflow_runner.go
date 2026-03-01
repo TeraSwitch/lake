@@ -203,7 +203,7 @@ func (r *TemporalChatRunner) pollForResult(
 				onProgress(workflow.Progress{
 					Stage:          workflow.StageComplete,
 					Classification: classification,
-					DataQuestions:   dataQuestions,
+					DataQuestions:  dataQuestions,
 					QueriesTotal:   queriesTotal,
 					QueriesDone:    queriesDone,
 				})
