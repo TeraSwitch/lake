@@ -66,7 +66,7 @@ func (r *TemporalChatRunner) ChatStream(
 	// Ensure a session row exists (Slack sessions are ephemeral)
 	_, err = config.PgPool.Exec(ctx, `
 		INSERT INTO sessions (id, type, name, content)
-		VALUES ($1, 'slack', 'Slack', '[]')
+		VALUES ($1, 'chat', 'Slack', '[]')
 		ON CONFLICT (id) DO NOTHING
 	`, sessionUUID)
 	if err != nil {
