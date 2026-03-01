@@ -230,18 +230,6 @@ func (a *Activities) FinalizeChat(ctx context.Context, input FinalizeInput) erro
 		messages = nil
 	}
 
-	// Filter out any streaming placeholder for this workflow
-	var filtered []json.RawMessage
-	for _, msg := range messages {
-		var m map[string]any
-		if err := json.Unmarshal(msg, &m); err == nil {
-			if m["status"] == "streaming" && m["workflowId"] == workflowRunID.String() {
-				continue
-			}
-		}
-		filtered = append(filtered, msg)
-	}
-
 	// Read steps from workflow_runs for the workflow data
 	var stepsJSON json.RawMessage
 	_ = a.PgPool.QueryRow(ctx, `SELECT steps FROM workflow_runs WHERE id = $1`, workflowRunID).Scan(&stepsJSON)
@@ -257,25 +245,58 @@ func (a *Activities) FinalizeChat(ctx context.Context, input FinalizeInput) erro
 		}
 	}
 
-	// Add user message
-	userMsg, _ := json.Marshal(map[string]any{
-		"id":      uuid.NewString(),
-		"role":    "user",
-		"content": input.Question,
-		"env":     input.Env,
-	})
-	filtered = append(filtered, userMsg)
+	// Replace the streaming placeholder with the completed assistant message.
+	// The streaming placeholder (written by writeStreamingPlaceholder) already contains
+	// the user message, so we only need to replace the streaming assistant message.
+	var filtered []json.RawMessage
+	for _, msg := range messages {
+		var m map[string]any
+		if err := json.Unmarshal(msg, &m); err == nil {
+			if m["status"] == "streaming" && m["workflowId"] == workflowRunID.String() {
+				// Replace streaming placeholder with completed assistant message
+				assistantMsg, _ := json.Marshal(map[string]any{
+					"id":           m["id"], // keep same ID
+					"role":         "assistant",
+					"content":      input.Result.Answer,
+					"status":       "complete",
+					"workflowId":   workflowRunID.String(),
+					"workflowData": workflowData,
+				})
+				filtered = append(filtered, assistantMsg)
+				continue
+			}
+		}
+		filtered = append(filtered, msg)
+	}
 
-	// Add assistant message
-	assistantMsg, _ := json.Marshal(map[string]any{
-		"id":           uuid.NewString(),
-		"role":         "assistant",
-		"content":      input.Result.Answer,
-		"status":       "complete",
-		"workflowId":   workflowRunID.String(),
-		"workflowData": workflowData,
-	})
-	filtered = append(filtered, assistantMsg)
+	// If no streaming placeholder was found (e.g. writeStreamingPlaceholder failed),
+	// append user + assistant messages directly.
+	hasPlaceholder := false
+	for _, msg := range messages {
+		var m map[string]any
+		if json.Unmarshal(msg, &m) == nil && m["status"] == "streaming" && m["workflowId"] == workflowRunID.String() {
+			hasPlaceholder = true
+			break
+		}
+	}
+	if !hasPlaceholder {
+		userMsg, _ := json.Marshal(map[string]any{
+			"id":      uuid.NewString(),
+			"role":    "user",
+			"content": input.Question,
+			"env":     input.Env,
+		})
+		filtered = append(filtered, userMsg)
+		assistantMsg, _ := json.Marshal(map[string]any{
+			"id":           uuid.NewString(),
+			"role":         "assistant",
+			"content":      input.Result.Answer,
+			"status":       "complete",
+			"workflowId":   workflowRunID.String(),
+			"workflowData": workflowData,
+		})
+		filtered = append(filtered, assistantMsg)
+	}
 
 	updatedContent, _ := json.Marshal(filtered)
 	_, err = a.PgPool.Exec(ctx, `UPDATE sessions SET content = $2, updated_at = NOW() WHERE id = $1`, sessionID, updatedContent)
