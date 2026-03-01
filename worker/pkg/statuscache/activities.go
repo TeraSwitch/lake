@@ -87,7 +87,7 @@ func (a *Activities) upsertCache(ctx context.Context, key string, value any) err
 		return err
 	}
 	_, err = a.PgPool.Exec(ctx,
-		`INSERT INTO status_cache (cache_key, data, refreshed_at) VALUES ($1, $2, NOW())
+		`INSERT INTO page_cache (cache_key, data, refreshed_at) VALUES ($1, $2, NOW())
 		 ON CONFLICT (cache_key) DO UPDATE SET data = $2, refreshed_at = NOW()`,
 		key, data)
 	return err

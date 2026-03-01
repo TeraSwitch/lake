@@ -52,7 +52,7 @@ func (c *PGStatusCache) get(key string, dest any) bool {
 
 	var data json.RawMessage
 	err := c.pool.QueryRow(ctx,
-		`SELECT data FROM status_cache WHERE cache_key = $1`, key).Scan(&data)
+		`SELECT data FROM page_cache WHERE cache_key = $1`, key).Scan(&data)
 	if err != nil {
 		return false
 	}
@@ -72,7 +72,7 @@ func (c *PGStatusCache) IsReady() bool {
 
 	var count int
 	err := c.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM status_cache WHERE cache_key IN ('status', 'timeline', 'outages')`).Scan(&count)
+		`SELECT COUNT(*) FROM page_cache WHERE cache_key IN ('status', 'timeline', 'outages')`).Scan(&count)
 	if err != nil {
 		return false
 	}
@@ -200,7 +200,7 @@ func (c *PGStatusCache) upsert(ctx context.Context, key string, value any) {
 	}
 
 	_, err = c.pool.Exec(ctx,
-		`INSERT INTO status_cache (cache_key, data, refreshed_at) VALUES ($1, $2, NOW())
+		`INSERT INTO page_cache (cache_key, data, refreshed_at) VALUES ($1, $2, NOW())
 		 ON CONFLICT (cache_key) DO UPDATE SET data = $2, refreshed_at = NOW()`,
 		key, data)
 	if err != nil {
