@@ -112,13 +112,10 @@ go run ./indexer/cmd/indexer/ --verbose --migrations-enable
 go run ./indexer/cmd/indexer/ --dz-env devnet --migrations-enable --create-database --listen-addr :3011
 go run ./indexer/cmd/indexer/ --dz-env testnet --migrations-enable --create-database --listen-addr :3012
 
-# Terminal 2: Run the worker (processes chat workflows via Temporal)
-go run ./worker/cmd/worker/
-
-# Terminal 3: Run the API server
+# Terminal 2: Run the API server (includes background worker by default)
 go run ./api/main.go
 
-# Terminal 4: Run the web dev server
+# Terminal 3: Run the web dev server
 cd web
 bun install
 bun dev

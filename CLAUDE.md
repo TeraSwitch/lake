@@ -23,7 +23,7 @@ Do NOT manage the `api` or `web` services. The user runs these separately and wi
 ## Commands
 
 ```bash
-go run ./api/main.go      # Run API server (:8080)
+go run ./api/main.go      # Run API server + background worker (:8080)
 cd web && bun run dev     # Run web dev server (:5173)
 cd web && bun run build   # Build frontend (runs tsc first)
 ```

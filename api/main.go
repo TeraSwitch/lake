@@ -28,6 +28,7 @@ import (
 	"github.com/malbeclabs/lake/api/handlers"
 	"github.com/malbeclabs/lake/api/metrics"
 	slackbot "github.com/malbeclabs/lake/slack/bot"
+	"github.com/malbeclabs/lake/worker/pkg/chat"
 	"github.com/malbeclabs/lake/worker/pkg/statuscache"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/slack-go/slack/socketmode"
@@ -212,6 +213,7 @@ func spaHandler(staticDir, assetBucketURL string) http.HandlerFunc {
 
 func main() {
 	metricsAddrFlag := flag.String("metrics-addr", defaultMetricsAddr, "Address to listen on for prometheus metrics")
+	workerFlag := flag.Bool("worker", true, "Run the Temporal worker for background tasks (chat workflows, etc.)")
 	flag.Parse()
 
 	log.Printf("Starting lake-api version=%s commit=%s date=%s", version, commit, date)
@@ -302,6 +304,25 @@ func main() {
 	// Create Temporal schedules for periodic refreshes
 	if err := statuscache.EnsureSchedules(context.Background(), config.TemporalClient); err != nil {
 		log.Printf("Warning: Failed to create status cache schedules: %v", err)
+	}
+
+	// Optionally embed the Temporal worker (--worker flag)
+	if *workerFlag {
+		chatActivities := &chat.Activities{
+			ClickHouse: config.DB,
+			PgPool:     config.PgPool,
+			Neo4j:      config.Neo4jClient,
+			Database:   config.Database(),
+		}
+		embeddedWorker := worker.New(config.TemporalClient, chat.TaskQueue, worker.Options{})
+		embeddedWorker.RegisterWorkflow(chat.ChatWorkflow)
+		embeddedWorker.RegisterActivity(chatActivities)
+		go func() {
+			if err := embeddedWorker.Run(worker.InterruptCh()); err != nil {
+				log.Printf("Embedded worker error: %v", err)
+			}
+		}()
+		log.Printf("Embedded worker started on task queue %q", chat.TaskQueue)
 	}
 
 	// Start metrics server
