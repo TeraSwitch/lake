@@ -2,17 +2,20 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
-	"os"
+	"time"
 
-	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/google/uuid"
 	"github.com/malbeclabs/lake/agent/pkg/workflow"
-	v3 "github.com/malbeclabs/lake/agent/pkg/workflow/v3"
 	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers"
+	"github.com/malbeclabs/lake/worker/pkg/chat"
+	temporalclient "go.temporal.io/sdk/client"
 )
+
+const slackPollInterval = 500 * time.Millisecond
 
 // ChatStreamResult holds the result from a chat workflow.
 type ChatStreamResult struct {
@@ -34,197 +37,203 @@ type ChatRunner interface {
 	) (ChatStreamResult, error)
 }
 
-// WorkflowRunner runs chat workflows directly by invoking the agent workflow
-// in-process, without going through HTTP.
-type WorkflowRunner struct {
+// TemporalChatRunner runs chat workflows via Temporal.
+type TemporalChatRunner struct {
 	log *slog.Logger
 }
 
-// NewWorkflowRunner creates a new workflow runner.
-func NewWorkflowRunner(log *slog.Logger) *WorkflowRunner {
-	return &WorkflowRunner{log: log}
+// NewTemporalChatRunner creates a new Temporal-based chat runner.
+func NewTemporalChatRunner(log *slog.Logger) *TemporalChatRunner {
+	return &TemporalChatRunner{log: log}
 }
 
-// ChatStream runs the agent workflow directly and streams progress via the callback.
-func (r *WorkflowRunner) ChatStream(
+// ChatStream starts a Temporal chat workflow and polls PG for progress.
+func (r *TemporalChatRunner) ChatStream(
 	ctx context.Context,
 	message string,
 	history []workflow.ConversationMessage,
 	sessionID string,
 	onProgress func(workflow.Progress),
 ) (ChatStreamResult, error) {
-	if os.Getenv("ANTHROPIC_API_KEY") == "" {
-		return ChatStreamResult{}, fmt.Errorf("ANTHROPIC_API_KEY is required")
-	}
-
-	// Generate session ID if not provided
 	if sessionID == "" {
 		sessionID = uuid.New().String()
 	}
-
-	// Load prompts
-	prompts, err := v3.LoadPrompts()
+	sessionUUID, err := uuid.Parse(sessionID)
 	if err != nil {
-		return ChatStreamResult{}, fmt.Errorf("failed to load prompts: %w", err)
+		return ChatStreamResult{}, fmt.Errorf("invalid session ID: %w", err)
 	}
 
-	// Create workflow components
-	llm := workflow.NewAnthropicLLMClient(anthropic.ModelClaudeHaiku4_5, 4096)
-	querier := handlers.NewDBQuerier()
-	schemaFetcher := handlers.NewDBSchemaFetcher()
-
-	// Create workflow config
-	cfg := &workflow.Config{
-		Logger:        r.log,
-		LLM:           llm,
-		Querier:       querier,
-		SchemaFetcher: schemaFetcher,
-		Prompts:       prompts,
-		MaxTokens:     4096,
-		FormatContext: prompts.Slack,
-	}
-
-	// Add env context so agent knows about other databases for cross-querying
-	cfg.EnvContext = handlers.BuildEnvContext(handlers.EnvMainnet)
-
-	// Add Neo4j support if available
-	if config.Neo4jClient != nil {
-		cfg.GraphQuerier = handlers.NewNeo4jQuerier()
-		cfg.GraphSchemaFetcher = handlers.NewNeo4jSchemaFetcher()
-	}
-
-	// Create workflow
-	wf, err := v3.New(cfg)
+	// Ensure a session row exists (Slack sessions are ephemeral)
+	_, err = config.PgPool.Exec(ctx, `
+		INSERT INTO sessions (id, type, name, content)
+		VALUES ($1, 'slack', 'Slack', '[]')
+		ON CONFLICT (id) DO NOTHING
+	`, sessionUUID)
 	if err != nil {
-		return ChatStreamResult{}, fmt.Errorf("failed to create workflow: %w", err)
+		return ChatStreamResult{}, fmt.Errorf("failed to ensure session: %w", err)
 	}
 
-	// Track queries and doc reads for progress reporting
-	var queriesTotal, queriesDone int
-	var dataQuestions []workflow.DataQuestion
-
-	// Map workflow progress stages to the progress format expected by the processor
-	wrappedProgress := func(progress workflow.Progress) {
-		switch progress.Stage {
-		case workflow.StageThinking:
-			onProgress(workflow.Progress{
-				Stage:           workflow.StageThinking,
-				ThinkingContent: progress.ThinkingContent,
-				DataQuestions:   dataQuestions,
-				QueriesTotal:    queriesTotal,
-				QueriesDone:     queriesDone,
-			})
-
-		case workflow.StageSQLStarted:
-			queriesTotal++
-			dataQuestions = append(dataQuestions, workflow.DataQuestion{
-				Question: progress.SQLQuestion,
-			})
-			onProgress(workflow.Progress{
-				Stage:         workflow.StageExecuting,
-				DataQuestions: dataQuestions,
-				QueriesTotal:  queriesTotal,
-				QueriesDone:   queriesDone,
-			})
-
-		case workflow.StageSQLComplete:
-			queriesDone++
-			onProgress(workflow.Progress{
-				Stage:         workflow.StageExecuting,
-				DataQuestions: dataQuestions,
-				QueriesTotal:  queriesTotal,
-				QueriesDone:   queriesDone,
-			})
-
-		case workflow.StageCypherStarted:
-			queriesTotal++
-			dataQuestions = append(dataQuestions, workflow.DataQuestion{
-				Question: progress.CypherQuestion,
-			})
-			onProgress(workflow.Progress{
-				Stage:         workflow.StageExecuting,
-				DataQuestions: dataQuestions,
-				QueriesTotal:  queriesTotal,
-				QueriesDone:   queriesDone,
-			})
-
-		case workflow.StageCypherComplete:
-			queriesDone++
-			onProgress(workflow.Progress{
-				Stage:         workflow.StageExecuting,
-				DataQuestions: dataQuestions,
-				QueriesTotal:  queriesTotal,
-				QueriesDone:   queriesDone,
-			})
-
-		case workflow.StageReadDocsStarted:
-			queriesTotal++
-			dataQuestions = append(dataQuestions, workflow.DataQuestion{
-				Question:  "Reading " + progress.DocsPage,
-				Rationale: "doc_read",
-			})
-			onProgress(workflow.Progress{
-				Stage:         workflow.StageExecuting,
-				DataQuestions: dataQuestions,
-				QueriesTotal:  queriesTotal,
-				QueriesDone:   queriesDone,
-			})
-
-		case workflow.StageReadDocsComplete:
-			queriesDone++
-			onProgress(workflow.Progress{
-				Stage:         workflow.StageExecuting,
-				DataQuestions: dataQuestions,
-				QueriesTotal:  queriesTotal,
-				QueriesDone:   queriesDone,
-			})
-		}
+	// Create workflow run in PG
+	run, err := handlers.CreateWorkflowRun(ctx, sessionUUID, message, "mainnet-beta")
+	if err != nil {
+		return ChatStreamResult{}, fmt.Errorf("failed to create workflow run: %w", err)
 	}
 
-	// Run the workflow with progress
-	result, err := wf.RunWithProgress(ctx, message, history, wrappedProgress)
+	// Start Temporal workflow
+	temporalWorkflowID := "chat-" + run.ID.String()
+	_, err = config.TemporalClient.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
+		ID:        temporalWorkflowID,
+		TaskQueue: chat.TaskQueue,
+	}, chat.ChatWorkflow, chat.ChatWorkflowInput{
+		WorkflowRunID: run.ID.String(),
+		SessionID:     sessionUUID.String(),
+		Question:      message,
+		History:       history,
+		Format:        "slack",
+		Env:           "mainnet-beta",
+	})
+	if err != nil {
+		return ChatStreamResult{}, fmt.Errorf("failed to start Temporal workflow: %w", err)
+	}
+
+	// Poll PG for progress, translating steps into onProgress callbacks
+	result, err := r.pollForResult(ctx, run.ID, onProgress)
 	if err != nil {
 		return ChatStreamResult{}, err
 	}
 
-	// Build the result
-	var classification workflow.Classification
-	if queriesTotal > 0 {
-		classification = workflow.ClassificationDataAnalysis
-	} else {
-		classification = workflow.ClassificationConversational
+	result.SessionID = sessionID
+	return result, nil
+}
+
+// pollForResult polls workflow_runs for step progress and the final result.
+func (r *TemporalChatRunner) pollForResult(
+	ctx context.Context,
+	workflowRunID uuid.UUID,
+	onProgress func(workflow.Progress),
+) (ChatStreamResult, error) {
+	ticker := time.NewTicker(slackPollInterval)
+	defer ticker.Stop()
+
+	var lastStepCount int
+	var dataQuestions []workflow.DataQuestion
+	var queriesTotal, queriesDone int
+
+	for {
+		select {
+		case <-ctx.Done():
+			return ChatStreamResult{}, ctx.Err()
+		case <-ticker.C:
+			run, err := handlers.GetWorkflowRun(ctx, workflowRunID)
+			if err != nil {
+				r.log.Warn("Failed to poll workflow run", "id", workflowRunID, "error", err)
+				continue
+			}
+			if run == nil {
+				continue
+			}
+
+			// Parse steps
+			var steps []handlers.WorkflowStep
+			if err := json.Unmarshal(run.Steps, &steps); err != nil {
+				steps = nil
+			}
+
+			// Emit progress for new steps
+			for i := lastStepCount; i < len(steps); i++ {
+				step := steps[i]
+				switch step.Type {
+				case "thinking":
+					onProgress(workflow.Progress{
+						Stage:           workflow.StageThinking,
+						ThinkingContent: step.Content,
+						DataQuestions:   dataQuestions,
+						QueriesTotal:    queriesTotal,
+						QueriesDone:     queriesDone,
+					})
+				case "sql_query":
+					queriesTotal++
+					dataQuestions = append(dataQuestions, workflow.DataQuestion{
+						Question: step.Question,
+					})
+					queriesDone++
+					onProgress(workflow.Progress{
+						Stage:         workflow.StageExecuting,
+						DataQuestions: dataQuestions,
+						QueriesTotal:  queriesTotal,
+						QueriesDone:   queriesDone,
+					})
+				case "cypher_query":
+					queriesTotal++
+					dataQuestions = append(dataQuestions, workflow.DataQuestion{
+						Question: step.Question,
+					})
+					queriesDone++
+					onProgress(workflow.Progress{
+						Stage:         workflow.StageExecuting,
+						DataQuestions: dataQuestions,
+						QueriesTotal:  queriesTotal,
+						QueriesDone:   queriesDone,
+					})
+				case "read_docs":
+					queriesTotal++
+					dataQuestions = append(dataQuestions, workflow.DataQuestion{
+						Question:  "Reading " + step.Page,
+						Rationale: "doc_read",
+					})
+					queriesDone++
+					onProgress(workflow.Progress{
+						Stage:         workflow.StageExecuting,
+						DataQuestions: dataQuestions,
+						QueriesTotal:  queriesTotal,
+						QueriesDone:   queriesDone,
+					})
+				}
+			}
+			lastStepCount = len(steps)
+
+			// Check terminal states
+			switch run.Status {
+			case "completed":
+				classification := workflow.ClassificationConversational
+				if queriesTotal > 0 {
+					classification = workflow.ClassificationDataAnalysis
+				}
+
+				onProgress(workflow.Progress{
+					Stage:          workflow.StageComplete,
+					Classification: classification,
+					DataQuestions:   dataQuestions,
+					QueriesTotal:   queriesTotal,
+					QueriesDone:    queriesDone,
+				})
+
+				result := ChatStreamResult{
+					Answer:         "",
+					Classification: classification,
+				}
+				if run.FinalAnswer != nil {
+					result.Answer = *run.FinalAnswer
+				}
+
+				// Parse executed queries from steps for the result
+				var executedQueries []workflow.ExecutedQuery
+				_ = json.Unmarshal(run.ExecutedQueries, &executedQueries)
+				result.ExecutedQueries = executedQueries
+				result.DataQuestions = dataQuestions
+
+				return result, nil
+
+			case "failed":
+				errorMsg := "workflow failed"
+				if run.Error != nil {
+					errorMsg = *run.Error
+				}
+				return ChatStreamResult{}, fmt.Errorf("%s", errorMsg)
+
+			case "cancelled":
+				return ChatStreamResult{}, fmt.Errorf("workflow was cancelled")
+			}
+		}
 	}
-
-	// Send completion progress
-	onProgress(workflow.Progress{
-		Stage:          workflow.StageComplete,
-		Classification: classification,
-		DataQuestions:  dataQuestions,
-		QueriesTotal:   queriesTotal,
-		QueriesDone:    queriesDone,
-	})
-
-	streamResult := ChatStreamResult{
-		Answer:         result.Answer,
-		Classification: classification,
-		SessionID:      sessionID,
-	}
-
-	// Convert data questions
-	for _, dq := range result.DataQuestions {
-		streamResult.DataQuestions = append(streamResult.DataQuestions, workflow.DataQuestion{
-			Question:  dq.Question,
-			Rationale: dq.Rationale,
-		})
-	}
-
-	// Convert executed queries
-	for _, eq := range result.ExecutedQueries {
-		streamResult.ExecutedQueries = append(streamResult.ExecutedQueries, workflow.ExecutedQuery{
-			GeneratedQuery: eq.GeneratedQuery,
-			Result:         eq.Result,
-		})
-	}
-
-	return streamResult, nil
 }

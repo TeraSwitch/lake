@@ -733,8 +733,8 @@ func startSlackBot(ctx context.Context, r *chi.Mux) *slackbot.EventHandler {
 	}
 	cfg.BotUserID = botUserID
 
-	// Set up workflow runner (direct in-process calls instead of HTTP)
-	runner := slackbot.NewWorkflowRunner(slog.Default())
+	// Set up workflow runner (via Temporal)
+	runner := slackbot.NewTemporalChatRunner(slog.Default())
 
 	// Set up conversation manager
 	convManager := slackbot.NewManager(slog.Default())
@@ -829,8 +829,8 @@ func startSlackBotMultiTenant(ctx context.Context, r *chi.Mux) *slackbot.EventHa
 		clientManager.InvalidateClient(teamID)
 	}
 
-	// Set up workflow runner
-	runner := slackbot.NewWorkflowRunner(slog.Default())
+	// Set up workflow runner (via Temporal)
+	runner := slackbot.NewTemporalChatRunner(slog.Default())
 
 	// Set up conversation manager
 	convManager := slackbot.NewManager(slog.Default())
