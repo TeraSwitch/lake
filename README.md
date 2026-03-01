@@ -98,7 +98,7 @@ Run the setup script to get started:
 ```
 
 This will:
-- Start Docker services (ClickHouse, PostgreSQL, Neo4j)
+- Start Docker services (ClickHouse, PostgreSQL, Neo4j, Temporal)
 - Create `.env` from `.env.example`
 - Download GeoIP databases
 
@@ -112,10 +112,13 @@ go run ./indexer/cmd/indexer/ --verbose --migrations-enable
 go run ./indexer/cmd/indexer/ --dz-env devnet --migrations-enable --create-database --listen-addr :3011
 go run ./indexer/cmd/indexer/ --dz-env testnet --migrations-enable --create-database --listen-addr :3012
 
-# Terminal 2: Run the API server
+# Terminal 2: Run the worker (processes chat workflows via Temporal)
+go run ./worker/cmd/worker/
+
+# Terminal 3: Run the API server
 go run ./api/main.go
 
-# Terminal 3: Run the web dev server
+# Terminal 4: Run the web dev server
 cd web
 bun install
 bun dev
@@ -124,7 +127,7 @@ bun dev
 VITE_HTTPS=1 bun dev --host 0.0.0.0
 ```
 
-The web app will be at http://localhost:5173, API at http://localhost:8080.
+The web app will be at http://localhost:5173, API at http://localhost:8080, Temporal UI at http://localhost:8233.
 
 ### Using the Control Center
 
