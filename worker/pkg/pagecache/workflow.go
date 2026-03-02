@@ -1,4 +1,4 @@
-package statuscache
+package pagecache
 
 import (
 	"time"
@@ -8,7 +8,7 @@ import (
 	temporalworkflow "go.temporal.io/sdk/workflow"
 )
 
-// RegisterWorkflows registers all status cache workflows with the given worker.
+// RegisterWorkflows registers all page cache workflows with the given worker.
 func RegisterWorkflows(w worker.Worker) {
 	w.RegisterWorkflow(RefreshStatusWorkflow)
 	w.RegisterWorkflow(RefreshTimelineWorkflow)

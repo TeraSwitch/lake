@@ -29,7 +29,7 @@ import (
 	"github.com/malbeclabs/lake/api/metrics"
 	slackbot "github.com/malbeclabs/lake/slack/bot"
 	"github.com/malbeclabs/lake/worker/pkg/chat"
-	"github.com/malbeclabs/lake/worker/pkg/statuscache"
+	"github.com/malbeclabs/lake/worker/pkg/pagecache"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"github.com/slack-go/slack/socketmode"
 	"go.temporal.io/sdk/worker"
@@ -280,30 +280,30 @@ func main() {
 	}
 	defer config.CloseTemporal()
 
-	// Initialize PG-backed status cache with embedded Temporal worker
-	pgCache := handlers.NewPGStatusCache(config.PgPool)
+	// Initialize PG-backed page cache with embedded Temporal worker
+	pgCache := handlers.NewPGPageCache(config.PgPool)
 
 	// Warm cache synchronously before serving traffic
 	warmCtx, warmCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	pgCache.WarmCache(warmCtx)
 	warmCancel()
 
-	handlers.SetStatusCache(pgCache)
+	handlers.SetPageCache(pgCache)
 
-	// Start embedded Temporal worker for status cache activities
-	scActivities := &statuscache.Activities{PgPool: config.PgPool}
-	statusCacheWorker := worker.New(config.TemporalClient, statuscache.TaskQueue, worker.Options{})
-	statuscache.RegisterWorkflows(statusCacheWorker)
-	statusCacheWorker.RegisterActivity(scActivities)
+	// Start embedded Temporal worker for page cache activities
+	pcActivities := &pagecache.Activities{PgPool: config.PgPool}
+	pageCacheWorker := worker.New(config.TemporalClient, pagecache.TaskQueue, worker.Options{})
+	pagecache.RegisterWorkflows(pageCacheWorker)
+	pageCacheWorker.RegisterActivity(pcActivities)
 	go func() {
-		if err := statusCacheWorker.Run(worker.InterruptCh()); err != nil {
-			log.Printf("Status cache worker error: %v", err)
+		if err := pageCacheWorker.Run(worker.InterruptCh()); err != nil {
+			log.Printf("Page cache worker error: %v", err)
 		}
 	}()
 
 	// Create Temporal schedules for periodic refreshes
-	if err := statuscache.EnsureSchedules(context.Background(), config.TemporalClient); err != nil {
-		log.Printf("Warning: Failed to create status cache schedules: %v", err)
+	if err := pagecache.EnsureSchedules(context.Background(), config.TemporalClient); err != nil {
+		log.Printf("Warning: Failed to create page cache schedules: %v", err)
 	}
 
 	// Optionally embed the Temporal worker (--worker flag)
@@ -655,7 +655,7 @@ func main() {
 		}
 	}()
 
-	// Cleanup runs as a Temporal schedule (via statuscache worker)
+	// Cleanup runs as a Temporal schedule (via pagecache worker)
 
 	// Initialize usage metrics and start daily reset worker
 	handlers.InitUsageMetrics(serverCtx)
@@ -711,8 +711,8 @@ func main() {
 	// This triggers ctx.Done() in all active request handlers
 	serverCancel()
 
-	// Stop embedded status cache Temporal worker
-	statusCacheWorker.Stop()
+	// Stop embedded page cache Temporal worker
+	pageCacheWorker.Stop()
 
 	// Give existing connections a short time to complete after context cancellation
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

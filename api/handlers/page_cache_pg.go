@@ -12,10 +12,10 @@ import (
 
 const pgCacheTTL = 5 * time.Second
 
-// PGStatusCache provides a PG-backed status cache with a thin in-memory TTL layer.
+// PGPageCache provides a PG-backed page cache with a thin in-memory TTL layer.
 // Temporal schedules refresh the PG table; this cache reads from PG and keeps
 // results in memory for pgCacheTTL to avoid repeated PG reads on every request.
-type PGStatusCache struct {
+type PGPageCache struct {
 	pool *pgxpool.Pool
 
 	mu    sync.RWMutex
@@ -27,16 +27,16 @@ type pgCacheEntry struct {
 	fetchedAt time.Time
 }
 
-// NewPGStatusCache creates a new PG-backed status cache.
-func NewPGStatusCache(pool *pgxpool.Pool) *PGStatusCache {
-	return &PGStatusCache{
+// NewPGPageCache creates a new PG-backed page cache.
+func NewPGPageCache(pool *pgxpool.Pool) *PGPageCache {
+	return &PGPageCache{
 		pool:  pool,
 		cache: make(map[string]*pgCacheEntry),
 	}
 }
 
 // get retrieves a cached value, reading from PG if the in-memory entry is stale.
-func (c *PGStatusCache) get(key string, dest any) bool {
+func (c *PGPageCache) get(key string, dest any) bool {
 	// Check in-memory cache first
 	c.mu.RLock()
 	entry := c.cache[key]
@@ -66,7 +66,7 @@ func (c *PGStatusCache) get(key string, dest any) bool {
 }
 
 // IsReady returns true if the required cache keys exist in PG.
-func (c *PGStatusCache) IsReady() bool {
+func (c *PGPageCache) IsReady() bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
@@ -80,7 +80,7 @@ func (c *PGStatusCache) IsReady() bool {
 }
 
 // GetStatus returns the cached status response.
-func (c *PGStatusCache) GetStatus() *StatusResponse {
+func (c *PGPageCache) GetStatus() *StatusResponse {
 	var resp StatusResponse
 	if c.get("status", &resp) {
 		return &resp
@@ -89,7 +89,7 @@ func (c *PGStatusCache) GetStatus() *StatusResponse {
 }
 
 // GetLinkHistory returns the cached link history response.
-func (c *PGStatusCache) GetLinkHistory(timeRange string, buckets int) *LinkHistoryResponse {
+func (c *PGPageCache) GetLinkHistory(timeRange string, buckets int) *LinkHistoryResponse {
 	var resp LinkHistoryResponse
 	if c.get("link-history:"+linkHistoryCacheKey(timeRange, buckets), &resp) {
 		return &resp
@@ -98,7 +98,7 @@ func (c *PGStatusCache) GetLinkHistory(timeRange string, buckets int) *LinkHisto
 }
 
 // GetDeviceHistory returns the cached device history response.
-func (c *PGStatusCache) GetDeviceHistory(timeRange string, buckets int) *DeviceHistoryResponse {
+func (c *PGPageCache) GetDeviceHistory(timeRange string, buckets int) *DeviceHistoryResponse {
 	var resp DeviceHistoryResponse
 	if c.get("device-history:"+deviceHistoryCacheKey(timeRange, buckets), &resp) {
 		return &resp
@@ -107,7 +107,7 @@ func (c *PGStatusCache) GetDeviceHistory(timeRange string, buckets int) *DeviceH
 }
 
 // GetTimeline returns the cached default timeline response.
-func (c *PGStatusCache) GetTimeline() *TimelineResponse {
+func (c *PGPageCache) GetTimeline() *TimelineResponse {
 	var resp TimelineResponse
 	if c.get("timeline", &resp) {
 		return &resp
@@ -116,7 +116,7 @@ func (c *PGStatusCache) GetTimeline() *TimelineResponse {
 }
 
 // GetOutages returns the cached default outages response.
-func (c *PGStatusCache) GetOutages() *LinkOutagesResponse {
+func (c *PGPageCache) GetOutages() *LinkOutagesResponse {
 	var resp LinkOutagesResponse
 	if c.get("outages", &resp) {
 		return &resp
@@ -125,7 +125,7 @@ func (c *PGStatusCache) GetOutages() *LinkOutagesResponse {
 }
 
 // GetLatencyComparison returns the cached latency comparison response.
-func (c *PGStatusCache) GetLatencyComparison() *LatencyComparisonResponse {
+func (c *PGPageCache) GetLatencyComparison() *LatencyComparisonResponse {
 	var resp LatencyComparisonResponse
 	if c.get("latency-comparison", &resp) {
 		return &resp
@@ -134,7 +134,7 @@ func (c *PGStatusCache) GetLatencyComparison() *LatencyComparisonResponse {
 }
 
 // GetMetroPathLatency returns the cached metro path latency for the given strategy.
-func (c *PGStatusCache) GetMetroPathLatency(optimize string) *MetroPathLatencyResponse {
+func (c *PGPageCache) GetMetroPathLatency(optimize string) *MetroPathLatencyResponse {
 	var resp MetroPathLatencyResponse
 	if c.get("metro-path-latency:"+optimize, &resp) {
 		return &resp
@@ -144,8 +144,8 @@ func (c *PGStatusCache) GetMetroPathLatency(optimize string) *MetroPathLatencyRe
 
 // WarmCache performs a synchronous refresh of all cache entries directly (without Temporal).
 // Used during startup to ensure cache is warm before serving traffic.
-func (c *PGStatusCache) WarmCache(ctx context.Context) {
-	log.Println("Warming PG status cache...")
+func (c *PGPageCache) WarmCache(ctx context.Context) {
+	log.Println("Warming PG page cache...")
 	start := time.Now()
 
 	// Refresh status
@@ -189,10 +189,10 @@ func (c *PGStatusCache) WarmCache(ctx context.Context) {
 		}
 	}
 
-	log.Printf("PG status cache warmed in %v", time.Since(start))
+	log.Printf("PG page cache warmed in %v", time.Since(start))
 }
 
-func (c *PGStatusCache) upsert(ctx context.Context, key string, value any) {
+func (c *PGPageCache) upsert(ctx context.Context, key string, value any) {
 	data, err := json.Marshal(value)
 	if err != nil {
 		log.Printf("Failed to marshal cache value for key %s: %v", key, err)

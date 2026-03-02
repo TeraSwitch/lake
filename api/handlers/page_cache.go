@@ -20,8 +20,8 @@ var deviceHistoryConfigs = []struct {
 	{"24h", 72}, // 24-hour view (default)
 }
 
-// StatusCacheProvider defines the interface for accessing cached status data.
-type StatusCacheProvider interface {
+// PageCacheProvider defines the interface for accessing cached page data.
+type PageCacheProvider interface {
 	IsReady() bool
 	GetStatus() *StatusResponse
 	GetLinkHistory(timeRange string, buckets int) *LinkHistoryResponse
@@ -33,16 +33,16 @@ type StatusCacheProvider interface {
 }
 
 // Global cache instance
-var statusCache StatusCacheProvider
+var pageCache PageCacheProvider
 
-// SetStatusCache sets the global status cache implementation.
-func SetStatusCache(cache StatusCacheProvider) {
-	statusCache = cache
+// SetPageCache sets the global page cache implementation.
+func SetPageCache(cache PageCacheProvider) {
+	pageCache = cache
 }
 
-// IsStatusCacheReady returns true if the status cache is initialized and populated.
-func IsStatusCacheReady() bool {
-	return statusCache != nil && statusCache.IsReady()
+// IsPageCacheReady returns true if the page cache is initialized and populated.
+func IsPageCacheReady() bool {
+	return pageCache != nil && pageCache.IsReady()
 }
 
 func linkHistoryCacheKey(timeRange string, buckets int) string {

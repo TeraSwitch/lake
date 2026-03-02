@@ -1,4 +1,4 @@
-package statuscache
+package pagecache
 
 import (
 	"context"
@@ -14,7 +14,7 @@ type scheduleSpec struct {
 	Interval time.Duration
 }
 
-// EnsureSchedules creates or updates all status cache Temporal schedules.
+// EnsureSchedules creates or updates all page cache Temporal schedules.
 func EnsureSchedules(ctx context.Context, tc client.Client) error {
 	sc := tc.ScheduleClient()
 	schedules := []scheduleSpec{

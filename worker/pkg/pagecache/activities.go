@@ -1,4 +1,4 @@
-package statuscache
+package pagecache
 
 import (
 	"context"
@@ -9,7 +9,7 @@ import (
 	"github.com/malbeclabs/lake/api/handlers"
 )
 
-// Activities holds dependencies for status cache activities.
+// Activities holds dependencies for page cache activities.
 // These run in the API process's embedded worker.
 type Activities struct {
 	PgPool *pgxpool.Pool
@@ -18,7 +18,7 @@ type Activities struct {
 func (a *Activities) RefreshStatus(ctx context.Context) error {
 	resp := handlers.FetchStatusData(ctx)
 	if resp.Error != "" {
-		log.Printf("Status cache refresh error: %v", resp.Error)
+		log.Printf("Page cache refresh error: %v", resp.Error)
 		return nil // don't fail the activity, just skip
 	}
 	return a.upsertCache(ctx, "status", resp)

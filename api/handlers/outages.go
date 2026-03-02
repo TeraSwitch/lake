@@ -148,8 +148,8 @@ func isDefaultOutagesRequest(r *http.Request) bool {
 // GetLinkOutages returns discrete outage events for links
 func GetLinkOutages(w http.ResponseWriter, r *http.Request) {
 	// Check if this is a default request that can be served from cache
-	if isMainnet(r.Context()) && isDefaultOutagesRequest(r) && statusCache != nil {
-		if cached := statusCache.GetOutages(); cached != nil {
+	if isMainnet(r.Context()) && isDefaultOutagesRequest(r) && pageCache != nil {
+		if cached := pageCache.GetOutages(); cached != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("X-Cache", "HIT")
 			if err := json.NewEncoder(w).Encode(cached); err != nil {
