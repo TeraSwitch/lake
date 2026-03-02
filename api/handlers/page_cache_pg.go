@@ -65,20 +65,6 @@ func (c *PGPageCache) get(key string, dest any) bool {
 	return json.Unmarshal(data, dest) == nil
 }
 
-// IsReady returns true if the required cache keys exist in PG.
-func (c *PGPageCache) IsReady() bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-
-	var count int
-	err := c.pool.QueryRow(ctx,
-		`SELECT COUNT(*) FROM page_cache WHERE cache_key IN ('status', 'timeline', 'outages')`).Scan(&count)
-	if err != nil {
-		return false
-	}
-	return count >= 3
-}
-
 // GetStatus returns the cached status response.
 func (c *PGPageCache) GetStatus() *StatusResponse {
 	var resp StatusResponse

@@ -22,7 +22,6 @@ var deviceHistoryConfigs = []struct {
 
 // PageCacheProvider defines the interface for accessing cached page data.
 type PageCacheProvider interface {
-	IsReady() bool
 	GetStatus() *StatusResponse
 	GetLinkHistory(timeRange string, buckets int) *LinkHistoryResponse
 	GetDeviceHistory(timeRange string, buckets int) *DeviceHistoryResponse
@@ -38,11 +37,6 @@ var pageCache PageCacheProvider
 // SetPageCache sets the global page cache implementation.
 func SetPageCache(cache PageCacheProvider) {
 	pageCache = cache
-}
-
-// IsPageCacheReady returns true if the page cache is initialized and populated.
-func IsPageCacheReady() bool {
-	return pageCache != nil && pageCache.IsReady()
 }
 
 func linkHistoryCacheKey(timeRange string, buckets int) string {
