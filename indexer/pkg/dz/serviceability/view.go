@@ -92,6 +92,7 @@ type User struct {
 	ClientIP    net.IP
 	DZIP        net.IP
 	DevicePK    string
+	TenantPK    string
 	TunnelID    uint16
 	Publishers  []string // multicast group PKs this user publishes to
 	Subscribers []string // multicast group PKs this user subscribes to
@@ -106,6 +107,17 @@ type MulticastGroup struct {
 	Status          string
 	PublisherCount  uint32
 	SubscriberCount uint32
+}
+
+type Tenant struct {
+	PK            string
+	OwnerPubkey   string
+	Code          string
+	PaymentStatus string
+	VrfID         uint16
+	MetroRouting  bool
+	RouteLiveness bool
+	BillingRate   uint64
 }
 
 type ServiceabilityRPC interface {
@@ -262,7 +274,8 @@ func (v *View) Refresh(ctx context.Context) error {
 		"users", len(pd.Users),
 		"links", len(pd.Links),
 		"metros", len(pd.Exchanges),
-		"multicast_groups", len(pd.MulticastGroups))
+		"multicast_groups", len(pd.MulticastGroups),
+		"tenants", len(pd.Tenants))
 
 	// Validate that we received data for each entity type - empty responses would tombstone all existing entities.
 	// Check each independently since they're written separately with MissingMeansDeleted=true.
@@ -285,6 +298,7 @@ func (v *View) Refresh(ctx context.Context) error {
 	links := convertLinks(pd.Links, pd.Devices)
 	metros := convertMetros(pd.Exchanges)
 	multicastGroups := convertMulticastGroups(pd.MulticastGroups)
+	tenants := convertTenants(pd.Tenants)
 
 	fetchedAt := time.Now().UTC()
 
@@ -310,6 +324,10 @@ func (v *View) Refresh(ctx context.Context) error {
 
 	if err := v.store.ReplaceMulticastGroups(ctx, multicastGroups); err != nil {
 		return fmt.Errorf("failed to replace multicast groups: %w", err)
+	}
+
+	if err := v.store.ReplaceTenants(ctx, tenants); err != nil {
+		return fmt.Errorf("failed to replace tenants: %w", err)
 	}
 
 	v.fetchedAt = fetchedAt
@@ -390,6 +408,7 @@ func convertUsers(onchain []serviceability.User) []User {
 			ClientIP:    net.IP(user.ClientIp[:]),
 			DZIP:        net.IP(user.DzIp[:]),
 			DevicePK:    solana.PublicKeyFromBytes(user.DevicePubKey[:]).String(),
+			TenantPK:    solana.PublicKeyFromBytes(user.TenantPubKey[:]).String(),
 			TunnelID:    user.TunnelId,
 			Publishers:  publishers,
 			Subscribers: subscribers,
@@ -462,6 +481,23 @@ func convertMetros(onchain []serviceability.Exchange) []Metro {
 			Name:      exchange.Name,
 			Longitude: float64(exchange.Lng),
 			Latitude:  float64(exchange.Lat),
+		}
+	}
+	return result
+}
+
+func convertTenants(onchain []serviceability.Tenant) []Tenant {
+	result := make([]Tenant, len(onchain))
+	for i, t := range onchain {
+		result[i] = Tenant{
+			PK:            solana.PublicKeyFromBytes(t.PubKey[:]).String(),
+			OwnerPubkey:   solana.PublicKeyFromBytes(t.Owner[:]).String(),
+			Code:          t.Code,
+			PaymentStatus: t.PaymentStatus.String(),
+			VrfID:         t.VrfId,
+			MetroRouting:  t.MetroRouting,
+			RouteLiveness: t.RouteLiveness,
+			BillingRate:   t.BillingRate,
 		}
 	}
 	return result
