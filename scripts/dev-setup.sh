@@ -30,7 +30,12 @@ else
 fi
 echo ""
 
-# Step 3: Download and extract GeoIP databases
+# Step 3: Set up remote ClickHouse Cloud tables
+echo "=== Setting up remote ClickHouse Cloud tables ==="
+"$SCRIPT_DIR/setup-remote-tables.sh" || true
+echo ""
+
+# Step 4: Download and extract GeoIP databases
 echo "=== Setting up GeoIP databases ==="
 GEOIP_DIR="$ROOT_DIR/.tmp/geoip"
 mkdir -p "$GEOIP_DIR"
@@ -54,7 +59,7 @@ echo "  GEOIP_CITY_DB_PATH=$GEOIP_DIR/GeoLite2-City.mmdb"
 echo "  GEOIP_ASN_DB_PATH=$GEOIP_DIR/GeoLite2-ASN.mmdb"
 echo ""
 
-# Step 4: Check for bun
+# Step 5: Check for bun
 echo "=== Checking dependencies ==="
 if ! command -v bun &> /dev/null; then
     echo "bun is not installed. Install it with:"
@@ -72,7 +77,7 @@ else
 fi
 echo ""
 
-# Step 5: Print next steps
+# Step 6: Print next steps
 echo "=== Setup complete! ==="
 echo ""
 echo "Next steps:"
