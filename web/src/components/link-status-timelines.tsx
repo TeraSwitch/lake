@@ -16,6 +16,8 @@ interface LinkStatusTimelinesProps {
   onTimeRangeChange?: (range: TimeRange) => void
   issueFilters?: string[]
   healthFilters?: string[]
+  showDrained?: boolean
+  onShowDrainedChange?: (show: boolean) => void
   linksWithIssues?: Map<string, string[]>  // Map of link code -> issue reasons (from filter time range)
   linksWithHealth?: Map<string, string>    // Map of link code -> health status (from filter time range)
   criticalityMap?: Map<string, 'critical' | 'important' | 'redundant'>  // Map of link code -> criticality level
@@ -440,9 +442,9 @@ function LinkPacketLossChart({ hours, bucketMinutes, controlsWidth = 'w-32' }: L
   const chartData = hours.map(h => ({
     time: new Date(h.hour).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
     fullTime: h.hour,
-    total: h.avg_loss_pct,
-    A: h.side_a_loss_pct ?? 0,
-    Z: h.side_z_loss_pct ?? 0,
+    total: h.status === 'no_data' ? undefined : h.avg_loss_pct,
+    A: h.status === 'no_data' ? undefined : (h.side_a_loss_pct ?? 0),
+    Z: h.status === 'no_data' ? undefined : (h.side_z_loss_pct ?? 0),
   }))
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -515,9 +517,9 @@ function LinkPacketLossChart({ hours, bucketMinutes, controlsWidth = 'w-32' }: L
             <XAxis dataKey="time" tick={{ fontSize: 10, fill: textColor }} tickLine={false} axisLine={{ stroke: gridColor }} interval="preserveStartEnd" minTickGap={50} />
             <YAxis tick={{ fontSize: 10, fill: textColor }} tickLine={false} axisLine={false} width={40} domain={[0, 100]} tickFormatter={(v) => `${v}%`} />
             <RechartsTooltip content={<CustomTooltip />} />
-            {enabledSeries.has('total') && <Line type="monotone" dataKey="total" stroke={SERIES_CONFIG.total.color} strokeWidth={2} dot={false} connectNulls />}
-            {enabledSeries.has('A') && availableSeries.has('A') && <Line type="monotone" dataKey="A" stroke={SERIES_CONFIG.A.color} strokeWidth={1.5} strokeDasharray="5 5" dot={false} connectNulls />}
-            {enabledSeries.has('Z') && availableSeries.has('Z') && <Line type="monotone" dataKey="Z" stroke={SERIES_CONFIG.Z.color} strokeWidth={1.5} strokeDasharray="5 5" dot={false} connectNulls />}
+            {enabledSeries.has('total') && <Line type="monotone" dataKey="total" stroke={SERIES_CONFIG.total.color} strokeWidth={2} dot={false} />}
+            {enabledSeries.has('A') && availableSeries.has('A') && <Line type="monotone" dataKey="A" stroke={SERIES_CONFIG.A.color} strokeWidth={1.5} strokeDasharray="5 5" dot={false} />}
+            {enabledSeries.has('Z') && availableSeries.has('Z') && <Line type="monotone" dataKey="Z" stroke={SERIES_CONFIG.Z.color} strokeWidth={1.5} strokeDasharray="5 5" dot={false} />}
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -574,10 +576,13 @@ function LinkRow({ link, linksWithIssues, criticalityMap, bucketMinutes = 60, da
             <div className="text-xs text-muted-foreground">
               {link.link_type}{link.contributor && ` · ${link.contributor}`} · {link.side_a_metro} ↔ {link.side_z_metro}
             </div>
-            {issueReasons.length > 0 && (
+            {(link.is_down || link.drained || issueReasons.length > 0) && (
               <div className="flex flex-wrap gap-1 mt-1">
-                {issueReasons.includes('down') && (
+                {link.is_down && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-gray-900/15 text-gray-900 dark:bg-gray-400/20 dark:text-gray-300">Down</span>
+                )}
+                {link.drained && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-gray-900/15 text-gray-900 dark:bg-gray-400/20 dark:text-gray-300">Drained</span>
                 )}
                 {issueReasons.includes('packet_loss') && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(168, 85, 247, 0.15)', color: '#9333ea' }}>Loss</span>
@@ -587,12 +592,6 @@ function LinkRow({ link, linksWithIssues, criticalityMap, bucketMinutes = 60, da
                 )}
                 {issueReasons.includes('high_utilization') && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(99, 102, 241, 0.15)', color: '#4f46e5' }}>High Utilization</span>
-                )}
-                {issueReasons.includes('extended_loss') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(249, 115, 22, 0.15)', color: '#ea580c' }}>Extended Loss</span>
-                )}
-                {issueReasons.includes('drained') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-slate-500/15 text-slate-600 dark:bg-slate-400/20 dark:text-slate-300">Drained</span>
                 )}
                 {issueReasons.includes('no_data') && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(236, 72, 153, 0.15)', color: '#db2777' }}>No Data</span>
@@ -658,8 +657,10 @@ function LinkRow({ link, linksWithIssues, criticalityMap, bucketMinutes = 60, da
 export function LinkStatusTimelines({
   timeRange = '24h',
   onTimeRangeChange,
-  issueFilters = ['packet_loss', 'high_latency', 'high_utilization', 'extended_loss', 'drained', 'interface_errors', 'discards', 'carrier_transitions'],
-  healthFilters = ['healthy', 'degraded', 'unhealthy', 'disabled'],
+  issueFilters = ['packet_loss', 'high_latency', 'high_utilization', 'interface_errors', 'discards', 'carrier_transitions'],
+  healthFilters = ['healthy', 'degraded', 'unhealthy'],
+  showDrained = false,
+  onShowDrainedChange,
   linksWithIssues,
   linksWithHealth,
   criticalityMap,
@@ -704,7 +705,6 @@ export function LinkStatusTimelines({
       if (status === 'healthy' && healthFilters.includes('healthy')) return true
       if (status === 'degraded' && healthFilters.includes('degraded')) return true
       if (status === 'unhealthy' && healthFilters.includes('unhealthy')) return true
-      if (status === 'disabled' && healthFilters.includes('disabled')) return true
       if (status === 'no_data' && healthFilters.includes('unhealthy')) return true // no_data maps to unhealthy
       return false
     })
@@ -733,7 +733,11 @@ export function LinkStatusTimelines({
         return false
       }
 
-      // Check if link matches issue filters
+      // Hide currently drained links unless showDrained is enabled
+      if (link.drained && !showDrained) {
+        return false
+      }
+
       const matchesIssue = hasIssues
         ? issueReasons.some(reason => issueTypesSelected.includes(reason))
         : noIssuesSelected
@@ -745,13 +749,13 @@ export function LinkStatusTimelines({
     })
 
     // Sort by most recent issue (higher index in hours = more recent)
-    // Issues are: unhealthy, degraded, disabled
+    // Issues are: unhealthy, degraded
     return filtered.sort((a, b) => {
       const getLatestIssueIndex = (link: LinkHistory): number => {
         if (!link.hours) return -1
         for (let i = link.hours.length - 1; i >= 0; i--) {
           const status = link.hours[i].status
-          if (status === 'unhealthy' || status === 'degraded' || status === 'disabled') {
+          if (status === 'unhealthy' || status === 'degraded') {
             return i
           }
         }
@@ -765,7 +769,12 @@ export function LinkStatusTimelines({
       return bIndex - aIndex
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.links, issueFilters, healthFilters, noIssuesSelected, issueTypesSelected, linksWithIssues, linksWithHealth])
+  }, [data?.links, issueFilters, healthFilters, noIssuesSelected, issueTypesSelected, showDrained, linksWithIssues, linksWithHealth])
+
+  const drainedCount = useMemo(() => {
+    if (!data?.links) return 0
+    return data.links.filter(link => link.drained).length
+  }, [data?.links])
 
   if (isLoading) {
     return (
@@ -808,23 +817,40 @@ export function LinkStatusTimelines({
             ({filteredLinks.length} link{filteredLinks.length !== 1 ? 's' : ''})
           </span>
         </h3>
-        {onTimeRangeChange && (
-          <div className="inline-flex rounded-lg border border-border bg-background/50 p-0.5 ml-auto">
-            {timeRangeOptions.map((opt) => (
-              <button
-                key={opt.value}
-                onClick={() => onTimeRangeChange(opt.value)}
-                className={`px-2.5 py-0.5 text-xs rounded-md transition-colors ${
-                  timeRange === opt.value
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-        )}
+        <div className="flex items-center gap-2 ml-auto">
+          {onShowDrainedChange && (
+            <button
+              onClick={() => onShowDrainedChange(!showDrained)}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs rounded-md border border-border bg-background/50 transition-colors hover:bg-muted/50"
+            >
+              <div className={`w-3 h-3 rounded-sm transition-colors ${showDrained ? 'bg-primary' : 'bg-muted-foreground/20 border border-muted-foreground/30'}`}>
+                {showDrained && (
+                  <svg viewBox="0 0 12 12" className="w-3 h-3 text-primary-foreground">
+                    <path d="M3.5 6L5.5 8L8.5 4" stroke="currentColor" strokeWidth="1.5" fill="none" strokeLinecap="round" strokeLinejoin="round" />
+                  </svg>
+                )}
+              </div>
+              <span className={showDrained ? 'text-foreground' : 'text-muted-foreground'}>Drained ({drainedCount})</span>
+            </button>
+          )}
+          {onTimeRangeChange && (
+            <div className="inline-flex rounded-lg border border-border bg-background/50 p-0.5">
+              {timeRangeOptions.map((opt) => (
+                <button
+                  key={opt.value}
+                  onClick={() => onTimeRangeChange(opt.value)}
+                  className={`px-2.5 py-0.5 text-xs rounded-md transition-colors ${
+                    timeRange === opt.value
+                      ? 'bg-background text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  }`}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
       {/* Legend */}
@@ -846,8 +872,8 @@ export function LinkStatusTimelines({
           <span>No Data</span>
         </div>
         <div className="flex items-center gap-1.5">
-          <div className="w-2.5 h-2.5 rounded-sm bg-gray-500 dark:bg-gray-700" />
-          <span>Disabled</span>
+          <div className="w-2.5 h-2.5 rounded-sm bg-muted-foreground/20 border border-muted-foreground/30" style={{ backgroundImage: 'repeating-linear-gradient(135deg, rgba(120,120,120,0.9), rgba(120,120,120,0.9) 1.5px, transparent 1.5px, transparent 3px)' }} />
+          <span>Drained</span>
         </div>
       </div>
 

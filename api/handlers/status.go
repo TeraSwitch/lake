@@ -1061,6 +1061,7 @@ func fetchStatusData(ctx context.Context) *StatusResponse {
 type LinkHourStatus struct {
 	Hour         string  `json:"hour"`
 	Status       string  `json:"status"` // "healthy", "degraded", "unhealthy", "no_data"
+	Drained      bool    `json:"drained,omitempty"`
 	AvgLatencyUs float64 `json:"avg_latency_us"`
 	AvgLossPct   float64 `json:"avg_loss_pct"`
 	Samples      uint64  `json:"samples"`
@@ -1099,8 +1100,9 @@ type LinkHistory struct {
 	BandwidthBps   int64            `json:"bandwidth_bps"`
 	CommittedRttUs float64          `json:"committed_rtt_us"`
 	IsDown         bool             `json:"is_down"`
+	Drained        bool             `json:"drained,omitempty"`
 	Hours          []LinkHourStatus `json:"hours"`
-	IssueReasons   []string         `json:"issue_reasons"` // "packet_loss", "high_latency", "drained", "no_data", "interface_errors", "discards", "carrier_transitions", "high_utilization", "down"
+	IssueReasons   []string         `json:"issue_reasons"` // "packet_loss", "high_latency", "no_data", "interface_errors", "discards", "carrier_transitions", "high_utilization"
 }
 
 type LinkHistoryResponse struct {
@@ -1140,7 +1142,14 @@ func GetLinkHistory(w http.ResponseWriter, r *http.Request) {
 
 	// Cache miss - fetch fresh data
 	w.Header().Set("X-Cache", "MISS")
-	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	timeout := 20 * time.Second
+	switch timeRange {
+	case "3d":
+		timeout = 40 * time.Second
+	case "7d":
+		timeout = 60 * time.Second
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
 	defer cancel()
 
 	resp, err := fetchLinkHistoryData(ctx, timeRange, requestedBuckets)
@@ -1154,6 +1163,21 @@ func GetLinkHistory(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
 		log.Printf("JSON encoding error: %v", err)
 	}
+}
+
+// snapBucketMinutes rounds the bucket size to a clean interval that divides
+// evenly into hours for readable bucket boundaries.
+func snapBucketMinutes(raw int) int {
+	if raw < 5 {
+		return 5
+	}
+	clean := []int{240, 180, 120, 60, 30, 20, 15, 10, 5}
+	for _, c := range clean {
+		if raw >= c {
+			return c
+		}
+	}
+	return 5
 }
 
 // fetchLinkHistoryData performs the actual link history data fetch from the database.
@@ -1182,19 +1206,16 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 	}
 
 	// Calculate bucket size to fit requested number of buckets
-	bucketMinutes := totalMinutes / requestedBuckets
-	if bucketMinutes < 5 {
-		bucketMinutes = 5 // minimum 5 minutes
-	}
+	bucketMinutes := snapBucketMinutes(totalMinutes / requestedBuckets)
 	bucketCount := totalMinutes / bucketMinutes
 	totalHours := totalMinutes / 60
 
 	// Build the bucket interval expression
 	var bucketInterval string
 	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR)", bucketMinutes/60)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
 	} else {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE)", bucketMinutes)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
 	}
 
 	// Get all WAN links with their metadata
@@ -1258,7 +1279,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 	// Get stats for the configured time range, grouped by direction (A→Z vs Z→A).
 	// Loss is computed as the max of 5-minute sub-bucket loss percentages within each
 	// display bucket, matching Grafana's [5m] window for sharper spike visibility.
-	lossBucketInterval := fmt.Sprintf("toStartOfInterval(f.event_ts, INTERVAL %d MINUTE)", min(bucketMinutes, 5))
+	lossBucketInterval := fmt.Sprintf("toStartOfInterval(f.event_ts, INTERVAL %d MINUTE, 'UTC')", min(bucketMinutes, 5))
 	timeFilterExpr := fmt.Sprintf("f.event_ts > now() - INTERVAL %d HOUR", totalHours)
 	historyQuery := `
 		WITH loss_sub AS (
@@ -1344,6 +1365,13 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 	}
 	if err := historyRows.Err(); err != nil {
 		return nil, fmt.Errorf("history rows iteration error: %w", err)
+	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("context cancelled during history query: %w", ctx.Err())
+	}
+	// If we have links but the history query returned nothing, the query likely failed silently
+	if len(linkMap) > 0 && len(linkBucketMap) == 0 {
+		return nil, fmt.Errorf("history query returned no data for %d links (range=%s) — likely timed out", len(linkMap), timeRange)
 	}
 
 	// Compute aggregate stats for each bucket (combining both directions)
@@ -1441,6 +1469,9 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 	if err := interfaceRows.Err(); err != nil {
 		return nil, fmt.Errorf("interface rows iteration error: %w", err)
 	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("context cancelled during interface query: %w", ctx.Err())
+	}
 
 	// Get utilization per link per bucket (traffic rate / capacity)
 	utilizationQuery := `
@@ -1491,15 +1522,18 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 	if err := utilizationRows.Err(); err != nil {
 		return nil, fmt.Errorf("utilization rows iteration error: %w", err)
 	}
+	if ctx.Err() != nil {
+		return nil, fmt.Errorf("context cancelled during utilization query: %w", ctx.Err())
+	}
 
 	// Get historical link status per bucket from dim_dz_links_history
 	// This tells us if a link was drained at each point in time
 	// Build bucket interval for snapshot_ts (history table uses snapshot_ts, not event_ts)
 	var historyBucketInterval string
 	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
-		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d HOUR)", bucketMinutes/60)
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
 	} else {
-		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d MINUTE)", bucketMinutes)
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
 	}
 
 	statusHistoryQuery := `
@@ -1518,12 +1552,42 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 		log.Printf("Link status history query error: %v", err)
 	}
 
-	// Build map of link status per bucket
-	type linkBucketKey struct {
-		linkPK string
-		bucket string
+	// Also fetch the most recent status BEFORE the time range for each link.
+	// This serves as the baseline for carry-forward when the drain happened before the window.
+	baselineQuery := `
+		SELECT pk as link_pk, argMax(status, snapshot_ts) as status
+		FROM dim_dz_links_history
+		WHERE snapshot_ts <= now() - INTERVAL ? HOUR
+		GROUP BY link_pk
+	`
+	baselineRows, baselineErr := safeQueryRows(ctx, baselineQuery, totalHours)
+	if baselineErr != nil {
+		log.Printf("Link status baseline query error: %v", baselineErr)
 	}
-	linkStatusHistory := make(map[linkBucketKey]string)
+	linkBaselineStatus := make(map[string]string) // linkPK -> status before time range
+	if baselineRows != nil {
+		defer baselineRows.Close()
+		for baselineRows.Next() {
+			var linkPK, status string
+			if err := baselineRows.Scan(&linkPK, &status); err != nil {
+				log.Printf("baseline scan error: %v", err)
+				break
+			}
+			linkBaselineStatus[linkPK] = status
+		}
+		if err := baselineRows.Err(); err != nil {
+			log.Printf("baseline rows iteration error: %v", err)
+		}
+	}
+
+	// Build per-link sorted history of statuses, keyed by bucket time string
+	// Since history is sparse (only records transitions), we need to carry forward
+	// the last known status for buckets without entries.
+	type statusEntry struct {
+		bucket string
+		status string
+	}
+	linkStatusEntries := make(map[string][]statusEntry) // linkPK -> sorted entries
 
 	if statusRows != nil {
 		defer statusRows.Close()
@@ -1533,11 +1597,26 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			if err := statusRows.Scan(&linkPK, &bucket, &status); err != nil {
 				return nil, fmt.Errorf("status history scan error: %w", err)
 			}
-			key := linkBucketKey{linkPK: linkPK, bucket: bucket.UTC().Format(time.RFC3339)}
-			linkStatusHistory[key] = status
+			key := bucket.UTC().Format(time.RFC3339)
+			linkStatusEntries[linkPK] = append(linkStatusEntries[linkPK], statusEntry{bucket: key, status: status})
 		}
 		if err := statusRows.Err(); err != nil {
 			return nil, fmt.Errorf("status rows iteration error: %w", err)
+		}
+	}
+
+	// Build a fast lookup map and also sort entries for carry-forward
+	type linkBucketKey struct {
+		linkPK string
+		bucket string
+	}
+	linkStatusHistory := make(map[linkBucketKey]string)
+	for linkPK, entries := range linkStatusEntries {
+		// Sort by bucket time
+		sort.Slice(entries, func(i, j int) bool { return entries[i].bucket < entries[j].bucket })
+		linkStatusEntries[linkPK] = entries
+		for _, e := range entries {
+			linkStatusHistory[linkBucketKey{linkPK: linkPK, bucket: e.bucket}] = e.status
 		}
 	}
 
@@ -1583,10 +1662,6 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 		// Check if this link has any issues in the time range
 		buckets := linkBuckets[pk]
 
-		if isCurrentlyDrained {
-			issueReasons["drained"] = true
-		}
-
 		// Check latency/loss issues (skip buckets where link was drained)
 		for _, b := range buckets {
 			bucketKey := b.bucket.UTC().Format(time.RFC3339)
@@ -1609,24 +1684,10 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			}
 		}
 
-		// Also check if link was drained at any point in the history
-		for key := range linkStatusHistory {
-			if key.linkPK == pk {
-				if linkStatusHistory[key] == "soft-drained" || linkStatusHistory[key] == "hard-drained" {
-					issueReasons["drained"] = true
-					break
-				}
-			}
-		}
+		// Determine if this link is currently drained (for the top-level Drained field)
+		linkIsDrained := isCurrentlyDrained
 
 		// Include all links (both healthy and those with issues)
-
-		// Convert issue reasons to slice
-		var issueReasonsList []string
-		for reason := range issueReasons {
-			issueReasonsList = append(issueReasonsList, reason)
-		}
-		sort.Strings(issueReasonsList)
 
 		// Build bucket status array
 		bucketMap := make(map[string]bucketStats)
@@ -1635,24 +1696,38 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			bucketMap[key] = b
 		}
 
+		// Build a function to resolve drained status per bucket for this link.
+		// History is sparse (only records transitions), so for buckets without entries,
+		// we carry forward the most recent known status before that bucket.
+		entries := linkStatusEntries[pk]
+		isDrainedStatus := func(s string) bool {
+			return s == "soft-drained" || s == "hard-drained"
+		}
+		resolveDrained := func(bucketKey string) bool {
+			// Direct hit in history
+			if s, ok := linkStatusHistory[linkBucketKey{linkPK: pk, bucket: bucketKey}]; ok {
+				return isDrainedStatus(s)
+			}
+			// No direct hit — find the most recent entry before this bucket
+			if len(entries) > 0 {
+				idx := sort.Search(len(entries), func(i int) bool { return entries[i].bucket > bucketKey })
+				if idx > 0 {
+					return isDrainedStatus(entries[idx-1].status)
+				}
+			}
+			// No in-range entries before this bucket — fall back to baseline (last status before time range)
+			if baseline, ok := linkBaselineStatus[pk]; ok {
+				return isDrainedStatus(baseline)
+			}
+			return false
+		}
+
 		var hourStatuses []LinkHourStatus
 		for i := bucketCount - 1; i >= 0; i-- {
 			bucketStart := now.Truncate(bucketDuration).Add(-time.Duration(i) * bucketDuration)
 			key := bucketStart.UTC().Format(time.RFC3339)
 
-			// Check historical status for this bucket
-			histKey := linkBucketKey{linkPK: pk, bucket: key}
-			historicalStatus, hasHistory := linkStatusHistory[histKey]
-			wasDrained := hasHistory && (historicalStatus == "soft-drained" || historicalStatus == "hard-drained")
-
-			// If link was drained at this time (confirmed by history), show as disabled
-			if wasDrained {
-				hourStatuses = append(hourStatuses, LinkHourStatus{
-					Hour:   key,
-					Status: "disabled",
-				})
-				continue
-			}
+			wasDrained := resolveDrained(key)
 
 			// Check if we have latency/traffic data for this bucket
 			if stats, ok := bucketMap[key]; ok {
@@ -1665,6 +1740,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 				hourStatus := LinkHourStatus{
 					Hour:         key,
 					Status:       status,
+					Drained:      wasDrained,
 					AvgLatencyUs: stats.avgLatency,
 					AvgLossPct:   stats.lossPct,
 					Samples:      stats.samples,
@@ -1763,8 +1839,9 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 				hourStatuses = append(hourStatuses, hourStatus)
 			} else {
 				hourStatuses = append(hourStatuses, LinkHourStatus{
-					Hour:   key,
-					Status: "no_data",
+					Hour:    key,
+					Status:  "no_data",
+					Drained: wasDrained,
 				})
 			}
 		}
@@ -1781,67 +1858,14 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			}
 		}
 
-		// Post-process: treat consecutive 100% loss for 2+ hours as disabled
-		bucketsFor2Hours := 120 / bucketMinutes
-		if bucketsFor2Hours < 1 {
-			bucketsFor2Hours = 1
-		}
+		isDown := downLinkPKs[pk] && !isCurrentlyDrained
 
-		// Find runs of 100% loss and mark as disabled if >= 2 hours
-		i := 0
-		for i < len(hourStatuses) {
-			// Find start of a 100% loss run
-			if hourStatuses[i].AvgLossPct >= 99.9 && hourStatuses[i].Status != "disabled" {
-				runStart := i
-				// Find end of the run
-				for i < len(hourStatuses) && hourStatuses[i].AvgLossPct >= 99.9 && hourStatuses[i].Status != "disabled" {
-					i++
-				}
-				runLength := i - runStart
-				// If run is >= 2 hours, mark all as disabled
-				if runLength >= bucketsFor2Hours {
-					for j := runStart; j < i; j++ {
-						hourStatuses[j].Status = "disabled"
-					}
-					issueReasons["extended_loss"] = true
-				}
-			} else {
-				i++
-			}
-		}
-
-		// If all packet loss buckets are now disabled, remove packet_loss from reasons
-		// (extended_loss is a more accurate classification for extended outages)
-		if issueReasons["extended_loss"] && issueReasons["packet_loss"] {
-			hasNonDisabledLoss := false
-			for _, h := range hourStatuses {
-				if h.AvgLossPct >= LossWarningPct && h.Status != "disabled" {
-					hasNonDisabledLoss = true
-					break
-				}
-			}
-			if !hasNonDisabledLoss {
-				delete(issueReasons, "packet_loss")
-			}
-		}
-
-		// Update issue reasons list after potential disabled additions
-		issueReasonsList = nil
+		// Convert issue reasons to slice (after all tracking is complete)
+		var issueReasonsList []string
 		for reason := range issueReasons {
 			issueReasonsList = append(issueReasonsList, reason)
 		}
 		sort.Strings(issueReasonsList)
-
-		isDown := downLinkPKs[pk] && !isCurrentlyDrained
-		if isDown {
-			issueReasons["down"] = true
-			// Rebuild issue reasons list
-			issueReasonsList = nil
-			for reason := range issueReasons {
-				issueReasonsList = append(issueReasonsList, reason)
-			}
-			sort.Strings(issueReasonsList)
-		}
 
 		// Only expose committed RTT for inter-metro WAN links (not DZX)
 		// so the frontend doesn't apply latency classification to DZX links
@@ -1862,6 +1886,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			BandwidthBps:   meta.bandwidthBps,
 			CommittedRttUs: responseCommittedRtt,
 			IsDown:         isDown,
+			Drained:        linkIsDrained,
 			Hours:          hourStatuses,
 			IssueReasons:   issueReasonsList,
 		})
@@ -2034,19 +2059,16 @@ func fetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuck
 	}
 
 	// Calculate bucket size to fit requested number of buckets
-	bucketMinutes := totalMinutes / requestedBuckets
-	if bucketMinutes < 5 {
-		bucketMinutes = 5 // minimum 5 minutes
-	}
+	bucketMinutes := snapBucketMinutes(totalMinutes / requestedBuckets)
 	bucketCount := totalMinutes / bucketMinutes
 	totalHours := totalMinutes / 60
 
 	// Build the bucket interval expression
 	var bucketInterval string
 	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR)", bucketMinutes/60)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
 	} else {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE)", bucketMinutes)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
 	}
 
 	// Get all devices with their metadata
@@ -2143,9 +2165,9 @@ func fetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuck
 	// Get historical device status per bucket
 	var historyBucketInterval string
 	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
-		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d HOUR)", bucketMinutes/60)
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
 	} else {
-		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d MINUTE)", bucketMinutes)
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
 	}
 
 	statusHistoryQuery := `
@@ -2546,10 +2568,7 @@ func fetchDeviceInterfaceHistoryData(ctx context.Context, devicePK string, timeR
 
 	// Calculate bucket size in minutes
 	totalMinutes := totalHours * 60
-	bucketMinutes := totalMinutes / requestedBuckets
-	if bucketMinutes < 1 {
-		bucketMinutes = 1
-	}
+	bucketMinutes := snapBucketMinutes(totalMinutes / requestedBuckets)
 	bucketCount := totalMinutes / bucketMinutes
 
 	// Build interval expression for ClickHouse
@@ -2760,10 +2779,7 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 		totalMinutes = 24 * 60
 	}
 
-	bucketMinutes := totalMinutes / requestedBuckets
-	if bucketMinutes < 5 {
-		bucketMinutes = 5
-	}
+	bucketMinutes := snapBucketMinutes(totalMinutes / requestedBuckets)
 	bucketCount := totalMinutes / bucketMinutes
 	totalHours := totalMinutes / 60
 	bucketDuration := time.Duration(bucketMinutes) * time.Minute
@@ -2772,9 +2788,9 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 	// Build the bucket interval expression
 	var bucketInterval string
 	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR)", bucketMinutes/60)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
 	} else {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE)", bucketMinutes)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
 	}
 
 	// Get link metadata
@@ -2807,7 +2823,7 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 	// Get latency/loss stats per direction.
 	// Loss is computed as the max of 5-minute sub-bucket loss percentages within each
 	// display bucket, matching Grafana's [5m] window for sharper spike visibility.
-	singleLossBucket := fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE)", min(bucketMinutes, 5))
+	singleLossBucket := fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE, 'UTC')", min(bucketMinutes, 5))
 	singleTimeFilter := fmt.Sprintf("event_ts > now() - INTERVAL %d HOUR", totalHours)
 	latencyQuery := `
 		WITH loss_sub AS (
@@ -3102,10 +3118,7 @@ func fetchSingleDeviceHistoryData(ctx context.Context, devicePK string, timeRang
 		totalMinutes = 24 * 60
 	}
 
-	bucketMinutes := totalMinutes / requestedBuckets
-	if bucketMinutes < 5 {
-		bucketMinutes = 5
-	}
+	bucketMinutes := snapBucketMinutes(totalMinutes / requestedBuckets)
 	bucketCount := totalMinutes / bucketMinutes
 	totalHours := totalMinutes / 60
 	bucketDuration := time.Duration(bucketMinutes) * time.Minute
@@ -3114,9 +3127,9 @@ func fetchSingleDeviceHistoryData(ctx context.Context, devicePK string, timeRang
 	// Build the bucket interval expression
 	var bucketInterval string
 	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR)", bucketMinutes/60)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
 	} else {
-		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE)", bucketMinutes)
+		bucketInterval = fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
 	}
 
 	// Get device metadata
@@ -3198,9 +3211,9 @@ func fetchSingleDeviceHistoryData(ctx context.Context, devicePK string, timeRang
 	// Get historical device status per bucket
 	var historyBucketInterval string
 	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
-		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d HOUR)", bucketMinutes/60)
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
 	} else {
-		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d MINUTE)", bucketMinutes)
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
 	}
 
 	statusHistoryQuery := `
