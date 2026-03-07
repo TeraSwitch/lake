@@ -8,6 +8,7 @@ import (
 
 	flag "github.com/spf13/pflag"
 
+	"github.com/joho/godotenv"
 	"github.com/malbeclabs/doublezero/config"
 	"github.com/malbeclabs/lake/admin/internal/admin"
 	"github.com/malbeclabs/lake/indexer/pkg/clickhouse"
@@ -63,6 +64,7 @@ func run() error {
 	backfillInternetMetroLatencyFlag := flag.Bool("backfill-internet-metro-latency", false, "Backfill internet metro latency fact table from on-chain data")
 	backfillDeviceInterfaceCountersFlag := flag.Bool("backfill-device-interface-counters", false, "Backfill device interface counters fact table from InfluxDB")
 	recomputeSparseDeltasFlag := flag.Bool("recompute-sparse-deltas", false, "Recompute sparse counter deltas (errors/discards) from absolute values in ClickHouse")
+	backfillSparseCountersFlag := flag.Bool("backfill-sparse-counters", false, "Forward-fill NULL sparse counters (errors/discards) from last known values in ClickHouse")
 
 	// Backfill options (latency - epoch-based)
 	dzEnvFlag := flag.String("dz-env", config.EnvMainnetBeta, "DZ ledger environment (devnet, testnet, mainnet-beta)")
@@ -98,6 +100,10 @@ func run() error {
 	remoteClickhousePasswordFlag := flag.String("remote-clickhouse-password", "", "Remote ClickHouse password (or set REMOTE_CH_PASSWORD env var)")
 
 	flag.Parse()
+
+	// Load .env file. godotenv does not override existing env vars, so
+	// explicitly set env vars take precedence.
+	_ = godotenv.Load()
 
 	log := logger.New(*verboseFlag)
 
@@ -369,6 +375,31 @@ func run() error {
 				EndTime:       endTime,
 				ChunkInterval: *chunkIntervalFlag,
 				DryRun:        *dryRunFlag,
+			},
+		)
+	}
+
+	if *backfillSparseCountersFlag {
+		if *clickhouseAddrFlag == "" {
+			return fmt.Errorf("--clickhouse-addr is required for --backfill-sparse-counters")
+		}
+		if startTime.IsZero() {
+			return fmt.Errorf("--start-time or --start-time-ago is required for --backfill-sparse-counters")
+		}
+		if endTime.IsZero() {
+			return fmt.Errorf("--end-time or --end-time-ago is required for --backfill-sparse-counters")
+		}
+
+		return admin.BackfillSparseCounters(
+			log,
+			*clickhouseAddrFlag, *clickhouseDatabaseFlag, *clickhouseUsernameFlag, *clickhousePasswordFlag,
+			*clickhouseSecureFlag,
+			admin.BackfillSparseCountersConfig{
+				StartTime:     startTime,
+				EndTime:       endTime,
+				ChunkInterval: *chunkIntervalFlag,
+				DryRun:        *dryRunFlag,
+				Yes:           *yesFlag,
 			},
 		)
 	}
