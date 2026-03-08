@@ -4120,12 +4120,11 @@ export async function fetchSearch(
   return res.json()
 }
 
-// Link outages types
-export type OutageTimeRange = '3h' | '6h' | '12h' | '24h' | '3d' | '7d' | '30d'
-export type OutageType = 'status' | 'packet_loss' | 'no_data'
-export type OutageThreshold = 1 | 10
+// Incidents types and functions
+export type IncidentTimeRange = '3h' | '6h' | '12h' | '24h' | '3d' | '7d' | '30d'
+export type IncidentType = 'packet_loss' | 'errors' | 'discards' | 'carrier' | 'no_data'
 
-export interface LinkOutage {
+export interface LinkIncident {
   id: string
   link_pk: string
   link_code: string
@@ -4133,57 +4132,172 @@ export interface LinkOutage {
   side_a_metro: string
   side_z_metro: string
   contributor_code: string
-  outage_type: OutageType
-  outage_types?: OutageType[] // populated when multiple ongoing outages are merged for the same link
-  // Status outages
-  previous_status?: string
-  new_status?: string
-  // Packet loss outages
+  incident_type: IncidentType
   threshold_pct?: number
   peak_loss_pct?: number
-  // Common
+  threshold_count?: number
+  peak_count?: number
   started_at: string
   ended_at?: string
   duration_seconds?: number
   is_ongoing: boolean
-  severity?: 'degraded' | 'outage'
+  confirmed: boolean
+  is_drained: boolean
+  severity: 'degraded' | 'incident'
+  affected_interfaces?: string[]
 }
 
-export interface LinkOutagesSummary {
+export interface DrainedLinkInfo {
+  link_pk: string
+  link_code: string
+  link_type: string
+  side_a_metro: string
+  side_z_metro: string
+  contributor_code: string
+  drain_status: string
+  drained_since: string
+  active_incidents: LinkIncident[]
+  recent_incidents: LinkIncident[]
+  last_incident_end?: string
+  clear_for_seconds?: number
+  readiness: 'red' | 'yellow' | 'green' | 'gray'
+}
+
+export interface LinkIncidentsSummary {
   total: number
   ongoing: number
-  by_type: {
-    status: number
-    packet_loss: number
-    no_data?: number
-  }
+  by_type: Record<string, number>
 }
 
-export interface LinkOutagesResponse {
-  outages: LinkOutage[]
-  summary: LinkOutagesSummary
+export interface DrainedSummary {
+  total: number
+  with_incidents: number
+  ready: number
+  not_ready: number
 }
 
-export interface FetchLinkOutagesParams {
-  range?: OutageTimeRange
-  threshold?: OutageThreshold
-  type?: 'all' | 'status' | 'loss' | 'no_data'
-  filter?: string // Format: "type:value,type:value" (e.g., "metro:SAO,contributor:ZAYO")
+export interface LinkIncidentsResponse {
+  active: LinkIncident[]
+  drained: DrainedLinkInfo[]
+  active_summary: LinkIncidentsSummary
+  drained_summary: DrainedSummary
 }
 
-export async function fetchLinkOutages(params: FetchLinkOutagesParams = {}): Promise<LinkOutagesResponse> {
+export interface FetchLinkIncidentsParams {
+  range?: IncidentTimeRange
+  threshold?: number
+  errors_threshold?: number
+  discards_threshold?: number
+  carrier_threshold?: number
+  min_duration?: number
+  coalesce_gap?: number
+  type?: 'all' | IncidentType
+  filter?: string
+}
+
+export async function fetchLinkIncidents(params: FetchLinkIncidentsParams = {}): Promise<LinkIncidentsResponse> {
   const searchParams = new URLSearchParams()
   if (params.range) searchParams.set('range', params.range)
   if (params.threshold) searchParams.set('threshold', params.threshold.toString())
+  if (params.errors_threshold) searchParams.set('errors_threshold', params.errors_threshold.toString())
+  if (params.discards_threshold) searchParams.set('discards_threshold', params.discards_threshold.toString())
+  if (params.carrier_threshold) searchParams.set('carrier_threshold', params.carrier_threshold.toString())
+  if (params.min_duration) searchParams.set('min_duration', params.min_duration.toString())
+  if (params.coalesce_gap != null) searchParams.set('coalesce_gap', params.coalesce_gap.toString())
   if (params.type) searchParams.set('type', params.type)
   if (params.filter) searchParams.set('filter', params.filter)
 
   const queryString = searchParams.toString()
-  const url = `/api/outages/links${queryString ? `?${queryString}` : ''}`
+  const url = `/api/incidents/links${queryString ? `?${queryString}` : ''}`
 
   const res = await fetchWithRetry(url)
   if (!res.ok) {
-    throw new Error('Failed to fetch link outages')
+    throw new Error('Failed to fetch link incidents')
+  }
+  return res.json()
+}
+
+// Device incident types
+export type DeviceIncidentType = 'errors' | 'discards' | 'carrier' | 'no_data'
+
+export interface DeviceIncident {
+  id: string
+  device_pk: string
+  device_code: string
+  device_type: string
+  metro: string
+  contributor_code: string
+  incident_type: DeviceIncidentType
+  threshold_count?: number
+  peak_count?: number
+  started_at: string
+  ended_at?: string
+  duration_seconds?: number
+  is_ongoing: boolean
+  confirmed: boolean
+  is_drained: boolean
+  severity: 'degraded' | 'incident'
+  affected_interfaces?: string[]
+}
+
+export interface DrainedDeviceInfo {
+  device_pk: string
+  device_code: string
+  device_type: string
+  metro: string
+  contributor_code: string
+  drain_status: string
+  drained_since: string
+  active_incidents: DeviceIncident[]
+  recent_incidents: DeviceIncident[]
+  last_incident_end?: string
+  clear_for_seconds?: number
+  readiness: 'red' | 'yellow' | 'green' | 'gray'
+}
+
+export interface DeviceIncidentsSummary {
+  total: number
+  ongoing: number
+  by_type: Record<string, number>
+}
+
+export interface DeviceIncidentsResponse {
+  active: DeviceIncident[]
+  drained: DrainedDeviceInfo[]
+  active_summary: DeviceIncidentsSummary
+  drained_summary: DrainedSummary
+}
+
+export interface FetchDeviceIncidentsParams {
+  range?: IncidentTimeRange
+  errors_threshold?: number
+  discards_threshold?: number
+  carrier_threshold?: number
+  min_duration?: number
+  coalesce_gap?: number
+  type?: 'all' | DeviceIncidentType
+  filter?: string
+  link_interfaces?: boolean
+}
+
+export async function fetchDeviceIncidents(params: FetchDeviceIncidentsParams = {}): Promise<DeviceIncidentsResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.range) searchParams.set('range', params.range)
+  if (params.errors_threshold) searchParams.set('errors_threshold', params.errors_threshold.toString())
+  if (params.discards_threshold) searchParams.set('discards_threshold', params.discards_threshold.toString())
+  if (params.carrier_threshold) searchParams.set('carrier_threshold', params.carrier_threshold.toString())
+  if (params.min_duration) searchParams.set('min_duration', params.min_duration.toString())
+  if (params.coalesce_gap != null) searchParams.set('coalesce_gap', params.coalesce_gap.toString())
+  if (params.type) searchParams.set('type', params.type)
+  if (params.filter) searchParams.set('filter', params.filter)
+  if (params.link_interfaces) searchParams.set('link_interfaces', 'true')
+
+  const queryString = searchParams.toString()
+  const url = `/api/incidents/devices${queryString ? `?${queryString}` : ''}`
+
+  const res = await fetchWithRetry(url)
+  if (!res.ok) {
+    throw new Error('Failed to fetch device incidents')
   }
   return res.json()
 }

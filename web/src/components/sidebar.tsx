@@ -24,7 +24,7 @@ import {
   Shield,
   ShieldCheck,
   Wrench,
-  AlertTriangle,
+  ShieldAlert,
   Gauge,
   BarChart3,
   Zap,
@@ -49,7 +49,7 @@ export function Sidebar() {
   // Route detection
   const isStatusRoute = location.pathname.startsWith('/status')
   const isTimelineRoute = location.pathname === '/timeline'
-  const isOutagesRoute = location.pathname === '/outages'
+  const isIncidentsRoute = location.pathname.startsWith('/incidents')
   const isChatRoute = location.pathname.startsWith('/chat')
   const isChatSessions = location.pathname === '/chat/sessions'
   const isQueryRoute = location.pathname.startsWith('/query')
@@ -222,8 +222,8 @@ export function Sidebar() {
           <Link to="/timeline" className={collapsedIconClass(isTimelineRoute)} title="Timeline">
             <Clock className="h-4 w-4" />
           </Link>
-          <Link to="/outages" className={collapsedIconClass(isOutagesRoute)} title="Outages">
-            <AlertTriangle className="h-4 w-4" />
+          <Link to="/incidents/links" className={collapsedIconClass(isIncidentsRoute)} title="Incidents">
+            <ShieldAlert className="h-4 w-4" />
           </Link>
           <button
             onClick={(e) => {
@@ -442,9 +442,9 @@ export function Sidebar() {
               <Clock className="h-4 w-4" />
               Timeline
             </Link>
-            <Link to="/outages" className={navItemClass(isOutagesRoute)}>
-              <AlertTriangle className="h-4 w-4" />
-              Outages
+            <Link to="/incidents/links" className={navItemClass(isIncidentsRoute)}>
+              <ShieldAlert className="h-4 w-4" />
+              Incidents
             </Link>
 
             {/* Query with inline sub-items */}
