@@ -47,6 +47,33 @@ services:
       - neo4j-data:/data
       - neo4j-logs:/logs
 
+  temporal:
+    image: temporalio/auto-setup:latest
+    container_name: temporal
+    restart: unless-stopped
+    ports:
+      - "7233:7233"
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_USER: lakedev
+      POSTGRES_PWD: lakedev
+      POSTGRES_SEEDS: postgres
+      DEFAULT_NAMESPACE_RETENTION: 24h
+    depends_on:
+      - postgres
+
+  temporal-ui:
+    image: temporalio/ui:latest
+    container_name: temporal-ui
+    restart: unless-stopped
+    ports:
+      - "8233:8080"
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+    depends_on:
+      - temporal
+
 volumes:
   pgdata:
   clickhouse-data:

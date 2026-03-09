@@ -619,6 +619,19 @@ func main() {
 	handlers.InitUsageMetrics(serverCtx)
 	handlers.StartDailyResetWorker(serverCtx)
 
+	// Webhook subscription routes
+	r.Group(func(r chi.Router) {
+		r.Use(handlers.RequireAuth)
+		r.Get("/api/webhooks", handlers.ListWebhooks)
+		r.Post("/api/webhooks", handlers.CreateWebhook)
+		r.Get("/api/webhooks/{id}", handlers.GetWebhook)
+		r.Put("/api/webhooks/{id}", handlers.UpdateWebhook)
+		r.Delete("/api/webhooks/{id}", handlers.DeleteWebhook)
+		r.Post("/api/webhooks/{id}/rotate-secret", handlers.RotateWebhookSecret)
+		r.Get("/api/webhooks/{id}/deliveries", handlers.ListWebhookDeliveries)
+		r.Post("/api/webhooks/{id}/test", handlers.TestWebhook)
+	})
+
 	// Slack OAuth routes (available when SLACK_CLIENT_ID is set, regardless of bot mode)
 	if os.Getenv("SLACK_CLIENT_ID") != "" {
 		r.Group(func(r chi.Router) {
