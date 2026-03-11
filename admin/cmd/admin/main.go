@@ -23,6 +23,36 @@ var (
 	date    = "unknown"
 )
 
+// boolOrString is a flag that behaves like a bool but also accepts legacy
+// string values (e.g. "all", "external") without erroring. Any non-empty,
+// non-"false" value is treated as true.
+type boolOrString bool
+
+func (b *boolOrString) String() string {
+	if *b {
+		return "true"
+	}
+	return "false"
+}
+
+func (b *boolOrString) Set(s string) error {
+	switch s {
+	case "", "true", "1":
+		*b = true
+	case "false", "0":
+		*b = false
+	default:
+		// Accept any other string (e.g. "all", "external") as true
+		*b = true
+	}
+	return nil
+}
+
+func (b *boolOrString) Type() string { return "bool" }
+
+// IsBoolFlag tells pflag this flag can be used without a value (--flag means true).
+func (b *boolOrString) IsBoolFlag() bool { return true }
+
 func main() {
 	if err := run(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
@@ -102,10 +132,13 @@ func run() error {
 	pgMigrateStatusFlag := flag.Bool("pg-migrate-status", false, "Show PostgreSQL migration status")
 
 	// Remote tables command
-	setupRemoteTablesFlag := flag.String("setup-remote-tables", "", "Create remote proxy tables (all|external)")
+	var setupRemoteTables boolOrString
+	flag.Var(&setupRemoteTables, "setup-remote-tables", "Create remote proxy tables for local development")
 	remoteClickhouseAddrFlag := flag.String("remote-clickhouse-addr", "", "Remote ClickHouse host (or set REMOTE_CH_HOST env var)")
 	remoteClickhouseUserFlag := flag.String("remote-clickhouse-user", "", "Remote ClickHouse user (or set REMOTE_CH_USER env var)")
 	remoteClickhousePasswordFlag := flag.String("remote-clickhouse-password", "", "Remote ClickHouse password (or set REMOTE_CH_PASSWORD env var)")
+	remoteClickhouseDatabaseFlag := flag.String("remote-clickhouse-database", "", "Remote ClickHouse database to discover tables from (or set REMOTE_CH_DATABASE env var, default: lake)")
+	forceFlag := flag.Bool("force", false, "Force overwrite existing non-proxy tables when setting up remote tables")
 
 	flag.Parse()
 
@@ -175,7 +208,9 @@ func run() error {
 	if envRemoteCHPassword := os.Getenv("REMOTE_CH_PASSWORD"); envRemoteCHPassword != "" {
 		*remoteClickhousePasswordFlag = envRemoteCHPassword
 	}
-
+	if envRemoteCHDatabase := os.Getenv("REMOTE_CH_DATABASE"); envRemoteCHDatabase != "" {
+		*remoteClickhouseDatabaseFlag = envRemoteCHDatabase
+	}
 	// Resolve start/end time from absolute or relative flags
 	startTime, endTime, err := resolveTimeFlags(*startTimeFlag, *endTimeFlag, *startTimeAgoFlag, *endTimeAgoFlag)
 	if err != nil {
@@ -448,10 +483,7 @@ func run() error {
 		return admin.PgMigrateStatus(log, pgCfg)
 	}
 
-	if *setupRemoteTablesFlag != "" {
-		if *setupRemoteTablesFlag != "all" && *setupRemoteTablesFlag != "external" {
-			return fmt.Errorf("--setup-remote-tables must be 'all' or 'external'")
-		}
+	if setupRemoteTables {
 		if *clickhouseAddrFlag == "" {
 			return fmt.Errorf("--clickhouse-addr is required for --setup-remote-tables")
 		}
@@ -464,13 +496,18 @@ func run() error {
 		if *remoteClickhousePasswordFlag == "" {
 			return fmt.Errorf("--remote-clickhouse-password (or REMOTE_CH_PASSWORD) is required for --setup-remote-tables")
 		}
-		return admin.SetupRemoteTables(
-			log,
-			*clickhouseAddrFlag, *clickhouseDatabaseFlag, *clickhouseUsernameFlag, *clickhousePasswordFlag,
-			*clickhouseSecureFlag,
-			*remoteClickhouseAddrFlag, *remoteClickhouseUserFlag, *remoteClickhousePasswordFlag,
-			*setupRemoteTablesFlag,
-		)
+		return admin.SetupRemoteTables(log, admin.SetupRemoteTablesConfig{
+			LocalAddr:      *clickhouseAddrFlag,
+			LocalDatabase:  *clickhouseDatabaseFlag,
+			LocalUsername:  *clickhouseUsernameFlag,
+			LocalPassword:  *clickhousePasswordFlag,
+			LocalSecure:    *clickhouseSecureFlag,
+			RemoteHost:     *remoteClickhouseAddrFlag,
+			RemoteUser:     *remoteClickhouseUserFlag,
+			RemotePassword: *remoteClickhousePasswordFlag,
+			RemoteDatabase: *remoteClickhouseDatabaseFlag,
+			Force:          *forceFlag,
+		})
 	}
 
 	return nil
