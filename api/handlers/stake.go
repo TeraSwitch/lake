@@ -49,10 +49,8 @@ type StakeHistoryResponse struct {
 	Error     string              `json:"error,omitempty"`
 }
 
-func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
-	defer cancel()
-
+// fetchStakeOverviewData fetches stake overview data from ClickHouse.
+func fetchStakeOverviewData(ctx context.Context) (*StakeOverview, error) {
 	start := time.Now()
 	overview := StakeOverview{
 		FetchedAt: time.Now().UTC().Format(time.RFC3339),
@@ -102,7 +100,6 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 				FROM dim_solana_vote_accounts_history
 				WHERE snapshot_ts <= now() - INTERVAL 24 HOUR
 			),
-			-- Get latest user state at target time using argMax
 			users_at_time AS (
 				SELECT
 					entity_id,
@@ -113,7 +110,6 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 				GROUP BY entity_id
 				HAVING status = 'activated' AND client_ip != ''
 			),
-			-- Get latest vote account state at target time
 			validators_at_time AS (
 				SELECT
 					node_pubkey,
@@ -123,11 +119,9 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 				  AND activated_stake_lamports > 0
 				GROUP BY node_pubkey
 			),
-			-- Total network stake at that time
 			total_stake AS (
 				SELECT COALESCE(SUM(stake), 0) as total FROM validators_at_time
 			),
-			-- DZ stake: join current gossip (IP mapping doesn't change much) with historical validators
 			dz_stake AS (
 				SELECT COALESCE(SUM(v.stake), 0) as dz_total
 				FROM users_at_time u
@@ -152,7 +146,6 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 				FROM dim_solana_vote_accounts_history
 				WHERE snapshot_ts <= now() - INTERVAL 7 DAY
 			),
-			-- Get latest user state at target time using argMax
 			users_at_time AS (
 				SELECT
 					entity_id,
@@ -163,7 +156,6 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 				GROUP BY entity_id
 				HAVING status = 'activated' AND client_ip != ''
 			),
-			-- Get latest vote account state at target time
 			validators_at_time AS (
 				SELECT
 					node_pubkey,
@@ -173,11 +165,9 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 				  AND activated_stake_lamports > 0
 				GROUP BY node_pubkey
 			),
-			-- Total network stake at that time
 			total_stake AS (
 				SELECT COALESCE(SUM(stake), 0) as total FROM validators_at_time
 			),
-			-- DZ stake: join current gossip (IP mapping doesn't change much) with historical validators
 			dz_stake AS (
 				SELECT COALESCE(SUM(v.stake), 0) as dz_total
 				FROM users_at_time u
@@ -198,8 +188,7 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordClickHouseQuery(duration, err)
 
 	if err != nil {
-		log.Printf("Stake overview query error: %v", err)
-		overview.Error = err.Error()
+		return nil, err
 	}
 
 	// Calculate stake share and deltas
@@ -211,10 +200,32 @@ func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
 	overview.DZStakeChange7d = overview.DZStakeSol - overview.DZStakeSol7dAgo
 	overview.ShareChange7d = overview.StakeSharePct - overview.StakeSharePct7dAgo
 
-	w.Header().Set("Content-Type", "application/json")
-	if err := json.NewEncoder(w).Encode(overview); err != nil {
-		log.Printf("JSON encoding error: %v", err)
+	return &overview, nil
+}
+
+func GetStakeOverview(w http.ResponseWriter, r *http.Request) {
+	if statusCache != nil {
+		if resp := statusCache.GetStakeOverview(); resp != nil {
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(resp)
+			return
+		}
 	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
+	defer cancel()
+
+	resp, err := fetchStakeOverviewData(ctx)
+	if err != nil {
+		log.Printf("Stake overview query error: %v", err)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_ = json.NewEncoder(w).Encode(StakeOverview{Error: err.Error()})
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 func GetStakeHistory(w http.ResponseWriter, r *http.Request) {
