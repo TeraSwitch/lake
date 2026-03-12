@@ -4567,6 +4567,7 @@ export interface PublisherCheckItem {
 
 export interface PublisherCheckResponse {
   epoch: number
+  total_network_stake: number
   publishers: PublisherCheckItem[]
 }
 
