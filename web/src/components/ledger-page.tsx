@@ -120,8 +120,7 @@ function DZOnSolana({ stake }: { stake: StakeOverview | undefined }) {
     const sign = val >= 0 ? '+' : ''
     return `${sign}${val.toFixed(2)}%`
   }
-  const deltaColor = (val: number) =>
-    val > 0 ? 'text-green-600 dark:text-green-400' : val < 0 ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'
+  const deltaColor = () => 'text-muted-foreground'
 
   return (
     <Card title="Solana on DoubleZero">
@@ -139,8 +138,8 @@ function DZOnSolana({ stake }: { stake: StakeOverview | undefined }) {
           value={stake ? `${stake.stake_share_pct.toFixed(2)}%` : <Skeleton />}
           sub={stake ? (
             <span className="flex gap-2">
-              <span className={deltaColor(stake.share_change_24h)}>24h {formatDelta(stake.share_change_24h)}</span>
-              <span className={deltaColor(stake.share_change_7d)}>7d {formatDelta(stake.share_change_7d)}</span>
+              <span className={deltaColor()}>24h {formatDelta(stake.share_change_24h)}</span>
+              <span className={deltaColor()}>7d {formatDelta(stake.share_change_7d)}</span>
             </span>
           ) : undefined}
         />
