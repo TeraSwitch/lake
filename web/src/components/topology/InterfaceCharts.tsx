@@ -725,13 +725,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     formatHoveredTime((transitionHealth?.data[0] ?? []) as ArrayLike<number>, transitionHoveredIdx),
     [transitionHealth, transitionHoveredIdx])
 
-  if (trafficLoading || (entityType === 'device' && healthLoading)) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        Loading interface data...
-      </div>
-    )
-  }
+  if (trafficLoading || trafficFetching || (entityType === 'device' && healthLoading)) return null
 
   if (trafficError) {
     return (
@@ -741,20 +735,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     )
   }
 
-  if (interfaces.length === 0) {
-    if (trafficFetching) {
-      return (
-        <div className="text-sm text-muted-foreground text-center py-4">
-          Loading interface data...
-        </div>
-      )
-    }
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        No traffic data available
-      </div>
-    )
-  }
+  if (interfaces.length === 0) return null
 
   return (
     <div className="space-y-6">

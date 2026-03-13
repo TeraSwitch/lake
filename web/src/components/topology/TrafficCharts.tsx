@@ -99,13 +99,7 @@ export function TrafficCharts({ entityType, entityPk, timeRange, className }: Tr
 
   const metricLabel = isPps ? 'Packet Rate' : 'Traffic Rate'
 
-  if (isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        Loading traffic data...
-      </div>
-    )
-  }
+  if (isLoading || isFetching) return null
 
   if (error) {
     return (
@@ -115,20 +109,7 @@ export function TrafficCharts({ entityType, entityPk, timeRange, className }: Tr
     )
   }
 
-  if (!trafficData || trafficData.length === 0) {
-    if (isFetching) {
-      return (
-        <div className="text-sm text-muted-foreground text-center py-4">
-          Loading traffic data...
-        </div>
-      )
-    }
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        No traffic data available
-      </div>
-    )
-  }
+  if (!trafficData || trafficData.length === 0) return null
 
   return (
     <div className={className}>

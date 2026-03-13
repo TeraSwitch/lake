@@ -254,13 +254,7 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     formatHoveredTime(jitterUPlotData[0] as ArrayLike<number>, jitterHoveredIdx),
     [jitterUPlotData, jitterHoveredIdx])
 
-  if (isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        Loading latency data...
-      </div>
-    )
-  }
+  if (isLoading || isFetching) return null
 
   if (error) {
     return (
@@ -270,20 +264,7 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     )
   }
 
-  if (!latencyData || latencyData.length === 0) {
-    if (isFetching) {
-      return (
-        <div className="text-sm text-muted-foreground text-center py-4">
-          Loading latency data...
-        </div>
-      )
-    }
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        No latency data available for this time range
-      </div>
-    )
-  }
+  if (!latencyData || latencyData.length === 0) return null
 
   return (
     <div className="space-y-6">

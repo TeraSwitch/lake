@@ -255,29 +255,8 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
     formatHoveredTime(issuesUPlotData[0] as ArrayLike<number>, issuesHoveredIdx),
     [issuesUPlotData, issuesHoveredIdx])
 
-  if (isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        Loading link status data...
-      </div>
-    )
-  }
-
-  if (error) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        Unable to load link status data
-      </div>
-    )
-  }
-
-  if (!historyData?.hours || historyData.hours.length === 0) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        No link status data available
-      </div>
-    )
-  }
+  if (isLoading) return null
+  if (error || !historyData?.hours || historyData.hours.length === 0) return null
 
   if (!showPacketLoss && !showInterfaceIssues) {
     return null
