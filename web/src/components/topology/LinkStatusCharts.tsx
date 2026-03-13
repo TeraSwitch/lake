@@ -87,8 +87,8 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
 
     const timestamps = historyData.hours.map((h) => new Date(h.hour).getTime() / 1000)
     const total = historyData.hours.map((h) => h.avg_loss_pct)
-    const sideA = historyData.hours.map((h) => h.side_a_loss_pct ?? 0)
-    const sideZ = historyData.hours.map((h) => h.side_z_loss_pct ?? 0)
+    const sideA = historyData.hours.map((h) => h.side_a_loss_pct ?? null)
+    const sideZ = historyData.hours.map((h) => h.side_z_loss_pct ?? null)
 
     const series: uPlot.Series[] = [
       {},
@@ -110,20 +110,24 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
     }
 
     const timestamps = historyData.hours.map((h) => new Date(h.hour).getTime() / 1000)
-    const errors = historyData.hours.map((h) =>
-      (h.side_a_in_errors ?? 0) + (h.side_a_out_errors ?? 0) +
-      (h.side_z_in_errors ?? 0) + (h.side_z_out_errors ?? 0)
-    )
-    const fcs = historyData.hours.map((h) =>
-      (h.side_a_in_fcs_errors ?? 0) + (h.side_z_in_fcs_errors ?? 0)
-    )
-    const discards = historyData.hours.map((h) =>
-      (h.side_a_in_discards ?? 0) + (h.side_a_out_discards ?? 0) +
-      (h.side_z_in_discards ?? 0) + (h.side_z_out_discards ?? 0)
-    )
-    const carrier = historyData.hours.map((h) =>
-      (h.side_a_carrier_transitions ?? 0) + (h.side_z_carrier_transitions ?? 0)
-    )
+    const errors = historyData.hours.map((h) => {
+      const v = (h.side_a_in_errors ?? 0) + (h.side_a_out_errors ?? 0) +
+        (h.side_z_in_errors ?? 0) + (h.side_z_out_errors ?? 0)
+      return v > 0 ? v : null
+    })
+    const fcs = historyData.hours.map((h) => {
+      const v = (h.side_a_in_fcs_errors ?? 0) + (h.side_z_in_fcs_errors ?? 0)
+      return v > 0 ? v : null
+    })
+    const discards = historyData.hours.map((h) => {
+      const v = (h.side_a_in_discards ?? 0) + (h.side_a_out_discards ?? 0) +
+        (h.side_z_in_discards ?? 0) + (h.side_z_out_discards ?? 0)
+      return v > 0 ? v : null
+    })
+    const carrier = historyData.hours.map((h) => {
+      const v = (h.side_a_carrier_transitions ?? 0) + (h.side_z_carrier_transitions ?? 0)
+      return v > 0 ? v : null
+    })
 
     const series: uPlot.Series[] = [
       {},
