@@ -1327,7 +1327,7 @@ export async function fetchStatus(): Promise<StatusResponse> {
 export interface LinkHourStatus {
   hour: string
   status: 'healthy' | 'degraded' | 'unhealthy' | 'no_data' | 'disabled'
-  drained?: boolean
+  drain_status?: string
   avg_latency_us: number
   avg_loss_pct: number
   samples: number
@@ -1368,7 +1368,7 @@ export interface LinkHistory {
   bandwidth_bps: number
   committed_rtt_us: number
   is_down?: boolean
-  drained?: boolean
+  drain_status?: string
   provisioning?: boolean
   hours: LinkHourStatus[]
   issue_reasons: string[] // "packet_loss", "high_latency", "no_data", "interface_errors", "fcs_errors", "discards", "carrier_transitions", "down"
@@ -1420,6 +1420,7 @@ export async function fetchSingleLinkHistory(linkPk: string, timeRange?: string,
 export interface DeviceHourStatus {
   hour: string
   status: 'healthy' | 'degraded' | 'unhealthy' | 'no_data' | 'disabled'
+  drain_status?: string
   current_users: number
   max_users: number
   utilization_pct: number
@@ -4638,3 +4639,4 @@ export async function fetchPublisherCheck(q?: string, epochs?: number): Promise<
   }
   return res.json()
 }
+

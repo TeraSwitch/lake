@@ -1086,8 +1086,8 @@ func fetchStatusData(ctx context.Context) *StatusResponse {
 // Link history types for status timeline
 type LinkHourStatus struct {
 	Hour         string  `json:"hour"`
-	Status       string  `json:"status"` // "healthy", "degraded", "unhealthy", "no_data"
-	Drained      bool    `json:"drained,omitempty"`
+	Status       string  `json:"status"`                 // "healthy", "degraded", "unhealthy", "no_data"
+	DrainStatus  string  `json:"drain_status,omitempty"` // "", "soft-drained", "hard-drained"
 	AvgLatencyUs float64 `json:"avg_latency_us"`
 	AvgLossPct   float64 `json:"avg_loss_pct"`
 	Samples      uint64  `json:"samples"`
@@ -1128,7 +1128,7 @@ type LinkHistory struct {
 	BandwidthBps   int64            `json:"bandwidth_bps"`
 	CommittedRttUs float64          `json:"committed_rtt_us"`
 	IsDown         bool             `json:"is_down"`
-	Drained        bool             `json:"drained,omitempty"`
+	DrainStatus    string           `json:"drain_status,omitempty"`
 	Provisioning   bool             `json:"provisioning,omitempty"`
 	Hours          []LinkHourStatus `json:"hours"`
 	IssueReasons   []string         `json:"issue_reasons"` // "packet_loss", "high_latency", "no_data", "interface_errors", "discards", "carrier_transitions", "high_utilization"
@@ -1689,8 +1689,13 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 	const delayOverrideSoftDrainedNs = 1_000_000_000
 
 	for pk, meta := range linkMap {
-		// Check if link is currently drained (by status or delay override)
-		isCurrentlyDrained := meta.status == "soft-drained" || meta.status == "hard-drained" || meta.delayOverrideNs == delayOverrideSoftDrainedNs
+		// Determine current drain status
+		var currentDrainStatus string
+		if meta.status == "soft-drained" || meta.status == "hard-drained" {
+			currentDrainStatus = meta.status
+		} else if meta.delayOverrideNs == delayOverrideSoftDrainedNs {
+			currentDrainStatus = "soft-drained"
+		}
 		isProvisioning := meta.committedRttNs == committedRttProvisioningNs
 
 		// Track issue reasons for this link
@@ -1721,8 +1726,8 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			}
 		}
 
-		// Determine if this link is currently drained (for the top-level Drained field)
-		linkIsDrained := isCurrentlyDrained
+		// Top-level drain status for this link
+		linkDrainStatus := currentDrainStatus
 
 		// Include all links (both healthy and those with issues)
 
@@ -1740,23 +1745,33 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 		isDrainedStatus := func(s string) bool {
 			return s == "soft-drained" || s == "hard-drained"
 		}
-		resolveDrained := func(bucketKey string) bool {
+		// Returns the drain status string ("soft-drained", "hard-drained") or "" if not drained.
+		resolveDrainStatus := func(bucketKey string) string {
 			// Direct hit in history
 			if s, ok := linkStatusHistory[linkBucketKey{linkPK: pk, bucket: bucketKey}]; ok {
-				return isDrainedStatus(s)
+				if isDrainedStatus(s) {
+					return s
+				}
+				return ""
 			}
 			// No direct hit — find the most recent entry before this bucket
 			if len(entries) > 0 {
 				idx := sort.Search(len(entries), func(i int) bool { return entries[i].bucket > bucketKey })
 				if idx > 0 {
-					return isDrainedStatus(entries[idx-1].status)
+					if isDrainedStatus(entries[idx-1].status) {
+						return entries[idx-1].status
+					}
+					return ""
 				}
 			}
 			// No in-range entries before this bucket — fall back to baseline (last status before time range)
 			if baseline, ok := linkBaselineStatus[pk]; ok {
-				return isDrainedStatus(baseline)
+				if isDrainedStatus(baseline) {
+					return baseline
+				}
+				return ""
 			}
-			return false
+			return ""
 		}
 
 		var hourStatuses []LinkHourStatus
@@ -1764,7 +1779,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			bucketStart := now.Truncate(bucketDuration).Add(-time.Duration(i) * bucketDuration)
 			key := bucketStart.UTC().Format(time.RFC3339)
 
-			wasDrained := resolveDrained(key)
+			drainStatus := resolveDrainStatus(key)
 
 			// Check if we have latency/traffic data for this bucket
 			if stats, ok := bucketMap[key]; ok {
@@ -1777,7 +1792,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 				hourStatus := LinkHourStatus{
 					Hour:         key,
 					Status:       status,
-					Drained:      wasDrained,
+					DrainStatus:  drainStatus,
 					AvgLatencyUs: stats.avgLatency,
 					AvgLossPct:   stats.lossPct,
 					Samples:      stats.samples,
@@ -1886,9 +1901,9 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 				hourStatuses = append(hourStatuses, hourStatus)
 			} else {
 				hourStatuses = append(hourStatuses, LinkHourStatus{
-					Hour:    key,
-					Status:  "no_data",
-					Drained: wasDrained,
+					Hour:        key,
+					Status:      "no_data",
+					DrainStatus: drainStatus,
 				})
 			}
 		}
@@ -1905,7 +1920,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			}
 		}
 
-		isDown := downLinkPKs[pk] && !isCurrentlyDrained
+		isDown := downLinkPKs[pk] && currentDrainStatus == ""
 
 		// Convert issue reasons to slice (after all tracking is complete)
 		var issueReasonsList []string
@@ -1933,7 +1948,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 			BandwidthBps:   meta.bandwidthBps,
 			CommittedRttUs: responseCommittedRtt,
 			IsDown:         isDown,
-			Drained:        linkIsDrained,
+			DrainStatus:    linkDrainStatus,
 			Provisioning:   isProvisioning,
 			Hours:          hourStatuses,
 			IssueReasons:   issueReasonsList,
@@ -2018,6 +2033,7 @@ type DeviceHourStatus struct {
 	InDiscards         uint64  `json:"in_discards"`
 	OutDiscards        uint64  `json:"out_discards"`
 	CarrierTransitions uint64  `json:"carrier_transitions"`
+	DrainStatus        string  `json:"drain_status,omitempty"` // "", "soft-drained", "hard-drained", "suspended"
 }
 
 type DeviceHistory struct {
@@ -2339,8 +2355,9 @@ func fetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuck
 			// If device was drained at this time, show as disabled
 			if wasDrained {
 				hourStatuses = append(hourStatuses, DeviceHourStatus{
-					Hour:   key,
-					Status: "disabled",
+					Hour:        key,
+					Status:      "disabled",
+					DrainStatus: historicalStatus,
 				})
 				continue
 			}
@@ -3019,6 +3036,78 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 		}
 	}
 
+	// Get historical link status per bucket from dim_dz_links_history for drain status
+	var historyBucketInterval string
+	if bucketMinutes >= 60 && bucketMinutes%60 == 0 {
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d HOUR, 'UTC')", bucketMinutes/60)
+	} else {
+		historyBucketInterval = fmt.Sprintf("toStartOfInterval(snapshot_ts, INTERVAL %d MINUTE, 'UTC')", bucketMinutes)
+	}
+
+	type statusEntry struct {
+		bucket string
+		status string
+	}
+	linkDrainHistory := make(map[string]string) // bucket -> status
+	var drainEntries []statusEntry
+
+	historyQuery := `
+		SELECT
+			` + historyBucketInterval + ` as bucket,
+			argMax(status, snapshot_ts) as status
+		FROM dim_dz_links_history
+		WHERE pk = ? AND snapshot_ts > now() - INTERVAL ? HOUR
+		GROUP BY bucket
+		ORDER BY bucket
+	`
+	historyRows, err := envDB(ctx).Query(ctx, historyQuery, linkPK, totalHours)
+	if err == nil {
+		defer historyRows.Close()
+		for historyRows.Next() {
+			var bucket time.Time
+			var status string
+			if err := historyRows.Scan(&bucket, &status); err == nil {
+				key := bucket.UTC().Format(time.RFC3339)
+				linkDrainHistory[key] = status
+				drainEntries = append(drainEntries, statusEntry{bucket: key, status: status})
+			}
+		}
+	}
+
+	// Get baseline status before the time range
+	var baselineDrainStatus string
+	baselineQuery := `
+		SELECT argMax(status, snapshot_ts) as status
+		FROM dim_dz_links_history
+		WHERE pk = ? AND snapshot_ts <= now() - INTERVAL ? HOUR
+	`
+	_ = envDB(ctx).QueryRow(ctx, baselineQuery, linkPK, totalHours).Scan(&baselineDrainStatus)
+
+	isDrainedStatus := func(s string) bool {
+		return s == "soft-drained" || s == "hard-drained"
+	}
+	resolveDrainStatus := func(bucketKey string) string {
+		if s, ok := linkDrainHistory[bucketKey]; ok {
+			if isDrainedStatus(s) {
+				return s
+			}
+			return ""
+		}
+		if len(drainEntries) > 0 {
+			idx := sort.Search(len(drainEntries), func(i int) bool { return drainEntries[i].bucket > bucketKey })
+			if idx > 0 {
+				if isDrainedStatus(drainEntries[idx-1].status) {
+					return drainEntries[idx-1].status
+				}
+				return ""
+			}
+		}
+		if isDrainedStatus(baselineDrainStatus) {
+			return baselineDrainStatus
+		}
+		return ""
+	}
+
 	// Build hour statuses. Start from i=1 to skip the current incomplete bucket
 	// (whose data is already excluded from the SQL queries).
 	var hourStatuses []LinkHourStatus
@@ -3028,6 +3117,7 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 
 		var hs LinkHourStatus
 		hs.Hour = key
+		hs.DrainStatus = resolveDrainStatus(key)
 
 		// Latency/loss stats
 		if bs := bucketMap[key]; bs != nil {
@@ -3082,19 +3172,25 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 			}
 		}
 
-		// Determine status
+		// Determine status using the same classification as the multi-link endpoint
 		if hs.Samples == 0 {
 			hs.Status = "no_data"
-		} else if hs.AvgLossPct >= LossCriticalPct {
-			hs.Status = "unhealthy"
-		} else if hs.AvgLossPct >= LossWarningPct {
-			hs.Status = "degraded"
-		} else if committedRttUs > 0 && hs.AvgLatencyUs > committedRttUs*2 {
-			hs.Status = "unhealthy"
-		} else if committedRttUs > 0 && hs.AvgLatencyUs > committedRttUs*1.5 {
-			hs.Status = "degraded"
 		} else {
-			hs.Status = "healthy"
+			hs.Status = classifyLinkStatus(hs.AvgLatencyUs, hs.AvgLossPct, committedRttUs)
+		}
+
+		// Upgrade status based on interface issues (same thresholds as multi-link endpoint)
+		const InterfaceUnhealthyThreshold = uint64(100)
+		totalErrors := hs.SideAInErrors + hs.SideAOutErrors + hs.SideZInErrors + hs.SideZOutErrors
+		totalDiscards := hs.SideAInDiscards + hs.SideAOutDiscards + hs.SideZInDiscards + hs.SideZOutDiscards
+		totalCarrier := hs.SideACarrierTransitions + hs.SideZCarrierTransitions
+
+		if totalErrors >= InterfaceUnhealthyThreshold || totalDiscards >= InterfaceUnhealthyThreshold || totalCarrier >= InterfaceUnhealthyThreshold {
+			if hs.Status == "healthy" || hs.Status == "degraded" {
+				hs.Status = "unhealthy"
+			}
+		} else if (totalErrors > 0 || totalDiscards > 0 || totalCarrier > 0) && hs.Status == "healthy" {
+			hs.Status = "degraded"
 		}
 
 		hourStatuses = append(hourStatuses, hs)
@@ -3342,9 +3438,10 @@ func fetchSingleDeviceHistoryData(ctx context.Context, devicePK string, timeRang
 		// If device was drained at this time, show as disabled
 		if wasDrained {
 			hourStatuses = append(hourStatuses, DeviceHourStatus{
-				Hour:     key,
-				Status:   "disabled",
-				MaxUsers: maxUsers,
+				Hour:        key,
+				Status:      "disabled",
+				DrainStatus: historicalStatus,
+				MaxUsers:    maxUsers,
 			})
 			continue
 		}
