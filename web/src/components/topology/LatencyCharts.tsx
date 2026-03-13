@@ -255,11 +255,7 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     [jitterUPlotData, jitterHoveredIdx])
 
   if (isLoading || isFetching) {
-    return (
-      <div className={className}>
-        <div className="h-36 animate-pulse bg-muted rounded" />
-      </div>
-    )
+    return <div className="h-36 animate-pulse bg-muted rounded" />
   }
 
   if (error) {

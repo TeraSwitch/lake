@@ -100,11 +100,7 @@ export function TrafficCharts({ entityType, entityPk, timeRange, className }: Tr
   const metricLabel = isPps ? 'Packet Rate' : 'Traffic Rate'
 
   if (isLoading || isFetching) {
-    return (
-      <div className={className}>
-        <div className="h-44 animate-pulse bg-muted rounded" />
-      </div>
-    )
+    return <div className="h-44 animate-pulse bg-muted rounded" />
   }
 
   if (error) {
