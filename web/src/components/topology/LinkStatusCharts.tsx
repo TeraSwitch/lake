@@ -217,6 +217,33 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
     return map
   }, [issuesUPlotData, issuesHoveredIdx])
 
+  // Max values across the time range
+  const lossMaxValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (packetLossUPlotData[0].length === 0) return map
+    const keys = ['total', 'sideA', 'sideZ']
+    for (let i = 0; i < keys.length; i++) {
+      const series = packetLossUPlotData[i + 1] as (number | null)[]
+      let max = 0
+      if (series) for (const v of series) if (v != null && v > max) max = v
+      map.set(keys[i], `${max.toFixed(2)}%`)
+    }
+    return map
+  }, [packetLossUPlotData])
+
+  const issuesMaxValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (issuesUPlotData[0].length === 0) return map
+    const keys = ['errors', 'fcs', 'discards', 'carrier']
+    for (let i = 0; i < keys.length; i++) {
+      const series = issuesUPlotData[i + 1] as (number | null)[]
+      let max = 0
+      if (series) for (const v of series) if (v != null && v > max) max = v
+      map.set(keys[i], formatCount(max))
+    }
+    return map
+  }, [issuesUPlotData])
+
   const lossHoveredTime = useMemo(() =>
     formatHoveredTime(packetLossUPlotData[0] as ArrayLike<number>, lossHoveredIdx),
     [packetLossUPlotData, lossHoveredIdx])
@@ -260,7 +287,7 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
             Packet Loss ({timeRange})
           </div>
           <div ref={packetLossChartRef} className="h-36" />
-          <ChartLegendTable series={packetLossLegendSeries} legend={packetLossLegend} values={lossDisplayValues} hoveredTime={lossHoveredTime} />
+          <ChartLegendTable series={packetLossLegendSeries} legend={packetLossLegend} values={lossDisplayValues} maxValues={lossMaxValues} hoveredTime={lossHoveredTime} />
         </div>
       )}
 
@@ -270,7 +297,7 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
             Interface Issues ({timeRange})
           </div>
           <div ref={interfaceIssuesChartRef} className="h-36" />
-          <ChartLegendTable series={interfaceIssueLegendSeries} legend={interfaceIssueLegend} values={issuesDisplayValues} hoveredTime={issuesHoveredTime} />
+          <ChartLegendTable series={interfaceIssueLegendSeries} legend={interfaceIssueLegend} values={issuesDisplayValues} maxValues={issuesMaxValues} hoveredTime={issuesHoveredTime} />
         </div>
       )}
     </div>

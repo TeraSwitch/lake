@@ -222,6 +222,31 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     return map
   }, [jitterUPlotData, jitterKeys, jitterHoveredIdx])
 
+  // Max values across the time range
+  const rttMaxValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (rttUPlotData[0].length === 0) return map
+    for (let i = 0; i < rttKeys.length; i++) {
+      const series = rttUPlotData[i + 1] as (number | null)[]
+      let max = 0
+      if (series) for (const v of series) if (v != null && v > max) max = v
+      map.set(rttKeys[i], `${max.toFixed(2)} ms`)
+    }
+    return map
+  }, [rttUPlotData, rttKeys])
+
+  const jitterMaxValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (jitterUPlotData[0].length === 0) return map
+    for (let i = 0; i < jitterKeys.length; i++) {
+      const series = jitterUPlotData[i + 1] as (number | null)[]
+      let max = 0
+      if (series) for (const v of series) if (v != null && v > max) max = v
+      map.set(jitterKeys[i], `${max.toFixed(2)} ms`)
+    }
+    return map
+  }, [jitterUPlotData, jitterKeys])
+
   const rttHoveredTime = useMemo(() =>
     formatHoveredTime(rttUPlotData[0] as ArrayLike<number>, rttHoveredIdx),
     [rttUPlotData, rttHoveredIdx])
@@ -259,14 +284,14 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
         <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
           Round-Trip Time</div>
         <div ref={rttChartRef} className="h-36" />
-        <ChartLegendTable series={rttLegendSeries} legend={rttLegend} values={rttDisplayValues} hoveredTime={rttHoveredTime} />
+        <ChartLegendTable series={rttLegendSeries} legend={rttLegend} values={rttDisplayValues} maxValues={rttMaxValues} hoveredTime={rttHoveredTime} />
       </div>
 
       <div className={className}>
         <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
           Jitter</div>
         <div ref={jitterChartRef} className="h-36" />
-        <ChartLegendTable series={jitterLegendSeries} legend={jitterLegend} values={jitterDisplayValues} hoveredTime={jitterHoveredTime} />
+        <ChartLegendTable series={jitterLegendSeries} legend={jitterLegend} values={jitterDisplayValues} maxValues={jitterMaxValues} hoveredTime={jitterHoveredTime} />
       </div>
     </div>
   )

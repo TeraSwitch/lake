@@ -53,6 +53,32 @@ function HealthLegendTable({
   bidirectional?: boolean
   hoveredTime?: string
 }) {
+  // Max values across all timestamps
+  const maxValues = useMemo(() => {
+    const map = new Map<string, number>()
+    if (data[0].length === 0) return map
+    if (bidirectional) {
+      for (let i = 0; i < interfaces.length; i++) {
+        const inSeries = data[i * 2 + 1] as (number | null)[]
+        const outSeries = data[i * 2 + 2] as (number | null)[]
+        // For bidirectional, we'll store max per direction using separate keys
+        let maxIn = 0, maxOut = 0
+        if (inSeries) for (const v of inSeries) if (v != null && v > maxIn) maxIn = v
+        if (outSeries) for (const v of outSeries) if (v != null && v > maxOut) maxOut = v
+        map.set(`${interfaces[i]}:in`, maxIn)
+        map.set(`${interfaces[i]}:out`, maxOut)
+      }
+    } else {
+      for (let i = 0; i < interfaces.length; i++) {
+        const series = data[i + 1] as (number | null)[]
+        let max = 0
+        if (series) for (const v of series) if (v != null && v > max) max = v
+        map.set(interfaces[i], max)
+      }
+    }
+    return map
+  }, [data, interfaces, bidirectional])
+
   // Show hovered or latest values (non-bidirectional)
   const values = useMemo(() => {
     const map = new Map<string, number>()
@@ -138,6 +164,7 @@ function HealthLegendTable({
     <div className="flex flex-col text-xs px-2 pt-1 pb-2">
       <div className="flex items-center px-1 mb-1">
         <span className="text-xs text-muted-foreground flex-1 min-w-0">Name</span>
+        <span className="text-xs text-muted-foreground w-24 text-right">Max</span>
         <span className="text-xs text-muted-foreground w-24 text-right">{hoveredTime ?? 'Value'}</span>
       </div>
       <div className="max-h-32 overflow-y-auto space-y-0.5">
@@ -154,6 +181,8 @@ function HealthLegendTable({
           } else {
             displayValue = values.get(row.intf) ?? 0
           }
+
+          const maxValue = maxValues.get(row.key) ?? 0
 
           return (
             <div
@@ -178,6 +207,9 @@ function HealthLegendTable({
                 )}
                 <span className="font-mono text-foreground truncate">{row.label}</span>
               </div>
+              <span className="text-muted-foreground font-mono tabular-nums whitespace-nowrap w-24 text-right">
+                {formatCount(maxValue)}
+              </span>
               <span className="text-muted-foreground font-mono tabular-nums whitespace-nowrap w-24 text-right">
                 {formatCount(displayValue)}
               </span>
@@ -654,6 +686,28 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     return map
   }, [avgData, peakData, interfaces, hoveredIndex])
 
+  // Max values across the entire time range for traffic legend
+  const trafficMaxValues = useMemo(() => {
+    const map = new Map<string, InterfaceValues>()
+    if (avgData[0].length === 0 || peakData[0].length === 0) return map
+
+    for (let i = 0; i < interfaces.length; i++) {
+      const avgInSeries = avgData[i * 2 + 1] as (number | null)[]
+      const avgOutSeries = avgData[i * 2 + 2] as (number | null)[]
+      const peakInSeries = peakData[i * 2 + 1] as (number | null)[]
+      const peakOutSeries = peakData[i * 2 + 2] as (number | null)[]
+
+      let maxAvgIn = 0, maxAvgOut = 0, maxPeakIn = 0, maxPeakOut = 0
+      if (avgInSeries) for (const v of avgInSeries) if (v != null && v > maxAvgIn) maxAvgIn = v
+      if (avgOutSeries) for (const v of avgOutSeries) { const a = Math.abs(v ?? 0); if (a > maxAvgOut) maxAvgOut = a }
+      if (peakInSeries) for (const v of peakInSeries) if (v != null && v > maxPeakIn) maxPeakIn = v
+      if (peakOutSeries) for (const v of peakOutSeries) { const a = Math.abs(v ?? 0); if (a > maxPeakOut) maxPeakOut = a }
+
+      map.set(interfaces[i], { avgIn: maxAvgIn, avgOut: maxAvgOut, peakIn: maxPeakIn, peakOut: maxPeakOut })
+    }
+    return map
+  }, [avgData, peakData, interfaces])
+
   // Hovered time labels for each chart
   const trafficHoveredTime = useMemo(() =>
     formatHoveredTime(trafficData[0] as ArrayLike<number>, hoveredIndex),
@@ -793,6 +847,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
           legend={legend}
           visibleSeries={visibleSeries}
           latestValues={displayValues}
+          maxValues={trafficMaxValues}
           formatValue={metric === 'packets' ? formatPpsTooltip : formatChartTooltipRate}
           interfaceLabels={interfaceLabels}
           trafficView={trafficView}

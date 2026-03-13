@@ -6,21 +6,25 @@ interface ChartLegendTableProps {
   legend: UseChartLegendReturn
   /** Map from series key to display value (formatted string) */
   values?: Map<string, string>
+  /** Map from series key to max value (formatted string) */
+  maxValues?: Map<string, string>
   /** Formatted timestamp to show in the header (hovered or latest) */
   hoveredTime?: string
 }
 
-export function ChartLegendTable({ series, legend, values, hoveredTime }: ChartLegendTableProps) {
+export function ChartLegendTable({ series, legend, values, maxValues, hoveredTime }: ChartLegendTableProps) {
   return (
     <div className="flex flex-col text-xs px-2 pt-1 pb-2">
       <div className="flex items-center px-1 mb-1">
         <span className="text-xs text-muted-foreground flex-1 min-w-0">Name</span>
+        {maxValues && <span className="text-xs text-muted-foreground w-28 text-right">Max</span>}
         <span className="text-xs text-muted-foreground w-28 text-right">{hoveredTime ?? 'Value'}</span>
       </div>
       <div className="space-y-0.5">
         {series.map((s) => {
           const opacity = legend.getOpacity(s.key)
           const value = values?.get(s.key)
+          const maxValue = maxValues?.get(s.key)
           return (
             <div
               key={s.key}
@@ -47,6 +51,11 @@ export function ChartLegendTable({ series, legend, values, hoveredTime }: ChartL
                 )}
                 <span className="font-mono text-foreground truncate">{s.label}</span>
               </div>
+              {maxValues && (
+                <span className="text-muted-foreground font-mono tabular-nums whitespace-nowrap w-28 text-right">
+                  {maxValue ?? '—'}
+                </span>
+              )}
               <span className="text-muted-foreground font-mono tabular-nums whitespace-nowrap w-28 text-right">
                 {value ?? '—'}
               </span>
