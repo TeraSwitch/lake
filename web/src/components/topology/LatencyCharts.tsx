@@ -103,10 +103,10 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     const series: uPlot.Series[] = [{}]
 
     if (hasDirectionalData) {
-      const avgAtoZ = latencyData.map((d) => d.avgRttAtoZMs ?? null)
-      const p95AtoZ = latencyData.map((d) => d.p95RttAtoZMs ?? null)
-      const avgZtoA = latencyData.map((d) => d.avgRttZtoAMs ?? null)
-      const p95ZtoA = latencyData.map((d) => d.p95RttZtoAMs ?? null)
+      const avgAtoZ = latencyData.map((d) => d.avgRttAtoZMs || null)
+      const p95AtoZ = latencyData.map((d) => d.p95RttAtoZMs || null)
+      const avgZtoA = latencyData.map((d) => d.avgRttZtoAMs || null)
+      const p95ZtoA = latencyData.map((d) => d.p95RttZtoAMs || null)
 
       series.push(
         { label: 'avgRttAtoZMs', stroke: rttAAvgColor, width: 1.5, points: { show: false } },
@@ -121,8 +121,8 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
       }
     }
 
-    const avgRtt = latencyData.map((d) => d.avgRttMs ?? null)
-    const p95Rtt = latencyData.map((d) => d.p95RttMs ?? null)
+    const avgRtt = latencyData.map((d) => d.avgRttMs || null)
+    const p95Rtt = latencyData.map((d) => d.p95RttMs || null)
 
     series.push(
       { label: 'avgRttMs', stroke: rttAAvgColor, width: 1.5, points: { show: false } },
