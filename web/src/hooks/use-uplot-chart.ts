@@ -74,7 +74,7 @@ export function useUPlotChart({
       scales: scales ?? { x: { time: true }, y: { auto: true } },
       axes: mergedAxes,
       cursor: {
-        focus: { prox: 30 },
+        focus: { prox: Infinity },
         points: {
           size: (u: uPlot, seriesIdx: number) => {
             const s = u.series[seriesIdx] as uPlot.Series & { _focus?: boolean }
