@@ -10,7 +10,7 @@ import { ChartLegendTable } from './ChartLegendTable'
 import { fetchSingleLinkHistory } from '@/lib/api'
 import type { LinkHourStatus } from '@/lib/api'
 import type { BucketSize } from './utils'
-import { bucketSizeToSeconds, presetToSeconds, resolveAutoBucket, type TimeRangePreset } from './utils'
+import { bucketSizeToSeconds, formatHoveredTime, presetToSeconds, resolveAutoBucket, type TimeRangePreset } from './utils'
 
 interface LinkStatusChartsProps {
   linkPk: string
@@ -217,6 +217,13 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
     return map
   }, [issuesUPlotData, issuesHoveredIdx])
 
+  const lossHoveredTime = useMemo(() =>
+    formatHoveredTime(packetLossUPlotData[0] as ArrayLike<number>, lossHoveredIdx),
+    [packetLossUPlotData, lossHoveredIdx])
+  const issuesHoveredTime = useMemo(() =>
+    formatHoveredTime(issuesUPlotData[0] as ArrayLike<number>, issuesHoveredIdx),
+    [issuesUPlotData, issuesHoveredIdx])
+
   if (isLoading) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
@@ -253,7 +260,7 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
             Packet Loss ({timeRange})
           </div>
           <div ref={packetLossChartRef} className="h-36" />
-          <ChartLegendTable series={packetLossLegendSeries} legend={packetLossLegend} values={lossDisplayValues} />
+          <ChartLegendTable series={packetLossLegendSeries} legend={packetLossLegend} values={lossDisplayValues} hoveredTime={lossHoveredTime} />
         </div>
       )}
 
@@ -263,7 +270,7 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
             Interface Issues ({timeRange})
           </div>
           <div ref={interfaceIssuesChartRef} className="h-36" />
-          <ChartLegendTable series={interfaceIssueLegendSeries} legend={interfaceIssueLegend} values={issuesDisplayValues} />
+          <ChartLegendTable series={interfaceIssueLegendSeries} legend={interfaceIssueLegend} values={issuesDisplayValues} hoveredTime={issuesHoveredTime} />
         </div>
       )}
     </div>

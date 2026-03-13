@@ -20,6 +20,8 @@ interface InterfaceLegendTableProps {
   interfaceLabels?: Map<string, string>
   /** Which view is active — controls which columns are shown */
   trafficView?: 'avg' | 'peak'
+  /** Formatted timestamp to show in the column header (hovered or latest) */
+  hoveredTime?: string
 }
 
 export function InterfaceLegendTable({
@@ -31,6 +33,7 @@ export function InterfaceLegendTable({
   formatValue = (v) => v.toLocaleString(),
   interfaceLabels,
   trafficView = 'avg',
+  hoveredTime,
 }: InterfaceLegendTableProps) {
   const [searchExpanded, setSearchExpanded] = useState(false)
   const [searchText, setSearchText] = useState('')
@@ -159,7 +162,7 @@ export function InterfaceLegendTable({
             onClick={() => { setSortBy('value'); setSortDir(sortBy === 'value' ? (sortDir === 'asc' ? 'desc' : 'asc') : 'desc') }}
             className="flex items-center justify-end gap-0.5 text-xs text-muted-foreground hover:text-foreground whitespace-nowrap w-48"
           >
-            In / Out
+            {hoveredTime ?? 'In / Out'}
             {sortBy === 'value' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
           </button>
         </div>

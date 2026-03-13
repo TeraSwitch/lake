@@ -5,7 +5,7 @@ import { useChartLegend, type UseChartLegendReturn } from '@/hooks/use-chart-leg
 import { useUPlotChart } from '@/hooks/use-uplot-chart'
 import { useUPlotLegendSync } from '@/hooks/use-uplot-legend-sync'
 import { InterfaceLegendTable, type InterfaceValues } from './InterfaceLegendTable'
-import { fetchTrafficHistoryByInterface, formatChartAxisRate, formatChartTooltipRate, resolveAutoBucket, bucketLabels, type TimeRange, type TimeRangePreset, type InterfaceTrafficPoint, type BucketSize, type TrafficMetric } from './utils'
+import { fetchTrafficHistoryByInterface, formatChartAxisRate, formatChartTooltipRate, formatHoveredTime, resolveAutoBucket, bucketLabels, type TimeRange, type TimeRangePreset, type InterfaceTrafficPoint, type BucketSize, type TrafficMetric } from './utils'
 import { fetchDeviceInterfaceHistory } from '@/lib/api'
 import { TrafficFilters } from './TimeRangeSelector'
 
@@ -41,6 +41,7 @@ function HealthLegendTable({
   visibleSeries,
   interfaceLabels,
   bidirectional,
+  hoveredTime,
 }: {
   interfaces: string[]
   colors: string[]
@@ -50,6 +51,7 @@ function HealthLegendTable({
   visibleSeries: Set<string>
   interfaceLabels?: Map<string, string>
   bidirectional?: boolean
+  hoveredTime?: string
 }) {
   // Show hovered or latest values (non-bidirectional)
   const values = useMemo(() => {
@@ -136,7 +138,7 @@ function HealthLegendTable({
     <div className="flex flex-col text-xs px-2 pt-1 pb-2">
       <div className="flex items-center px-1 mb-1">
         <span className="text-xs text-muted-foreground flex-1 min-w-0">Name</span>
-        <span className="text-xs text-muted-foreground w-24 text-right">Value</span>
+        <span className="text-xs text-muted-foreground w-24 text-right">{hoveredTime ?? 'Value'}</span>
       </div>
       <div className="max-h-32 overflow-y-auto space-y-0.5">
         {legendRows.map((row) => {
@@ -652,6 +654,23 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     return map
   }, [avgData, peakData, interfaces, hoveredIndex])
 
+  // Hovered time labels for each chart
+  const trafficHoveredTime = useMemo(() =>
+    formatHoveredTime(trafficData[0] as ArrayLike<number>, hoveredIndex),
+    [trafficData, hoveredIndex])
+  const errorHoveredTime = useMemo(() =>
+    formatHoveredTime((errorHealth?.data[0] ?? []) as ArrayLike<number>, errorHoveredIdx),
+    [errorHealth, errorHoveredIdx])
+  const fcsErrorHoveredTime = useMemo(() =>
+    formatHoveredTime((fcsErrorHealth?.data[0] ?? []) as ArrayLike<number>, fcsErrorHoveredIdx),
+    [fcsErrorHealth, fcsErrorHoveredIdx])
+  const discardHoveredTime = useMemo(() =>
+    formatHoveredTime((discardHealth?.data[0] ?? []) as ArrayLike<number>, discardHoveredIdx),
+    [discardHealth, discardHoveredIdx])
+  const transitionHoveredTime = useMemo(() =>
+    formatHoveredTime((transitionHealth?.data[0] ?? []) as ArrayLike<number>, transitionHoveredIdx),
+    [transitionHealth, transitionHoveredIdx])
+
   if (trafficLoading || (entityType === 'device' && healthLoading)) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
@@ -692,6 +711,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
             visibleSeries={visibleSeries}
             interfaceLabels={interfaceLabels}
             bidirectional
+            hoveredTime={errorHoveredTime}
           />
         </div>
       )}
@@ -709,6 +729,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
             legend={legend}
             visibleSeries={visibleSeries}
             interfaceLabels={interfaceLabels}
+            hoveredTime={fcsErrorHoveredTime}
           />
         </div>
       )}
@@ -727,6 +748,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
             visibleSeries={visibleSeries}
             interfaceLabels={interfaceLabels}
             bidirectional
+            hoveredTime={discardHoveredTime}
           />
         </div>
       )}
@@ -744,6 +766,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
             legend={legend}
             visibleSeries={visibleSeries}
             interfaceLabels={interfaceLabels}
+            hoveredTime={transitionHoveredTime}
           />
         </div>
       )}
@@ -773,6 +796,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
           formatValue={metric === 'packets' ? formatPpsTooltip : formatChartTooltipRate}
           interfaceLabels={interfaceLabels}
           trafficView={trafficView}
+          hoveredTime={trafficHoveredTime}
         />
       </div>
     </div>

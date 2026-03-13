@@ -7,7 +7,7 @@ import { useUPlotChart } from '@/hooks/use-uplot-chart'
 import { useUPlotLegendSync } from '@/hooks/use-uplot-legend-sync'
 import { type ChartLegendSeries } from './ChartLegend'
 import { ChartLegendTable } from './ChartLegendTable'
-import { fetchLatencyHistory, type TimeRange, type BucketSize } from './utils'
+import { fetchLatencyHistory, formatHoveredTime, type TimeRange, type BucketSize } from './utils'
 
 interface LatencyChartsProps {
   linkPk: string
@@ -222,6 +222,13 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     return map
   }, [jitterUPlotData, jitterKeys, jitterHoveredIdx])
 
+  const rttHoveredTime = useMemo(() =>
+    formatHoveredTime(rttUPlotData[0] as ArrayLike<number>, rttHoveredIdx),
+    [rttUPlotData, rttHoveredIdx])
+  const jitterHoveredTime = useMemo(() =>
+    formatHoveredTime(jitterUPlotData[0] as ArrayLike<number>, jitterHoveredIdx),
+    [jitterUPlotData, jitterHoveredIdx])
+
   if (isLoading) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
@@ -252,14 +259,14 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
         <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
           Round-Trip Time</div>
         <div ref={rttChartRef} className="h-36" />
-        <ChartLegendTable series={rttLegendSeries} legend={rttLegend} values={rttDisplayValues} />
+        <ChartLegendTable series={rttLegendSeries} legend={rttLegend} values={rttDisplayValues} hoveredTime={rttHoveredTime} />
       </div>
 
       <div className={className}>
         <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
           Jitter</div>
         <div ref={jitterChartRef} className="h-36" />
-        <ChartLegendTable series={jitterLegendSeries} legend={jitterLegend} values={jitterDisplayValues} />
+        <ChartLegendTable series={jitterLegendSeries} legend={jitterLegend} values={jitterDisplayValues} hoveredTime={jitterHoveredTime} />
       </div>
     </div>
   )

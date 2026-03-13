@@ -6,14 +6,16 @@ interface ChartLegendTableProps {
   legend: UseChartLegendReturn
   /** Map from series key to display value (formatted string) */
   values?: Map<string, string>
+  /** Formatted timestamp to show in the header (hovered or latest) */
+  hoveredTime?: string
 }
 
-export function ChartLegendTable({ series, legend, values }: ChartLegendTableProps) {
+export function ChartLegendTable({ series, legend, values, hoveredTime }: ChartLegendTableProps) {
   return (
     <div className="flex flex-col text-xs px-2 pt-1 pb-2">
       <div className="flex items-center px-1 mb-1">
         <span className="text-xs text-muted-foreground flex-1 min-w-0">Name</span>
-        <span className="text-xs text-muted-foreground w-28 text-right">Value</span>
+        <span className="text-xs text-muted-foreground w-28 text-right">{hoveredTime ?? 'Value'}</span>
       </div>
       <div className="space-y-0.5">
         {series.map((s) => {
