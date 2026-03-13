@@ -42,7 +42,7 @@ export function SingleLinkStatusRow({ linkPk, timeRange = '24h' }: SingleLinkSta
   })
 
   if (isLoading) {
-    return <div className="h-10 animate-pulse bg-muted rounded" />
+    return <div className="h-10 animate-pulse bg-muted/50 rounded" />
   }
 
   if (error || !data?.hours || data.hours.length === 0) {
