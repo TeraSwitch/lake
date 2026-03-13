@@ -20,6 +20,10 @@ interface InterfaceLegendTableProps {
   interfaceLabels?: Map<string, string>
   /** Which view is active — controls which columns are shown */
   trafficView?: 'avg' | 'peak'
+  /** Formatted timestamp to show in the column header (hovered or latest) */
+  hoveredTime?: string
+  /** Max values across the time range per interface */
+  maxValues?: Map<string, InterfaceValues>
 }
 
 export function InterfaceLegendTable({
@@ -31,6 +35,8 @@ export function InterfaceLegendTable({
   formatValue = (v) => v.toLocaleString(),
   interfaceLabels,
   trafficView = 'avg',
+  hoveredTime,
+  maxValues,
 }: InterfaceLegendTableProps) {
   const [searchExpanded, setSearchExpanded] = useState(false)
   const [searchText, setSearchText] = useState('')
@@ -155,11 +161,14 @@ export function InterfaceLegendTable({
             Name
             {sortBy === 'name' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
           </button>
+          {maxValues && (
+            <span className="text-xs text-muted-foreground whitespace-nowrap w-48 text-right">Max In / Out</span>
+          )}
           <button
             onClick={() => { setSortBy('value'); setSortDir(sortBy === 'value' ? (sortDir === 'asc' ? 'desc' : 'asc') : 'desc') }}
-            className="flex items-center justify-end gap-0.5 text-xs text-muted-foreground hover:text-foreground whitespace-nowrap w-48"
+            className="flex items-center justify-end gap-0.5 text-xs text-muted-foreground hover:text-foreground w-48 whitespace-nowrap"
           >
-            In / Out
+            {hoveredTime ?? 'In / Out'}
             {sortBy === 'value' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
           </button>
         </div>
@@ -189,6 +198,14 @@ export function InterfaceLegendTable({
                   />
                   <span className="font-mono text-foreground truncate">{interfaceLabels?.get(intf) ?? intf}</span>
                 </div>
+                {maxValues && (() => {
+                  const mv = maxValues.get(intf)
+                  return (
+                    <span className="text-muted-foreground font-mono tabular-nums whitespace-nowrap w-48 text-right">
+                      {mv ? `${formatValue(trafficView === 'avg' ? mv.avgIn : mv.peakIn)} / ${formatValue(trafficView === 'avg' ? mv.avgOut : mv.peakOut)}` : '—'}
+                    </span>
+                  )
+                })()}
                 <span className="text-muted-foreground font-mono tabular-nums whitespace-nowrap w-48 text-right">
                   {lv ? `${formatValue(trafficView === 'avg' ? lv.avgIn : lv.peakIn)} / ${formatValue(trafficView === 'avg' ? lv.avgOut : lv.peakOut)}` : '—'}
                 </span>

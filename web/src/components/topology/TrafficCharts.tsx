@@ -28,7 +28,7 @@ export function TrafficCharts({ entityType, entityPk, timeRange, className }: Tr
 
   const chartRef = useRef<HTMLDivElement>(null)
 
-  const { data: trafficData, isLoading, error } = useQuery({
+  const { data: trafficData, isLoading, error, isFetching } = useQuery({
     queryKey: ['topology-traffic', entityType, entityPk, effectiveRange, bucket, metric],
     queryFn: () => fetchTrafficHistory(entityType, entityPk, effectiveRange, bucket, metric),
     refetchInterval: 60000,
@@ -99,29 +99,19 @@ export function TrafficCharts({ entityType, entityPk, timeRange, className }: Tr
 
   const metricLabel = isPps ? 'Packet Rate' : 'Traffic Rate'
 
-  if (isLoading) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        Loading traffic data...
-      </div>
-    )
+  if (isLoading || isFetching) {
+    return <div className="h-44 animate-pulse bg-muted/50 rounded" />
   }
 
   if (error) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
-        Unable to load traffic data
+        Unable to load traffic data — the request may have timed out
       </div>
     )
   }
 
-  if (!trafficData || trafficData.length === 0) {
-    return (
-      <div className="text-sm text-muted-foreground text-center py-4">
-        No traffic data available
-      </div>
-    )
-  }
+  if (!trafficData || trafficData.length === 0) return null
 
   return (
     <div className={className}>

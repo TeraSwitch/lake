@@ -1,6 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
-import { Loader2 } from 'lucide-react'
 import { fetchSingleLinkHistory } from '@/lib/api'
 import { StatusTimeline } from './status-timeline'
 
@@ -43,12 +42,7 @@ export function SingleLinkStatusRow({ linkPk, timeRange = '24h' }: SingleLinkSta
   })
 
   if (isLoading) {
-    return (
-      <div className="flex items-center justify-center py-8">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground mr-2" />
-        <span className="text-sm text-muted-foreground">Loading status history...</span>
-      </div>
-    )
+    return <div className="h-10 animate-pulse bg-muted/50 rounded" />
   }
 
   if (error || !data?.hours || data.hours.length === 0) {

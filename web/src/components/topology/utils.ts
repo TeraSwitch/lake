@@ -284,3 +284,23 @@ export async function fetchLatencyHistory(
   const data = JSON.parse(text)
   return data.points || []
 }
+
+/** Format a timestamp from chart data for display in legends.
+ *  Returns the formatted time at the given index, or undefined if no valid index. */
+export function formatHoveredTime(
+  timestamps: ArrayLike<number>,
+  hoveredIdx: number | null
+): string | undefined {
+  if (timestamps.length === 0) return undefined
+  const idx = hoveredIdx != null && hoveredIdx < timestamps.length ? hoveredIdx : timestamps.length - 1
+  const ts = timestamps[idx]
+  if (ts == null) return undefined
+  const d = new Date(ts * 1000)
+  return d.toLocaleString(undefined, {
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+}
