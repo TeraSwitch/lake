@@ -86,9 +86,9 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
     }
 
     const timestamps = historyData.hours.map((h) => new Date(h.hour).getTime() / 1000)
-    const total = historyData.hours.map((h) => h.avg_loss_pct)
-    const sideA = historyData.hours.map((h) => h.side_a_loss_pct ?? null)
-    const sideZ = historyData.hours.map((h) => h.side_z_loss_pct ?? null)
+    const total = historyData.hours.map((h) => h.avg_loss_pct || null)
+    const sideA = historyData.hours.map((h) => h.side_a_loss_pct || null)
+    const sideZ = historyData.hours.map((h) => h.side_z_loss_pct || null)
 
     const series: uPlot.Series[] = [
       {},
