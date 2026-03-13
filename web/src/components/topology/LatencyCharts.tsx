@@ -254,7 +254,13 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     formatHoveredTime(jitterUPlotData[0] as ArrayLike<number>, jitterHoveredIdx),
     [jitterUPlotData, jitterHoveredIdx])
 
-  if (isLoading || isFetching) return null
+  if (isLoading || isFetching) {
+    return (
+      <div className={className}>
+        <div className="h-36 animate-pulse bg-muted rounded" />
+      </div>
+    )
+  }
 
   if (error) {
     return (

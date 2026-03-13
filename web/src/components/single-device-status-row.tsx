@@ -64,7 +64,9 @@ export function SingleDeviceStatusRow({ devicePk, timeRange = '24h' }: SingleDev
     staleTime: 30_000,
   })
 
-  if (isLoading) return null
+  if (isLoading) {
+    return <div className="h-10 animate-pulse bg-muted rounded" />
+  }
 
   if (error || !data?.hours || data.hours.length === 0) {
     return null

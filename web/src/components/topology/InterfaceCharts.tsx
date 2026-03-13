@@ -725,7 +725,13 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     formatHoveredTime((transitionHealth?.data[0] ?? []) as ArrayLike<number>, transitionHoveredIdx),
     [transitionHealth, transitionHoveredIdx])
 
-  if (trafficLoading || trafficFetching || (entityType === 'device' && healthLoading)) return null
+  if (trafficLoading || trafficFetching || (entityType === 'device' && healthLoading)) {
+    return (
+      <div className={className}>
+        <div className="h-36 animate-pulse bg-muted rounded" />
+      </div>
+    )
+  }
 
   if (trafficError) {
     return (
