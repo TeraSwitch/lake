@@ -1,11 +1,12 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import uPlot from 'uplot'
 import { useTheme } from '@/hooks/use-theme'
 import { useChartLegend } from '@/hooks/use-chart-legend'
 import { useUPlotChart } from '@/hooks/use-uplot-chart'
 import { useUPlotLegendSync } from '@/hooks/use-uplot-legend-sync'
-import { ChartLegend, type ChartLegendSeries } from './ChartLegend'
+import { type ChartLegendSeries } from './ChartLegend'
+import { ChartLegendTable } from './ChartLegendTable'
 import { fetchLatencyHistory, type TimeRange, type BucketSize } from './utils'
 
 interface LatencyChartsProps {
@@ -31,6 +32,11 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
 
   const rttChartRef = useRef<HTMLDivElement>(null)
   const jitterChartRef = useRef<HTMLDivElement>(null)
+
+  const [rttHoveredIdx, setRttHoveredIdx] = useState<number | null>(null)
+  const [jitterHoveredIdx, setJitterHoveredIdx] = useState<number | null>(null)
+  const handleRttCursorIdx = useCallback((idx: number | null) => setRttHoveredIdx(idx), [])
+  const handleJitterCursorIdx = useCallback((idx: number | null) => setJitterHoveredIdx(idx), [])
 
   // Colors
   const rttAAvgColor = isDark ? '#22c55e' : '#16a34a'
@@ -177,6 +183,7 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     series: rttUPlotSeries,
     height: 144,
     axes: msAxes,
+    onCursorIdx: handleRttCursorIdx,
   })
 
   const { plotRef: jitterPlotRef} = useUPlotChart({
@@ -185,13 +192,35 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
     series: jitterUPlotSeries,
     height: 144,
     axes: msAxes,
+    onCursorIdx: handleJitterCursorIdx,
   })
 
   // Legend sync
   useUPlotLegendSync(rttPlotRef, rttLegend, rttKeys)
   useUPlotLegendSync(jitterPlotRef, jitterLegend, jitterKeys)
 
+  // Display values: hovered or latest
+  const rttDisplayValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (rttUPlotData[0].length === 0) return map
+    const idx = rttHoveredIdx != null && rttHoveredIdx < rttUPlotData[0].length ? rttHoveredIdx : rttUPlotData[0].length - 1
+    for (let i = 0; i < rttKeys.length; i++) {
+      const val = (rttUPlotData[i + 1] as (number | null)[])?.[idx]
+      map.set(rttKeys[i], val != null ? `${val.toFixed(2)} ms` : '—')
+    }
+    return map
+  }, [rttUPlotData, rttKeys, rttHoveredIdx])
 
+  const jitterDisplayValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (jitterUPlotData[0].length === 0) return map
+    const idx = jitterHoveredIdx != null && jitterHoveredIdx < jitterUPlotData[0].length ? jitterHoveredIdx : jitterUPlotData[0].length - 1
+    for (let i = 0; i < jitterKeys.length; i++) {
+      const val = (jitterUPlotData[i + 1] as (number | null)[])?.[idx]
+      map.set(jitterKeys[i], val != null ? `${val.toFixed(2)} ms` : '—')
+    }
+    return map
+  }, [jitterUPlotData, jitterKeys, jitterHoveredIdx])
 
   if (isLoading) {
     return (
@@ -223,14 +252,14 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
         <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
           Round-Trip Time</div>
         <div ref={rttChartRef} className="h-36" />
-        <ChartLegend series={rttLegendSeries} legend={rttLegend} />
+        <ChartLegendTable series={rttLegendSeries} legend={rttLegend} values={rttDisplayValues} />
       </div>
 
       <div className={className}>
         <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
           Jitter</div>
         <div ref={jitterChartRef} className="h-36" />
-        <ChartLegend series={jitterLegendSeries} legend={jitterLegend} />
+        <ChartLegendTable series={jitterLegendSeries} legend={jitterLegend} values={jitterDisplayValues} />
       </div>
     </div>
   )

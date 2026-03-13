@@ -1,11 +1,12 @@
-import { useMemo, useRef } from 'react'
+import { useMemo, useRef, useState, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import uPlot from 'uplot'
 import { useTheme } from '@/hooks/use-theme'
 import { useChartLegend } from '@/hooks/use-chart-legend'
 import { useUPlotChart } from '@/hooks/use-uplot-chart'
 import { useUPlotLegendSync } from '@/hooks/use-uplot-legend-sync'
-import { ChartLegend, type ChartLegendSeries } from './ChartLegend'
+import { type ChartLegendSeries } from './ChartLegend'
+import { ChartLegendTable } from './ChartLegendTable'
 import { fetchSingleLinkHistory } from '@/lib/api'
 import type { LinkHourStatus } from '@/lib/api'
 import type { BucketSize } from './utils'
@@ -46,6 +47,11 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
 
   const packetLossChartRef = useRef<HTMLDivElement>(null)
   const interfaceIssuesChartRef = useRef<HTMLDivElement>(null)
+
+  const [lossHoveredIdx, setLossHoveredIdx] = useState<number | null>(null)
+  const [issuesHoveredIdx, setIssuesHoveredIdx] = useState<number | null>(null)
+  const handleLossCursorIdx = useCallback((idx: number | null) => setLossHoveredIdx(idx), [])
+  const handleIssuesCursorIdx = useCallback((idx: number | null) => setIssuesHoveredIdx(idx), [])
 
   // Convert bucket size to bucket count for the API
   const bucketCount = useMemo(() => {
@@ -170,6 +176,7 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
     series: packetLossSeries,
     height: 144,
     axes: pctAxes,
+    onCursorIdx: handleLossCursorIdx,
   })
 
   const { plotRef: issuesPlotRef} = useUPlotChart({
@@ -178,11 +185,37 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
     series: issuesSeries,
     height: 144,
     axes: countAxes,
+    onCursorIdx: handleIssuesCursorIdx,
   })
 
   // Legend sync
   useUPlotLegendSync(packetLossPlotRef, packetLossLegend, ['total', 'sideA', 'sideZ'])
-  useUPlotLegendSync(issuesPlotRef, interfaceIssueLegend, ['errors', 'discards', 'carrier'])
+  useUPlotLegendSync(issuesPlotRef, interfaceIssueLegend, ['errors', 'fcs', 'discards', 'carrier'])
+
+  // Display values: hovered or latest
+  const lossDisplayValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (packetLossUPlotData[0].length === 0) return map
+    const idx = lossHoveredIdx != null && lossHoveredIdx < packetLossUPlotData[0].length ? lossHoveredIdx : packetLossUPlotData[0].length - 1
+    const keys = ['total', 'sideA', 'sideZ']
+    for (let i = 0; i < keys.length; i++) {
+      const val = (packetLossUPlotData[i + 1] as (number | null)[])?.[idx]
+      map.set(keys[i], val != null ? `${val.toFixed(2)}%` : '—')
+    }
+    return map
+  }, [packetLossUPlotData, lossHoveredIdx])
+
+  const issuesDisplayValues = useMemo(() => {
+    const map = new Map<string, string>()
+    if (issuesUPlotData[0].length === 0) return map
+    const idx = issuesHoveredIdx != null && issuesHoveredIdx < issuesUPlotData[0].length ? issuesHoveredIdx : issuesUPlotData[0].length - 1
+    const keys = ['errors', 'fcs', 'discards', 'carrier']
+    for (let i = 0; i < keys.length; i++) {
+      const val = (issuesUPlotData[i + 1] as (number | null)[])?.[idx]
+      map.set(keys[i], val != null ? formatCount(val) : '—')
+    }
+    return map
+  }, [issuesUPlotData, issuesHoveredIdx])
 
   if (isLoading) {
     return (
@@ -220,7 +253,7 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
             Packet Loss ({timeRange})
           </div>
           <div ref={packetLossChartRef} className="h-36" />
-          <ChartLegend series={packetLossLegendSeries} legend={packetLossLegend} />
+          <ChartLegendTable series={packetLossLegendSeries} legend={packetLossLegend} values={lossDisplayValues} />
         </div>
       )}
 
@@ -230,7 +263,7 @@ export function LinkStatusCharts({ linkPk, timeRange = '24h', bucket, className 
             Interface Issues ({timeRange})
           </div>
           <div ref={interfaceIssuesChartRef} className="h-36" />
-          <ChartLegend series={interfaceIssueLegendSeries} legend={interfaceIssueLegend} />
+          <ChartLegendTable series={interfaceIssueLegendSeries} legend={interfaceIssueLegend} values={issuesDisplayValues} />
         </div>
       )}
     </div>
