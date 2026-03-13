@@ -1,11 +1,53 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Loader2, CheckCircle2, AlertTriangle, History, Info, ChevronDown, ChevronUp } from 'lucide-react'
+import { CheckCircle2, AlertTriangle, History, Info, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid, ReferenceLine } from 'recharts'
 import { fetchDeviceHistory, fetchDeviceInterfaceHistory } from '@/lib/api'
 import type { DeviceHistory, DeviceHourStatus } from '@/lib/api'
 import { useTheme } from '@/hooks/use-theme'
+import { useDelayedLoading } from '@/hooks/use-delayed-loading'
+
+function Skeleton({ className }: { className?: string }) {
+  return <div className={`animate-pulse bg-muted rounded ${className || ''}`} />
+}
+
+function DeviceTimelineSkeleton() {
+  return (
+    <div className="border border-border rounded-lg">
+      <div className="px-4 py-2.5 bg-muted/50 border-b border-border flex items-center gap-2 rounded-t-lg">
+        <Skeleton className="h-4 w-4 rounded" />
+        <Skeleton className="h-5 w-48" />
+        <div className="ml-auto">
+          <Skeleton className="h-6 w-48 rounded-lg" />
+        </div>
+      </div>
+      <div className="px-4 py-2 border-b border-border bg-muted/30 flex items-center gap-4">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-3 w-16" />
+        ))}
+      </div>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="px-4 py-3 border-b border-border last:border-b-0">
+          <div className="flex items-start gap-4">
+            <div className="flex-shrink-0 w-5" />
+            <div className="flex-shrink-0 w-44 space-y-1.5">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <Skeleton className="h-6 w-full rounded-sm" />
+              <div className="flex justify-between mt-1">
+                <Skeleton className="h-2.5 w-10" />
+                <Skeleton className="h-2.5 w-6" />
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 type TimeRange = '3h' | '6h' | '12h' | '24h' | '3d' | '7d'
 
@@ -123,9 +165,16 @@ function DeviceStatusTimeline({ hours, bucketMinutes = 60, timeRange = '24h' }: 
             onMouseEnter={() => setHoveredIndex(index)}
             onMouseLeave={() => setHoveredIndex(null)}
           >
-            <div
-              className={`w-full h-6 rounded-sm ${statusColors[hour.status]} cursor-pointer transition-opacity hover:opacity-80`}
-            />
+            <div className="relative w-full h-6 rounded-sm overflow-hidden cursor-pointer transition-opacity hover:opacity-80">
+              <div className={`absolute inset-0 ${
+                hour.collecting && hour.status === 'no_data'
+                  ? 'bg-transparent border border-gray-200/40 dark:border-gray-700/40'
+                  : statusColors[hour.status]
+              }`} />
+              {hour.collecting && hour.status !== 'no_data' && (
+                <div className="absolute inset-0 bg-gradient-to-r from-transparent via-transparent to-background" />
+              )}
+            </div>
 
             {/* Tooltip */}
             {hoveredIndex === index && (
@@ -141,6 +190,7 @@ function DeviceStatusTimeline({ hours, bucketMinutes = 60, timeRange = '24h' }: 
                     'text-muted-foreground'
                   }`}>
                     {statusLabels[hour.status]}
+                    {hour.collecting && <span className="text-muted-foreground ml-1">(In progress)</span>}
                   </div>
                   {hour.status !== 'no_data' && (
                     <div className="space-y-1 text-muted-foreground">
@@ -715,7 +765,7 @@ function DeviceRow({ device, devicesWithIssues, bucketMinutes, dataTimeRange, bu
     }
   }, [initiallyExpanded])
 
-  const issueReasons = devicesWithIssues
+  const issueReasons = devicesWithIssues && devicesWithIssues.size > 0
     ? (devicesWithIssues.get(device.code) ?? [])
     : (device.issue_reasons ?? [])
 
@@ -838,16 +888,17 @@ export function DeviceStatusTimelines({
   ]
   const buckets = useBucketCount()
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, isPlaceholderData, error } = useQuery({
     queryKey: ['device-history', timeRange, buckets],
     queryFn: () => fetchDeviceHistory(timeRange, buckets),
     refetchInterval: 60_000, // Refresh every minute
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   })
 
   // Helper to check if a device matches health filters
   const deviceMatchesHealthFilters = (device: DeviceHistory): boolean => {
-    if (devicesWithHealth) {
+    if (devicesWithHealth && devicesWithHealth.size > 0) {
       const health = devicesWithHealth.get(device.code)
       if (health) {
         const filterHealth = health === 'no_data' ? 'unhealthy' : health
@@ -879,7 +930,7 @@ export function DeviceStatusTimelines({
     if (!data?.devices) return []
 
     const filtered = data.devices.filter(device => {
-      const issueReasons = devicesWithIssues
+      const issueReasons = devicesWithIssues && devicesWithIssues.size > 0
         ? (devicesWithIssues.get(device.code) ?? [])
         : (device.issue_reasons ?? [])
       const hasIssues = issueReasons.length > 0
@@ -914,13 +965,10 @@ export function DeviceStatusTimelines({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data?.devices, issueFilters, healthFilters, noIssuesSelected, issueTypesSelected, devicesWithIssues, devicesWithHealth])
 
-  if (isLoading) {
-    return (
-      <div className="border border-border rounded-lg p-6 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground mr-2" />
-        <span className="text-sm text-muted-foreground">Loading device history...</span>
-      </div>
-    )
+  const showSkeleton = useDelayedLoading(isLoading && !data)
+
+  if (isLoading && !data) {
+    return showSkeleton ? <DeviceTimelineSkeleton /> : null
   }
 
   if (error) {
@@ -946,9 +994,12 @@ export function DeviceStatusTimelines({
   }
 
   return (
-    <div id="device-status-history" className="border border-border rounded-lg">
+    <div id="device-status-history" className={`border border-border rounded-lg transition-opacity${isPlaceholderData ? ' opacity-60' : ''}`}>
       <div className="px-4 py-2.5 bg-muted/50 border-b border-border flex items-center gap-2 rounded-t-lg">
-        <History className="h-4 w-4 text-muted-foreground" />
+        {isPlaceholderData
+          ? <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
+          : <History className="h-4 w-4 text-muted-foreground" />
+        }
         <h3 className="font-medium">
           Device Status History
           <span className="text-sm text-muted-foreground font-normal ml-1">

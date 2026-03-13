@@ -1,13 +1,55 @@
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useState, useEffect, useMemo } from 'react'
 import { Link } from 'react-router-dom'
-import { Loader2, CheckCircle2, AlertTriangle, History, Info, ChevronDown, ChevronUp } from 'lucide-react'
+import { CheckCircle2, AlertTriangle, History, Info, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
 import { LineChart, Line, XAxis, YAxis, ResponsiveContainer, Tooltip as RechartsTooltip, CartesianGrid, ReferenceLine } from 'recharts'
 import { fetchLinkHistory } from '@/lib/api'
 import type { LinkHistory, LinkHourStatus } from '@/lib/api'
 import { StatusTimeline } from './status-timeline'
 import { CriticalityBadge } from './criticality-badge'
 import { useTheme } from '@/hooks/use-theme'
+import { useDelayedLoading } from '@/hooks/use-delayed-loading'
+
+function Skeleton({ className }: { className?: string }) {
+  return <div className={`animate-pulse bg-muted rounded ${className || ''}`} />
+}
+
+function LinkTimelineSkeleton() {
+  return (
+    <div className="border border-border rounded-lg">
+      <div className="px-4 py-2.5 bg-muted/50 border-b border-border flex items-center gap-2 rounded-t-lg">
+        <Skeleton className="h-4 w-4 rounded" />
+        <Skeleton className="h-5 w-40" />
+        <div className="ml-auto">
+          <Skeleton className="h-6 w-48 rounded-lg" />
+        </div>
+      </div>
+      <div className="px-4 py-2 border-b border-border bg-muted/30 flex items-center gap-4">
+        {Array.from({ length: 5 }).map((_, i) => (
+          <Skeleton key={i} className="h-3 w-16" />
+        ))}
+      </div>
+      {Array.from({ length: 6 }).map((_, i) => (
+        <div key={i} className="px-4 py-3 border-b border-border last:border-b-0">
+          <div className="flex items-start gap-4">
+            <div className="flex-shrink-0 w-5" />
+            <div className="flex-shrink-0 w-44 space-y-1.5">
+              <Skeleton className="h-4 w-28" />
+              <Skeleton className="h-3 w-20" />
+            </div>
+            <div className="flex-1 min-w-0">
+              <Skeleton className="h-6 w-full rounded-sm" />
+              <div className="flex justify-between mt-1">
+                <Skeleton className="h-2.5 w-10" />
+                <Skeleton className="h-2.5 w-6" />
+              </div>
+            </div>
+          </div>
+        </div>
+      ))}
+    </div>
+  )
+}
 
 type TimeRange = '3h' | '6h' | '12h' | '24h' | '3d' | '7d'
 
@@ -701,18 +743,19 @@ export function LinkStatusTimelines({
   ]
   const buckets = useBucketCount()
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, isPlaceholderData, error } = useQuery({
     queryKey: ['link-history', timeRange, buckets],
     queryFn: () => fetchLinkHistory(timeRange, buckets),
     refetchInterval: 60_000, // Refresh every minute
     staleTime: 30_000,
+    placeholderData: keepPreviousData,
   })
 
   // Helper to check if a link matches health filters
   // Uses linksWithHealth (from filter time range) if provided, otherwise falls back to link's own hours
   const linkMatchesHealthFilters = (link: LinkHistory): boolean => {
     // If we have health data from the filter time range, use it
-    if (linksWithHealth) {
+    if (linksWithHealth && linksWithHealth.size > 0) {
       const health = linksWithHealth.get(link.code)
       if (health) {
         // Map no_data and down to unhealthy for filter matching (not separate filter options)
@@ -749,7 +792,7 @@ export function LinkStatusTimelines({
     const filtered = data.links.filter(link => {
       // Use linksWithIssues if provided - if link not in map, it has no issues in the filter time range
       // Only fall back to link.issue_reasons if linksWithIssues is not provided at all
-      const issueReasons = linksWithIssues
+      const issueReasons = linksWithIssues && linksWithIssues.size > 0
         ? (linksWithIssues.get(link.code) ?? [])
         : (link.issue_reasons ?? [])
       const hasIssues = issueReasons.length > 0
@@ -812,13 +855,10 @@ export function LinkStatusTimelines({
     return data.links.filter(link => link.provisioning).length
   }, [data?.links])
 
-  if (isLoading) {
-    return (
-      <div className="border border-border rounded-lg p-6 flex items-center justify-center">
-        <Loader2 className="h-5 w-5 animate-spin text-muted-foreground mr-2" />
-        <span className="text-sm text-muted-foreground">Loading link history...</span>
-      </div>
-    )
+  const showSkeleton = useDelayedLoading(isLoading && !data)
+
+  if (isLoading && !data) {
+    return showSkeleton ? <LinkTimelineSkeleton /> : null
   }
 
   if (error) {
@@ -844,9 +884,12 @@ export function LinkStatusTimelines({
   }
 
   return (
-    <div className="border border-border rounded-lg">
+    <div className={`border border-border rounded-lg transition-opacity${isPlaceholderData ? ' opacity-60' : ''}`}>
       <div className="px-4 py-2.5 bg-muted/50 border-b border-border flex items-center gap-2 rounded-t-lg">
-        <History className="h-4 w-4 text-muted-foreground" />
+        {isPlaceholderData
+          ? <Loader2 className="h-4 w-4 text-muted-foreground animate-spin" />
+          : <History className="h-4 w-4 text-muted-foreground" />
+        }
         <h3 className="font-medium">
           Link Status History
           <span className="text-sm text-muted-foreground font-normal ml-1">
