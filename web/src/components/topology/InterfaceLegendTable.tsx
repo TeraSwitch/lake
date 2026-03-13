@@ -166,7 +166,7 @@ export function InterfaceLegendTable({
           )}
           <button
             onClick={() => { setSortBy('value'); setSortDir(sortBy === 'value' ? (sortDir === 'asc' ? 'desc' : 'asc') : 'desc') }}
-            className="flex items-center justify-end gap-0.5 text-xs text-muted-foreground hover:text-foreground whitespace-nowrap w-48"
+            className="flex items-center justify-end gap-0.5 text-xs text-muted-foreground hover:text-foreground w-48 whitespace-nowrap"
           >
             {hoveredTime ?? 'In / Out'}
             {sortBy === 'value' && (sortDir === 'asc' ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />)}
