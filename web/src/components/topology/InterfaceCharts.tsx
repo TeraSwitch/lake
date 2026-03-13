@@ -427,7 +427,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
   const transitionChartRef = useRef<HTMLDivElement>(null)
 
   // Traffic data
-  const { data: rawPoints, isLoading: trafficLoading, error: trafficError } = useQuery({
+  const { data: rawPoints, isLoading: trafficLoading, error: trafficError, isFetching: trafficFetching } = useQuery({
     queryKey: ['topology-traffic-interface', entityType, entityPk, effectiveRange, bucket, metric],
     queryFn: () => fetchTrafficHistoryByInterface(entityType, entityPk, effectiveRange, bucket, metric),
     refetchInterval: 60000,
@@ -736,12 +736,19 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
   if (trafficError) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
-        Unable to load traffic data
+        Unable to load traffic data — the request may have timed out
       </div>
     )
   }
 
   if (interfaces.length === 0) {
+    if (trafficFetching) {
+      return (
+        <div className="text-sm text-muted-foreground text-center py-4">
+          Loading interface data...
+        </div>
+      )
+    }
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
         No traffic data available

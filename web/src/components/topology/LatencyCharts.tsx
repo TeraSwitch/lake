@@ -23,7 +23,7 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
 
   const effectiveRange = timeRange ?? { preset: '24h' as const }
 
-  const { data: latencyData, isLoading, error } = useQuery({
+  const { data: latencyData, isLoading, error, isFetching } = useQuery({
     queryKey: ['topology-latency', linkPk, effectiveRange, bucket],
     queryFn: () => fetchLatencyHistory(linkPk, effectiveRange, bucket),
     refetchInterval: 60000,
@@ -265,12 +265,19 @@ export function LatencyCharts({ linkPk, timeRange, bucket, className }: LatencyC
   if (error) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
-        Unable to load latency data
+        Unable to load latency data — the request may have timed out
       </div>
     )
   }
 
   if (!latencyData || latencyData.length === 0) {
+    if (isFetching) {
+      return (
+        <div className="text-sm text-muted-foreground text-center py-4">
+          Loading latency data...
+        </div>
+      )
+    }
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
         No latency data available for this time range

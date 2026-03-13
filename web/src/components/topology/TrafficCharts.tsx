@@ -28,7 +28,7 @@ export function TrafficCharts({ entityType, entityPk, timeRange, className }: Tr
 
   const chartRef = useRef<HTMLDivElement>(null)
 
-  const { data: trafficData, isLoading, error } = useQuery({
+  const { data: trafficData, isLoading, error, isFetching } = useQuery({
     queryKey: ['topology-traffic', entityType, entityPk, effectiveRange, bucket, metric],
     queryFn: () => fetchTrafficHistory(entityType, entityPk, effectiveRange, bucket, metric),
     refetchInterval: 60000,
@@ -110,12 +110,19 @@ export function TrafficCharts({ entityType, entityPk, timeRange, className }: Tr
   if (error) {
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
-        Unable to load traffic data
+        Unable to load traffic data — the request may have timed out
       </div>
     )
   }
 
   if (!trafficData || trafficData.length === 0) {
+    if (isFetching) {
+      return (
+        <div className="text-sm text-muted-foreground text-center py-4">
+          Loading traffic data...
+        </div>
+      )
+    }
     return (
       <div className="text-sm text-muted-foreground text-center py-4">
         No traffic data available
