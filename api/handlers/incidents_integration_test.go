@@ -98,6 +98,7 @@ func setupIncidentsTables(t *testing.T) {
 		CREATE TABLE IF NOT EXISTS fact_dz_device_link_latency (
 			event_ts DateTime,
 			link_pk String,
+			origin_device_pk String DEFAULT '',
 			rtt_us Float64,
 			ipdv_us Float64,
 			loss UInt8,
@@ -199,8 +200,9 @@ func TestGetLinkIncidents_ErrorsDetection(t *testing.T) {
 	for i := range 5 {
 		ts := now.Add(-time.Duration(i) * time.Minute)
 		err = config.DB.Exec(ctx, `
-			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, rtt_us, ipdv_us, loss) VALUES
-			($1, 'link-1', 1000.0, 50.0, 0)
+			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, origin_device_pk, rtt_us, ipdv_us, loss) VALUES
+			($1, 'link-1', 'dev-nyc-1', 1000.0, 50.0, 0),
+			($1, 'link-1', 'dev-lax-1', 1000.0, 50.0, 0)
 		`, ts)
 		require.NoError(t, err)
 	}
@@ -296,9 +298,11 @@ func TestGetLinkIncidents_DrainedLinksView(t *testing.T) {
 	for i := range 5 {
 		ts := now.Add(-time.Duration(i) * time.Minute)
 		err = config.DB.Exec(ctx, `
-			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, rtt_us, ipdv_us, loss) VALUES
-			($1, 'link-1', 1000.0, 50.0, 0),
-			($1, 'link-2', 1000.0, 50.0, 0)
+			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, origin_device_pk, rtt_us, ipdv_us, loss) VALUES
+			($1, 'link-1', 'dev-nyc-1', 1000.0, 50.0, 0),
+			($1, 'link-1', 'dev-lax-1', 1000.0, 50.0, 0),
+			($1, 'link-2', 'dev-nyc-1', 1000.0, 50.0, 0),
+			($1, 'link-2', 'dev-lax-1', 1000.0, 50.0, 0)
 		`, ts)
 		require.NoError(t, err)
 	}
@@ -354,8 +358,9 @@ func TestGetLinkIncidents_DrainedWithErrors(t *testing.T) {
 	for i := range 5 {
 		ts := now.Add(-time.Duration(i) * time.Minute)
 		err = config.DB.Exec(ctx, `
-			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, rtt_us, ipdv_us, loss) VALUES
-			($1, 'link-1', 1000.0, 50.0, 0)
+			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, origin_device_pk, rtt_us, ipdv_us, loss) VALUES
+			($1, 'link-1', 'dev-nyc-1', 1000.0, 50.0, 0),
+			($1, 'link-1', 'dev-lax-1', 1000.0, 50.0, 0)
 		`, ts)
 		require.NoError(t, err)
 	}
@@ -417,8 +422,9 @@ func TestGetLinkIncidents_MinDurationFilter(t *testing.T) {
 	for i := range 5 {
 		ts := now.Add(-time.Duration(i) * time.Minute)
 		err = config.DB.Exec(ctx, `
-			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, rtt_us, ipdv_us, loss) VALUES
-			($1, 'link-1', 1000.0, 50.0, 0)
+			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, origin_device_pk, rtt_us, ipdv_us, loss) VALUES
+			($1, 'link-1', 'dev-nyc-1', 1000.0, 50.0, 0),
+			($1, 'link-1', 'dev-lax-1', 1000.0, 50.0, 0)
 		`, ts)
 		require.NoError(t, err)
 	}
@@ -507,8 +513,9 @@ func TestGetLinkIncidentsCSV(t *testing.T) {
 	for i := range 5 {
 		ts := now.Add(-time.Duration(i) * time.Minute)
 		err = config.DB.Exec(ctx, `
-			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, rtt_us, ipdv_us, loss) VALUES
-			($1, 'link-1', 1000.0, 50.0, 0)
+			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, origin_device_pk, rtt_us, ipdv_us, loss) VALUES
+			($1, 'link-1', 'dev-nyc-1', 1000.0, 50.0, 0),
+			($1, 'link-1', 'dev-lax-1', 1000.0, 50.0, 0)
 		`, ts)
 		require.NoError(t, err)
 	}
@@ -544,8 +551,9 @@ func TestGetLinkIncidents_TypeFilter(t *testing.T) {
 	for i := range 5 {
 		ts := now.Add(-time.Duration(i) * time.Minute)
 		err = config.DB.Exec(ctx, `
-			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, rtt_us, ipdv_us, loss) VALUES
-			($1, 'link-1', 1000.0, 50.0, 0)
+			INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, origin_device_pk, rtt_us, ipdv_us, loss) VALUES
+			($1, 'link-1', 'dev-nyc-1', 1000.0, 50.0, 0),
+			($1, 'link-1', 'dev-lax-1', 1000.0, 50.0, 0)
 		`, ts)
 		require.NoError(t, err)
 	}
@@ -607,8 +615,9 @@ func TestGetLinkIncidents_NoDataDetection(t *testing.T) {
 	// Insert latency data from 1 hour ago (stale - should trigger no_data since >15min gap)
 	staleTime := time.Now().UTC().Add(-1 * time.Hour)
 	err = config.DB.Exec(ctx, `
-		INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, rtt_us, ipdv_us, loss) VALUES
-		($1, 'link-1', 1000.0, 50.0, 0)
+		INSERT INTO fact_dz_device_link_latency (event_ts, link_pk, origin_device_pk, rtt_us, ipdv_us, loss) VALUES
+		($1, 'link-1', 'dev-nyc-1', 1000.0, 50.0, 0),
+		($1, 'link-1', 'dev-lax-1', 1000.0, 50.0, 0)
 	`, staleTime)
 	require.NoError(t, err)
 
