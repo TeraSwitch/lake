@@ -269,12 +269,11 @@ export function StatusTimeline({ hours, committedRttUs, bucketMinutes = 60, time
                       {(hour.side_a_samples || hour.side_z_samples) && (
                         <div className="pt-2 mt-2 border-t border-border space-y-1.5">
                           <div className="text-[11px] font-medium text-foreground">By Direction</div>
-                          {hour.side_a_samples != null && hour.side_a_samples > 0 && (
-                            <div className="text-[11px]">
-                              <div className="flex justify-between gap-3">
-                                <span className="text-muted-foreground">A-Side:</span>
+                          <div className="text-[11px]">
+                            <div className="flex justify-between gap-3">
+                              <span className="text-muted-foreground">A-Side:</span>
+                              {hour.side_a_samples != null && hour.side_a_samples > 0 ? (
                                 <span className="font-mono">
-                                  {/* Only show latency when loss < 95% */}
                                   {(hour.side_a_loss_pct ?? 0) < LOSS_EXTENDED_PCT && (
                                     <>
                                       {formatLatency(hour.side_a_latency_us ?? 0)}
@@ -285,15 +284,16 @@ export function StatusTimeline({ hours, committedRttUs, bucketMinutes = 60, time
                                     {(hour.side_a_loss_pct ?? 0).toFixed(2)}% loss
                                   </span>
                                 </span>
-                              </div>
+                              ) : (
+                                <span className="font-mono text-red-400">No data</span>
+                              )}
                             </div>
-                          )}
-                          {hour.side_z_samples != null && hour.side_z_samples > 0 && (
-                            <div className="text-[11px]">
-                              <div className="flex justify-between gap-3">
-                                <span className="text-muted-foreground">Z-Side:</span>
+                          </div>
+                          <div className="text-[11px]">
+                            <div className="flex justify-between gap-3">
+                              <span className="text-muted-foreground">Z-Side:</span>
+                              {hour.side_z_samples != null && hour.side_z_samples > 0 ? (
                                 <span className="font-mono">
-                                  {/* Only show latency when loss < 95% */}
                                   {(hour.side_z_loss_pct ?? 0) < LOSS_EXTENDED_PCT && (
                                     <>
                                       {formatLatency(hour.side_z_latency_us ?? 0)}
@@ -304,9 +304,11 @@ export function StatusTimeline({ hours, committedRttUs, bucketMinutes = 60, time
                                     {(hour.side_z_loss_pct ?? 0).toFixed(2)}% loss
                                   </span>
                                 </span>
-                              </div>
+                              ) : (
+                                <span className="font-mono text-red-400">No data</span>
+                              )}
                             </div>
-                          )}
+                          </div>
                         </div>
                       )}
                       {/* Interface issues */}
