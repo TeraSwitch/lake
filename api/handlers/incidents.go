@@ -344,7 +344,15 @@ func fetchNoDataIncidents(ctx context.Context, conn driver.Conn, duration time.D
 	// Convert completed events to incidents
 	completedIncidents := convertNoDataEventsToIncidents(completedNoData, linkMeta)
 
-	return append(currentNoData, completedIncidents...), nil
+	// Detect links with one direction missing (partial data loss)
+	partialNoData, err := fetchPartialDataLinksIncidents(ctx, conn, linkMeta, ongoingLinks)
+	if err != nil {
+		return nil, fmt.Errorf("failed to fetch partial no-data links: %w", err)
+	}
+
+	all := append(currentNoData, completedIncidents...)
+	all = append(all, partialNoData...)
+	return all, nil
 }
 
 // fetchCurrentNoDataLinksIncidents finds links currently not reporting data (for incidents page - includes drained)
@@ -409,6 +417,146 @@ func fetchCurrentNoDataLinksIncidents(ctx context.Context, conn driver.Conn, lin
 			ContributorCode: meta.ContributorCode,
 			IncidentType:    "no_data",
 			StartedAt:       startedAt.UTC().Format(time.RFC3339),
+			IsOngoing:       true,
+			IsDrained:       isDrained,
+			Severity:        "incident",
+		})
+	}
+
+	return incidents, nil
+}
+
+// fetchPartialDataLinksIncidents finds links where one direction has recent data
+// but the other direction has gone silent — indicating a one-sided connectivity issue.
+func fetchPartialDataLinksIncidents(ctx context.Context, conn driver.Conn, linkMeta map[string]linkMetadataWithStatus, excludeLinks map[string]bool) ([]LinkIncident, error) {
+	linkPKs := make([]string, 0, len(linkMeta))
+	for pk := range linkMeta {
+		if excludeLinks[linkMeta[pk].LinkCode] {
+			continue // already flagged as fully no_data
+		}
+		linkPKs = append(linkPKs, pk)
+	}
+	if len(linkPKs) == 0 {
+		return nil, nil
+	}
+
+	// For each link, get the last seen time per direction (origin_device_pk).
+	// A link with only one direction reporting in the last 15 minutes is partial.
+	query := `
+		SELECT
+			link_pk,
+			origin_device_pk,
+			max(event_ts) as last_seen
+		FROM fact_dz_device_link_latency
+		WHERE event_ts >= now() - INTERVAL 30 DAY
+		  AND link_pk IN ($1)
+		GROUP BY link_pk, origin_device_pk
+	`
+
+	rows, err := conn.Query(ctx, query, linkPKs)
+	if err != nil {
+		return nil, fmt.Errorf("partial data query failed: %w", err)
+	}
+	defer rows.Close()
+
+	type directionInfo struct {
+		lastSeen time.Time
+	}
+	// linkPK -> map of origin_device_pk -> directionInfo
+	linkDirections := make(map[string]map[string]directionInfo)
+
+	for rows.Next() {
+		var linkPK, originPK string
+		var lastSeen time.Time
+		if err := rows.Scan(&linkPK, &originPK, &lastSeen); err != nil {
+			return nil, fmt.Errorf("partial data scan failed: %w", err)
+		}
+		if linkDirections[linkPK] == nil {
+			linkDirections[linkPK] = make(map[string]directionInfo)
+		}
+		linkDirections[linkPK][originPK] = directionInfo{lastSeen: lastSeen}
+	}
+
+	threshold := time.Now().Add(-15 * time.Minute)
+	var incidents []LinkIncident
+	idCounter := 0
+
+	for linkPK, directions := range linkDirections {
+		if len(directions) < 2 {
+			// Only one direction has ever reported — treat the missing
+			// direction's start as the earliest seen time for the link.
+			var hasRecent bool
+			var earliestSeen time.Time
+			for _, d := range directions {
+				if d.lastSeen.After(threshold) {
+					hasRecent = true
+				}
+				if earliestSeen.IsZero() || d.lastSeen.Before(earliestSeen) {
+					earliestSeen = d.lastSeen
+				}
+			}
+			if !hasRecent {
+				continue // both sides stale — handled by full no_data detection
+			}
+
+			meta, ok := linkMeta[linkPK]
+			if !ok {
+				continue
+			}
+			idCounter++
+			isDrained := meta.Status == "soft-drained" || meta.Status == "hard-drained"
+			incidents = append(incidents, LinkIncident{
+				ID:              fmt.Sprintf("partialdata-%d", idCounter),
+				LinkPK:          linkPK,
+				LinkCode:        meta.LinkCode,
+				LinkType:        meta.LinkType,
+				SideAMetro:      meta.SideAMetro,
+				SideZMetro:      meta.SideZMetro,
+				ContributorCode: meta.ContributorCode,
+				IncidentType:    "no_data",
+				StartedAt:       earliestSeen.Add(5 * time.Minute).UTC().Format(time.RFC3339),
+				IsOngoing:       true,
+				IsDrained:       isDrained,
+				Severity:        "incident",
+			})
+			continue
+		}
+
+		// Two directions exist — check if one is stale while the other is recent
+		var hasRecent, hasStale bool
+		var staleLastSeen time.Time
+		for _, d := range directions {
+			if d.lastSeen.After(threshold) {
+				hasRecent = true
+			} else {
+				hasStale = true
+				if staleLastSeen.IsZero() || d.lastSeen.After(staleLastSeen) {
+					staleLastSeen = d.lastSeen
+				}
+			}
+		}
+
+		if !hasRecent || !hasStale {
+			continue // both recent (healthy) or both stale (handled by full no_data)
+		}
+
+		meta, ok := linkMeta[linkPK]
+		if !ok {
+			continue
+		}
+
+		idCounter++
+		isDrained := meta.Status == "soft-drained" || meta.Status == "hard-drained"
+		incidents = append(incidents, LinkIncident{
+			ID:              fmt.Sprintf("partialdata-%d", idCounter),
+			LinkPK:          linkPK,
+			LinkCode:        meta.LinkCode,
+			LinkType:        meta.LinkType,
+			SideAMetro:      meta.SideAMetro,
+			SideZMetro:      meta.SideZMetro,
+			ContributorCode: meta.ContributorCode,
+			IncidentType:    "no_data",
+			StartedAt:       staleLastSeen.Add(5 * time.Minute).UTC().Format(time.RFC3339),
 			IsOngoing:       true,
 			IsDrained:       isDrained,
 			Severity:        "incident",

@@ -1407,32 +1407,35 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 		return nil, fmt.Errorf("history query returned no data for %d links (range=%s) — likely timed out", len(linkMap), timeRange)
 	}
 
-	// Compute aggregate stats for each bucket (combining both directions)
+	// Compute aggregate stats for each bucket (combining both directions).
+	// Latency is sample-weighted averaged; loss uses the max of either direction
+	// so one-sided packet loss isn't diluted by the healthy side's samples.
 	linkBuckets := make(map[string][]bucketStats)
 	for linkPK, bucketMap := range linkBucketMap {
 		var buckets []bucketStats
 		for _, stats := range bucketMap {
-			// Combine stats from both directions
-			var totalLatency, totalLoss float64
+			var totalLatency float64
 			var totalSamples uint64
-			var count int
+			var maxLoss float64
 
 			if stats.sideA != nil {
 				totalLatency += stats.sideA.avgLatency * float64(stats.sideA.samples)
-				totalLoss += stats.sideA.lossPct * float64(stats.sideA.samples)
 				totalSamples += stats.sideA.samples
-				count++
+				if stats.sideA.lossPct > maxLoss {
+					maxLoss = stats.sideA.lossPct
+				}
 			}
 			if stats.sideZ != nil {
 				totalLatency += stats.sideZ.avgLatency * float64(stats.sideZ.samples)
-				totalLoss += stats.sideZ.lossPct * float64(stats.sideZ.samples)
 				totalSamples += stats.sideZ.samples
-				count++
+				if stats.sideZ.lossPct > maxLoss {
+					maxLoss = stats.sideZ.lossPct
+				}
 			}
 
 			if totalSamples > 0 {
 				stats.avgLatency = totalLatency / float64(totalSamples)
-				stats.lossPct = totalLoss / float64(totalSamples)
+				stats.lossPct = maxLoss
 				stats.samples = totalSamples
 			}
 			buckets = append(buckets, *stats)
@@ -1790,6 +1793,16 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 					committedRtt = 0
 				}
 				status := classifyLinkStatus(stats.avgLatency, stats.lossPct, committedRtt)
+
+				// If only one direction is reporting in a completed bucket,
+				// the missing side likely can't send probes — treat as unhealthy.
+				// Skip the collecting bucket since it may not have both directions yet.
+				if !isCollecting && drainStatus == "" && (stats.sideA == nil) != (stats.sideZ == nil) {
+					if status == "healthy" || status == "degraded" {
+						status = "unhealthy"
+					}
+				}
+
 				hourStatus := LinkHourStatus{
 					Hour:         key,
 					Status:       status,
@@ -2383,10 +2396,15 @@ func fetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuck
 					CarrierTransitions: stats.carrierTransitions,
 				})
 			} else {
-				// No interface data - show as healthy (no errors)
+				// No interface data for this bucket.
+				// The collecting bucket may not have data yet — show as healthy.
+				noDataStatus := "no_data"
+				if isCollecting {
+					noDataStatus = "healthy"
+				}
 				hourStatuses = append(hourStatuses, DeviceHourStatus{
 					Hour:       key,
-					Status:     "healthy",
+					Status:     noDataStatus,
 					Collecting: isCollecting,
 					MaxUsers:   meta.maxUsers,
 				})
@@ -3124,28 +3142,34 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 		hs.DrainStatus = resolveDrainStatus(key)
 
 		// Latency/loss stats
+		// Loss uses max of either direction so one-sided loss isn't diluted.
 		if bs := bucketMap[key]; bs != nil {
-			var totalLatency, totalLoss float64
+			var totalLatency float64
 			var totalSamples uint64
+			var maxLoss float64
 			if bs.sideA != nil {
 				hs.SideALatencyUs = bs.sideA.avgLatency
 				hs.SideALossPct = bs.sideA.lossPct
 				hs.SideASamples = bs.sideA.samples
 				totalLatency += bs.sideA.avgLatency * float64(bs.sideA.samples)
-				totalLoss += bs.sideA.lossPct * float64(bs.sideA.samples)
 				totalSamples += bs.sideA.samples
+				if bs.sideA.lossPct > maxLoss {
+					maxLoss = bs.sideA.lossPct
+				}
 			}
 			if bs.sideZ != nil {
 				hs.SideZLatencyUs = bs.sideZ.avgLatency
 				hs.SideZLossPct = bs.sideZ.lossPct
 				hs.SideZSamples = bs.sideZ.samples
 				totalLatency += bs.sideZ.avgLatency * float64(bs.sideZ.samples)
-				totalLoss += bs.sideZ.lossPct * float64(bs.sideZ.samples)
 				totalSamples += bs.sideZ.samples
+				if bs.sideZ.lossPct > maxLoss {
+					maxLoss = bs.sideZ.lossPct
+				}
 			}
 			if totalSamples > 0 {
 				hs.AvgLatencyUs = totalLatency / float64(totalSamples)
-				hs.AvgLossPct = totalLoss / float64(totalSamples)
+				hs.AvgLossPct = maxLoss
 				hs.Samples = totalSamples
 			}
 		}
@@ -3177,10 +3201,20 @@ func fetchSingleLinkHistoryData(ctx context.Context, linkPK string, timeRange st
 		}
 
 		// Determine status using the same classification as the multi-link endpoint
+		bs := bucketMap[key]
 		if hs.Samples == 0 {
 			hs.Status = "no_data"
 		} else {
 			hs.Status = classifyLinkStatus(hs.AvgLatencyUs, hs.AvgLossPct, committedRttUs)
+
+			// If only one direction is reporting in a completed bucket,
+			// the missing side likely can't send probes — treat as unhealthy.
+			// Skip the collecting bucket since it may not have both directions yet.
+			if !hs.Collecting && hs.DrainStatus == "" && bs != nil && (bs.sideA == nil) != (bs.sideZ == nil) {
+				if hs.Status == "healthy" || hs.Status == "degraded" {
+					hs.Status = "unhealthy"
+				}
+			}
 		}
 
 		// Upgrade status based on interface issues (same thresholds as multi-link endpoint)

@@ -1003,6 +1003,49 @@ function groupIncidentsByLink(incidents: LinkIncident[], coalesceGapMinutes: num
   return result
 }
 
+type GroupedDeviceIncident = {
+  device_pk: string
+  device_code: string
+  device_type: string
+  metro: string
+  contributor_code: string
+  is_drained: boolean
+  started_at: string
+  is_ongoing: boolean
+  duration_seconds?: number
+  incidents: DeviceIncident[]
+}
+
+function groupIncidentsByDevice(incidents: DeviceIncident[]): GroupedDeviceIncident[] {
+  const byDevice = new Map<string, DeviceIncident[]>()
+  for (const inc of incidents) {
+    const existing = byDevice.get(inc.device_pk)
+    if (existing) existing.push(inc)
+    else byDevice.set(inc.device_pk, [inc])
+  }
+
+  const result: GroupedDeviceIncident[] = []
+  for (const incs of byDevice.values()) {
+    incs.sort((a, b) => new Date(a.started_at).getTime() - new Date(b.started_at).getTime())
+    const earliest = incs[0]
+    const anyOngoing = incs.some(i => i.is_ongoing)
+    const maxDuration = anyOngoing ? undefined : Math.max(...incs.map(i => i.duration_seconds || 0))
+    result.push({
+      device_pk: earliest.device_pk,
+      device_code: earliest.device_code,
+      device_type: earliest.device_type,
+      metro: earliest.metro,
+      contributor_code: earliest.contributor_code,
+      is_drained: incs.some(i => i.is_drained),
+      started_at: earliest.started_at,
+      is_ongoing: anyOngoing,
+      duration_seconds: maxDuration,
+      incidents: incs,
+    })
+  }
+  return result
+}
+
 function ActiveIncidentsTable({
   incidents,
   sortField,
@@ -1261,6 +1304,21 @@ function ActiveDeviceIncidentsTable({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const renderTimestamp = useMemo(() => Date.now(), [incidents])
 
+  const grouped = useMemo(() => {
+    const groups = groupIncidentsByDevice(incidents)
+    return groups.sort((a, b) => {
+      if (sortField === 'started_at') {
+        const aTime = new Date(a.started_at).getTime()
+        const bTime = new Date(b.started_at).getTime()
+        return sortDir === 'asc' ? aTime - bTime : bTime - aTime
+      } else {
+        const aDur = a.is_ongoing ? Infinity : (a.duration_seconds || 0)
+        const bDur = b.is_ongoing ? Infinity : (b.duration_seconds || 0)
+        return sortDir === 'asc' ? aDur - bDur : bDur - aDur
+      }
+    })
+  }, [incidents, sortField, sortDir])
+
   return (
     <div className="overflow-hidden">
       <table className="w-full text-sm">
@@ -1290,51 +1348,71 @@ function ActiveDeviceIncidentsTable({
           </tr>
         </thead>
         <tbody className="divide-y divide-border">
-          {incidents.map((incident) => (
-            <tr key={incident.id} className="hover:bg-muted/30">
+          {grouped.map((group) => {
+            const byType = new Map<string, { peakCount?: number }>()
+            const allInterfaces = new Set<string>()
+            for (const inc of group.incidents) {
+              for (const iface of inc.affected_interfaces || []) allInterfaces.add(iface)
+              const existing = byType.get(inc.incident_type)
+              if (existing) {
+                if (inc.peak_count != null) existing.peakCount = (existing.peakCount ?? 0) + inc.peak_count
+              } else {
+                byType.set(inc.incident_type, {
+                  peakCount: inc.peak_count ?? undefined,
+                })
+              }
+            }
+            const interfaces = Array.from(allInterfaces)
+            return (
+            <tr key={group.device_pk + group.started_at} className="hover:bg-muted/30">
               <td className="px-4 py-3">
                 <Link
-                  to={`/dz/devices/${encodeURIComponent(incident.device_pk)}`}
+                  to={`/dz/devices/${encodeURIComponent(group.device_pk)}`}
                   className="text-primary hover:underline inline-flex items-center gap-1"
                 >
-                  {incident.device_code}
+                  {group.device_code}
                   <ExternalLink className="h-3 w-3" />
                 </Link>
-                <div className="text-xs text-muted-foreground">{incident.contributor_code} · {incident.device_type}</div>
+                <div className="text-xs text-muted-foreground">{group.contributor_code} · {group.device_type}</div>
               </td>
               <td className="px-4 py-3">
-                <span className="font-mono">{incident.metro}</span>
+                <span className="font-mono">{group.metro}</span>
               </td>
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5 flex-wrap">
-                  <IncidentTypeBadge type={incident.incident_type} />
-                  {incident.is_drained && <DrainedBadge />}
-                  {incident.peak_count != null && (
-                    <span className="text-xs text-muted-foreground">
-                      ({incident.peak_count})
+                  {Array.from(byType.entries()).map(([type, agg]) => (
+                    <span key={type} className="inline-flex items-center gap-1">
+                      <IncidentTypeBadge type={type} />
+                      {agg.peakCount != null && (
+                        <span className="text-xs text-muted-foreground">
+                          ({agg.peakCount})
+                        </span>
+                      )}
                     </span>
-                  )}
+                  ))}
+                  {group.is_drained && <DrainedBadge />}
                 </div>
-                {incident.affected_interfaces && incident.affected_interfaces.length > 0 && (
+                {interfaces.length > 0 && (
                   <div className="text-xs text-muted-foreground mt-0.5 font-mono">
-                    {incident.affected_interfaces.join(', ')}
+                    {interfaces.join(', ')}
                   </div>
                 )}
               </td>
               <td className="px-4 py-3">
-                <div>{formatTimeAgo(incident.started_at)}</div>
+                <div>{formatTimeAgo(group.started_at)}</div>
                 <div className="text-xs text-muted-foreground">
-                  {formatTimestamp(incident.started_at)}
+                  {formatTimestamp(group.started_at)}
                 </div>
               </td>
               <td className="px-4 py-3">
-                {incident.is_ongoing
-                  ? formatDuration(Math.floor((renderTimestamp - new Date(incident.started_at).getTime()) / 1000))
-                  : formatDuration(incident.duration_seconds)
+                {group.is_ongoing
+                  ? formatDuration(Math.floor((renderTimestamp - new Date(group.started_at).getTime()) / 1000))
+                  : formatDuration(group.duration_seconds)
                 }
               </td>
             </tr>
-          ))}
+            )
+          })}
         </tbody>
       </table>
     </div>
