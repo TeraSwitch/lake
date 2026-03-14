@@ -532,7 +532,7 @@ function StatusIndicator({ statusData }: { statusData: StatusResponse }) {
 
   // Check if there are issues to show
   const linkIssues = statusData.links.issues || []
-  const nonActivatedLinks = statusData.alerts?.links || []
+  const nonActivatedLinks = (statusData.alerts?.links || []).filter(l => l.status !== 'provisioning')
   const deviceIssues = statusData.interfaces?.issues || []
   const nonActivatedDevices = statusData.alerts?.devices || []
   const hasExpandableContent = linkIssues.length > 0 || nonActivatedLinks.length > 0 || deviceIssues.length > 0 || nonActivatedDevices.length > 0
