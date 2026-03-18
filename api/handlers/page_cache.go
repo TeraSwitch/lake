@@ -51,8 +51,8 @@ type PageCache struct {
 	incidentsInterval      time.Duration
 	performanceInterval    time.Duration // for latency comparison and metro path latency
 	ledgerInterval         time.Duration // for ledger, validator perf, and stake overview
-	publisherCheckInterval   time.Duration
-	edgeScoreboardInterval   time.Duration
+	publisherCheckInterval time.Duration
+	edgeScoreboardInterval time.Duration
 
 	// Last refresh times (for observability)
 	statusLastRefresh            time.Time
@@ -102,19 +102,19 @@ type refreshEntry struct {
 func NewPageCache(statusInterval, linkHistoryInterval, timelineInterval, incidentsInterval, performanceInterval, ledgerInterval, publisherCheckInterval, edgeScoreboardInterval time.Duration) *PageCache {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &PageCache{
-		linkHistory:              make(map[string]*LinkHistoryResponse),
-		deviceHistory:            make(map[string]*DeviceHistoryResponse),
-		metroPathLatency:         make(map[string]*MetroPathLatencyResponse),
-		statusInterval:           statusInterval,
-		linkHistoryInterval:      linkHistoryInterval,
-		timelineInterval:         timelineInterval,
-		incidentsInterval:        incidentsInterval,
-		performanceInterval:      performanceInterval,
-		ledgerInterval:           ledgerInterval,
-		publisherCheckInterval:   publisherCheckInterval,
-		edgeScoreboardInterval:   edgeScoreboardInterval,
-		ctx:                      ctx,
-		cancel:                   cancel,
+		linkHistory:            make(map[string]*LinkHistoryResponse),
+		deviceHistory:          make(map[string]*DeviceHistoryResponse),
+		metroPathLatency:       make(map[string]*MetroPathLatencyResponse),
+		statusInterval:         statusInterval,
+		linkHistoryInterval:    linkHistoryInterval,
+		timelineInterval:       timelineInterval,
+		incidentsInterval:      incidentsInterval,
+		performanceInterval:    performanceInterval,
+		ledgerInterval:         ledgerInterval,
+		publisherCheckInterval: publisherCheckInterval,
+		edgeScoreboardInterval: edgeScoreboardInterval,
+		ctx:                    ctx,
+		cancel:                 cancel,
 	}
 }
 
