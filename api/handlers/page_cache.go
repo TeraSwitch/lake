@@ -42,6 +42,7 @@ type PageCache struct {
 	validatorPerf     *ValidatorPerfResponse
 	stakeOverview     *StakeOverview
 	publisherCheck    *PublisherCheckResponse // default publisher check (no filter, epochs=2)
+	edgeScoreboard    *EdgeScoreboardResponse // default edge scoreboard (24h window)
 
 	// Refresh intervals
 	statusInterval         time.Duration
@@ -50,7 +51,8 @@ type PageCache struct {
 	incidentsInterval      time.Duration
 	performanceInterval    time.Duration // for latency comparison and metro path latency
 	ledgerInterval         time.Duration // for ledger, validator perf, and stake overview
-	publisherCheckInterval time.Duration
+	publisherCheckInterval   time.Duration
+	edgeScoreboardInterval   time.Duration
 
 	// Last refresh times (for observability)
 	statusLastRefresh            time.Time
@@ -63,6 +65,7 @@ type PageCache struct {
 	metroPathLatencyLastRefresh  time.Time
 	ledgerLastRefresh            time.Time
 	publisherCheckLastRefresh    time.Time
+	edgeScoreboardLastRefresh    time.Time
 
 	// Context for cancellation
 	ctx    context.Context
@@ -96,28 +99,29 @@ type refreshEntry struct {
 }
 
 // NewPageCache creates a new cache with the specified refresh intervals.
-func NewPageCache(statusInterval, linkHistoryInterval, timelineInterval, incidentsInterval, performanceInterval, ledgerInterval, publisherCheckInterval time.Duration) *PageCache {
+func NewPageCache(statusInterval, linkHistoryInterval, timelineInterval, incidentsInterval, performanceInterval, ledgerInterval, publisherCheckInterval, edgeScoreboardInterval time.Duration) *PageCache {
 	ctx, cancel := context.WithCancel(context.Background())
 	return &PageCache{
-		linkHistory:            make(map[string]*LinkHistoryResponse),
-		deviceHistory:          make(map[string]*DeviceHistoryResponse),
-		metroPathLatency:       make(map[string]*MetroPathLatencyResponse),
-		statusInterval:         statusInterval,
-		linkHistoryInterval:    linkHistoryInterval,
-		timelineInterval:       timelineInterval,
-		incidentsInterval:      incidentsInterval,
-		performanceInterval:    performanceInterval,
-		ledgerInterval:         ledgerInterval,
-		publisherCheckInterval: publisherCheckInterval,
-		ctx:                    ctx,
-		cancel:                 cancel,
+		linkHistory:              make(map[string]*LinkHistoryResponse),
+		deviceHistory:            make(map[string]*DeviceHistoryResponse),
+		metroPathLatency:         make(map[string]*MetroPathLatencyResponse),
+		statusInterval:           statusInterval,
+		linkHistoryInterval:      linkHistoryInterval,
+		timelineInterval:         timelineInterval,
+		incidentsInterval:        incidentsInterval,
+		performanceInterval:      performanceInterval,
+		ledgerInterval:           ledgerInterval,
+		publisherCheckInterval:   publisherCheckInterval,
+		edgeScoreboardInterval:   edgeScoreboardInterval,
+		ctx:                      ctx,
+		cancel:                   cancel,
 	}
 }
 
 // Start begins the background refresh loop.
 // It performs an initial refresh synchronously to ensure cache is warm before returning.
 func (c *PageCache) Start() {
-	slog.Info("starting page cache", "status_interval", c.statusInterval, "link_history_interval", c.linkHistoryInterval, "timeline_interval", c.timelineInterval, "incidents_interval", c.incidentsInterval, "performance_interval", c.performanceInterval, "ledger_interval", c.ledgerInterval, "publisher_check_interval", c.publisherCheckInterval)
+	slog.Info("starting page cache", "status_interval", c.statusInterval, "link_history_interval", c.linkHistoryInterval, "timeline_interval", c.timelineInterval, "incidents_interval", c.incidentsInterval, "performance_interval", c.performanceInterval, "ledger_interval", c.ledgerInterval, "publisher_check_interval", c.publisherCheckInterval, "edge_scoreboard_interval", c.edgeScoreboardInterval)
 
 	// Initial refresh (concurrent to reduce startup time, but cache is warm before returning)
 	start := time.Now()
@@ -140,6 +144,7 @@ func (c *PageCache) Start() {
 		c.refreshValidatorPerf,
 		c.refreshStakeOverview,
 		c.refreshPublisherCheck,
+		c.refreshEdgeScoreboard,
 	} {
 		g.Go(func() error {
 			fn()
@@ -178,6 +183,7 @@ func (c *PageCache) refreshLoop() {
 		{"validator perf", c.ledgerInterval, c.refreshValidatorPerf},
 		{"stake overview", c.ledgerInterval, c.refreshStakeOverview},
 		{"publisher check", c.publisherCheckInterval, c.refreshPublisherCheck},
+		{"edge scoreboard", c.edgeScoreboardInterval, c.refreshEdgeScoreboard},
 	}
 
 	// Track when each refresh last ran. Initialized to now since Start()
@@ -682,6 +688,32 @@ func (c *PageCache) refreshPublisherCheck() (bool, string) {
 	return true, ""
 }
 
+// GetEdgeScoreboard returns the cached default edge scoreboard response.
+func (c *PageCache) GetEdgeScoreboard() *EdgeScoreboardResponse {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.edgeScoreboard
+}
+
+func (c *PageCache) refreshEdgeScoreboard() (bool, string) {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(c.ctx, 30*time.Second)
+	defer cancel()
+
+	resp, err := fetchEdgeScoreboardData(ctx, "24h")
+	if err != nil {
+		return false, err.Error()
+	}
+
+	c.mu.Lock()
+	c.edgeScoreboard = resp
+	c.edgeScoreboardLastRefresh = time.Now()
+	c.mu.Unlock()
+
+	slog.Debug("edge scoreboard cache refreshed", "duration", time.Since(start), "nodes", len(resp.Nodes))
+	return true, ""
+}
+
 func linkHistoryCacheKey(timeRange string, buckets int) string {
 	return timeRange + ":" + strconv.Itoa(buckets)
 }
@@ -704,6 +736,7 @@ func InitPageCache() {
 		120*time.Second, // Performance (latency comparison, metro path latency) refresh every 120s
 		60*time.Second,  // Ledger (DZ/Solana ledger, validator perf, stake overview) refresh every 60s
 		30*time.Second,  // Publisher check refresh every 30s
+		60*time.Second,  // Edge scoreboard refresh every 60s
 	)
 	pageCache.Start()
 }
