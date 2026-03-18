@@ -76,6 +76,12 @@ go test -tags evals -short ./agent/evals/ -v -count=1
 - `make test` — run all tests with race detector
 - `make ci` — run build, lint, and test in sequence
 
+## Page Cache
+
+The API has a background page cache (`api/handlers/page_cache.go`) that pre-computes expensive ClickHouse queries so pages load instantly on first visit. It refreshes each endpoint on a configurable interval (30s–120s). Handlers check the cache first for default request parameters and return with `X-Cache: HIT`; non-default requests bypass the cache.
+
+Add caching when a page runs expensive queries, has a common default view, and 30–60s staleness is acceptable. See publisher check or edge scoreboard handlers for reference implementations.
+
 ## Git Commits
 
 - Do NOT include "Co-Authored-By" lines in commit messages

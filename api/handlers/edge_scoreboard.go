@@ -2,8 +2,10 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -100,8 +102,27 @@ var validWindows = map[string]string{
 	"all": "",
 }
 
+// isDefaultEdgeScoreboardRequest returns true if the request uses default parameters (window=24h).
+func isDefaultEdgeScoreboardRequest(r *http.Request) bool {
+	window := strings.TrimSpace(r.URL.Query().Get("window"))
+	return window == "" || window == "24h"
+}
+
 // GetEdgeScoreboard returns aggregated win rate / completeness data for DZ Edge nodes.
 func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
+	// Try to serve from cache for default requests
+	if isMainnet(r.Context()) && isDefaultEdgeScoreboardRequest(r) && pageCache != nil {
+		if cached := pageCache.GetEdgeScoreboard(); cached != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-Cache", "HIT")
+			if err := json.NewEncoder(w).Encode(cached); err != nil {
+				slog.Error("failed to encode response", "error", err)
+			}
+			return
+		}
+	}
+
+	w.Header().Set("X-Cache", "MISS")
 	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
 	defer cancel()
 
@@ -110,6 +131,18 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		window = "24h"
 	}
 
+	resp, err := fetchEdgeScoreboardData(ctx, window)
+	if err != nil {
+		log.Printf("EdgeScoreboard error: %v", err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, resp)
+}
+
+// fetchEdgeScoreboardData performs the actual edge scoreboard queries.
+func fetchEdgeScoreboardData(ctx context.Context, window string) (*EdgeScoreboardResponse, error) {
 	// Excluded nodes — fra-mn-bm2 produces unreliable race data
 	excludedNodes := []string{"fra-mn-bm2", "tyo-mn-bm1"}
 
@@ -146,9 +179,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 	duration := time.Since(start)
 	metrics.RecordClickHouseQuery(duration, err)
 	if err != nil {
-		log.Printf("EdgeScoreboard query1 error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("query1: %w", err)
 	}
 	defer rows1.Close()
 
@@ -167,9 +198,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		var info nodeSlotInfo
 		var feedCount uint64
 		if err := rows1.Scan(&nodeID, &info.totalSlots, &info.dzSlots, &info.maxEpoch, &info.maxSlot, &info.lastUpdated, &feedCount); err != nil {
-			log.Printf("EdgeScoreboard query1 scan error: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("query1 scan: %w", err)
 		}
 		// Skip nodes that only record one feed — they can't produce meaningful race data
 		if feedCount < 2 {
@@ -184,19 +213,16 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := rows1.Err(); err != nil {
-		log.Printf("EdgeScoreboard query1 rows error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("query1 rows: %w", err)
 	}
 
 	// If no data, return empty response
 	if len(nodeSlots) == 0 {
-		writeJSON(w, EdgeScoreboardResponse{
+		return &EdgeScoreboardResponse{
 			Window:      window,
 			GeneratedAt: time.Now().UTC(),
 			Nodes:       []EdgeScoreboardNode{},
-		})
-		return
+		}, nil
 	}
 
 	// Query 2: Per-node per-feed win counts from summary rows (loser_feed = '')
@@ -233,9 +259,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 	duration = time.Since(start)
 	metrics.RecordClickHouseQuery(duration, err)
 	if err != nil {
-		log.Printf("EdgeScoreboard query2 error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("query2: %w", err)
 	}
 	defer rows2.Close()
 
@@ -250,9 +274,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		var shredsWon, totalShreds uint64
 		var winRatePct float64
 		if err := rows2.Scan(&nodeID, &feed, &shredsWon, &totalShreds, &winRatePct); err != nil {
-			log.Printf("EdgeScoreboard query2 scan error: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("query2 scan: %w", err)
 		}
 		feedStats[feedKey{nodeID, feed}] = &EdgeScoreboardFeedStats{
 			ShredsWon:   shredsWon,
@@ -261,9 +283,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if err := rows2.Err(); err != nil {
-		log.Printf("EdgeScoreboard query2 rows error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("query2 rows: %w", err)
 	}
 
 	// Query 2b: Pairwise lead times from lead-time rows (loser_feed != '')
@@ -291,9 +311,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 	duration = time.Since(start)
 	metrics.RecordClickHouseQuery(duration, err)
 	if err != nil {
-		log.Printf("EdgeScoreboard query2b error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("query2b: %w", err)
 	}
 	defer rows2b.Close()
 
@@ -302,9 +320,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		var slotCount uint64
 		var p50, p95 float64
 		if err := rows2b.Scan(&nodeID, &feed, &loserFeed, &slotCount, &p50, &p95); err != nil {
-			log.Printf("EdgeScoreboard query2b scan error: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("query2b scan: %w", err)
 		}
 		key := feedKey{nodeID, feed}
 		fs, ok := feedStats[key]
@@ -320,9 +336,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if err := rows2b.Err(); err != nil {
-		log.Printf("EdgeScoreboard query2b rows error: %v", err)
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return nil, fmt.Errorf("query2b rows: %w", err)
 	}
 
 	// Build location code set from node IDs (first segment before '-', uppercased)
@@ -355,9 +369,7 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		duration = time.Since(start)
 		metrics.RecordClickHouseQuery(duration, err)
 		if err != nil {
-			log.Printf("EdgeScoreboard query3 error: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("query3: %w", err)
 		}
 		defer rows3.Close()
 
@@ -365,16 +377,12 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 			var code, name string
 			var lat, lon float64
 			if err := rows3.Scan(&code, &name, &lat, &lon); err != nil {
-				log.Printf("EdgeScoreboard query3 scan error: %v", err)
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
+				return nil, fmt.Errorf("query3 scan: %w", err)
 			}
 			metros[strings.ToUpper(code)] = &metroInfo{name: name, latitude: lat, longitude: lon}
 		}
 		if err := rows3.Err(); err != nil {
-			log.Printf("EdgeScoreboard query3 rows error: %v", err)
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
+			return nil, fmt.Errorf("query3 rows: %w", err)
 		}
 	}
 
@@ -745,5 +753,5 @@ func GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 		SlotLeaders:     slotLeaders,
 	}
 
-	writeJSON(w, resp)
+	return &resp, nil
 }
