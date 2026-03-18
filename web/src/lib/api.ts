@@ -4331,6 +4331,7 @@ export interface Account {
   sol_balance?: number
   sol_balance_updated_at?: string
   is_active: boolean
+  is_internal_user: boolean
   created_at: string
   updated_at: string
   last_login_at?: string
@@ -4650,3 +4651,79 @@ export async function fetchPublisherCheck(q?: string, epochs?: number, slots?: n
   return res.json()
 }
 
+// Edge Scoreboard
+
+export interface EdgeScoreboardLeadTime {
+  loser_feed: string
+  p50_ms: number
+  p95_ms: number
+  slot_count: number
+}
+
+export interface EdgeScoreboardFeedStats {
+  shreds_won: number
+  total_shreds: number
+  win_rate_pct: number
+  lead_times: EdgeScoreboardLeadTime[]
+}
+
+export interface EdgeScoreboardNode {
+  node_id: string
+  location: string
+  metro_name: string
+  latitude: number
+  longitude: number
+  feeds: Record<string, EdgeScoreboardFeedStats>
+  stake_sol: number
+  validators: number
+  total_slots: number
+  slots_observed: number
+  last_updated: string
+  gossip_pubkey?: string
+  gossip_ip?: string
+  asn?: number
+  asn_org?: string
+  city?: string
+  country?: string
+}
+
+export interface EdgeScoreboardResponse {
+  window: string
+  generated_at: string
+  current_epoch: number
+  current_slot: number
+  total_slots: number
+  dz_slots: number
+  completeness_pct: number
+  nodes: EdgeScoreboardNode[]
+  recent_slots: EdgeScoreboardSlotRace[]
+  slot_leaders?: Record<string, EdgeScoreboardLeader>
+}
+
+export interface EdgeScoreboardLeader {
+  name?: string
+  pubkey: string
+  ip?: string
+  asn_org?: string
+  city?: string
+  country?: string
+}
+
+export interface EdgeScoreboardSlotRace {
+  node_id: string
+  slot: number
+  feed: string
+  shreds_won: number
+  win_pct: number
+}
+
+export async function fetchEdgeScoreboard(window: string = '1h'): Promise<EdgeScoreboardResponse> {
+  const params = new URLSearchParams()
+  if (window !== '1h') params.set('window', window)
+  const qs = params.toString()
+  const res = await apiFetch(`/api/dz/edge/scoreboard${qs ? `?${qs}` : ''}`)
+  if (!res.ok) {
+    throw new Error('Failed to fetch edge scoreboard')
+  }
+  return res.json()
+}

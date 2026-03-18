@@ -68,6 +68,19 @@ func RequireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// RequireInternalDomain middleware returns 403 unless the user is authenticated
+// with an email from an allowed domain (AUTH_ALLOWED_DOMAINS).
+func RequireInternalDomain(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		account := GetAccountFromContext(r.Context())
+		if account == nil || !account.IsInternalUser {
+			http.Error(w, "Forbidden", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
 // GetAccountFromContext returns the account from context, or nil if not authenticated
 func GetAccountFromContext(ctx context.Context) *Account {
 	account, ok := ctx.Value(accountContextKey).(*Account)

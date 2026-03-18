@@ -54,6 +54,7 @@ import { ContributorDetailPage } from '@/components/contributor-detail-page'
 import { UserDetailPage } from '@/components/user-detail-page'
 import { MulticastGroupsPage } from '@/components/multicast-groups-page'
 import { PublisherCheckPage } from './components/publisher-check-page'
+import { EdgeScoreboardPage } from './components/edge-scoreboard-page'
 import { MulticastGroupDetailPage } from '@/components/multicast-group-detail-page'
 import { ValidatorDetailPage } from '@/components/validator-detail-page'
 import { GossipNodeDetailPage } from '@/components/gossip-node-detail-page'
@@ -90,6 +91,12 @@ const queryClient = new QueryClient({
 })
 
 // Redirect to latest or new query session
+function InternalOnly({ children }: { children: React.ReactNode }) {
+  const { user } = useAuth()
+  if (!user?.is_internal_user) return <Navigate to="/" replace />
+  return <>{children}</>
+}
+
 function QueryRedirect() {
   const navigate = useNavigate()
   const { data: sessions, isLoading, isError } = useQuerySessions()
@@ -693,6 +700,7 @@ function AppContent() {
             <Route path="/dz/multicast-groups" element={<MulticastGroupsPage />} />
             <Route path="/dz/multicast-groups/:pk" element={<MulticastGroupDetailPage />} />
             <Route path="/dz/publisher-check" element={<PublisherCheckPage />} />
+            <Route path="/dz/edge/scoreboard" element={<InternalOnly><EdgeScoreboardPage /></InternalOnly>} />
 
             {/* Solana entity routes */}
             <Route path="/solana/overview" element={<SolanaOverviewPage />} />

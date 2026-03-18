@@ -32,18 +32,22 @@ import {
   Moon,
   Layers,
   BookOpen,
+  Trophy,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/use-theme'
 import { useVersionCheck } from '@/hooks/use-version-check'
+import { useAuth } from '@/contexts/AuthContext'
 import { UserPopover } from './auth/UserPopover'
 
 export function Sidebar() {
   const location = useLocation()
   const navigate = useNavigate()
   const { features } = useEnv()
+  const { user } = useAuth()
   const hasNeo4j = features.neo4j !== false
   const hasSolana = features.solana !== false
+  const isInternalUser = !!user?.is_internal_user
   const { resolvedTheme, setTheme } = useTheme()
   const { updateAvailable, reload } = useVersionCheck()
 
@@ -88,6 +92,7 @@ export function Sidebar() {
   const isUsersRoute = location.pathname === '/dz/users'
   const isMulticastGroupsRoute = location.pathname.startsWith('/dz/multicast-groups')
   const isPublisherCheckRoute = location.pathname === '/dz/publisher-check'
+  const isScoreboardRoute = location.pathname === '/dz/edge/scoreboard'
   const isValidatorsRoute = location.pathname === '/solana/validators'
   const isGossipNodesRoute = location.pathname === '/solana/gossip-nodes'
   const isSolanaOverviewRoute = location.pathname === '/solana/overview'
@@ -532,6 +537,12 @@ export function Sidebar() {
               <ShieldCheck className="h-4 w-4" />
               Publisher Check
             </Link>
+            {isInternalUser && (
+              <Link to="/dz/edge/scoreboard" className={navItemClass(isScoreboardRoute)}>
+                <Trophy className="h-4 w-4" />
+                Scoreboard
+              </Link>
+            )}
           </div>
         </div>
 
