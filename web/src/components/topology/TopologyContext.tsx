@@ -78,6 +78,10 @@ export interface TopologyContextValue {
   // Hover state (for cursor-following popover)
   hoveredEntity: { type: SelectionType; id: string; x: number; y: number } | null
   setHoveredEntity: (entity: { type: SelectionType; id: string; x: number; y: number } | null) => void
+
+  // Hovered discrepancy key (deviceAPK|deviceBPK) for highlight-on-hover in ISIS overlay
+  hoveredDiscrepancyKey: string | null
+  setHoveredDiscrepancyKey: (key: string | null) => void
 }
 
 const TopologyContext = createContext<TopologyContextValue | null>(null)
@@ -150,18 +154,23 @@ export function TopologyProvider({ children, view }: TopologyProviderProps) {
   // Mode state
   const [mode, setModeInternal] = useState<TopologyMode>('explore')
 
-  // Panel state with localStorage persistence for width
-  // Default to closed - panel opens when user selects an item or enters a mode
-  const [panel, setPanel] = useState<PanelState>(() => ({
-    isOpen: false,
-    width: parseInt(localStorage.getItem('topology-panel-width') ?? String(DEFAULT_PANEL_WIDTH), 10),
-    content: 'overlay' as const,
-  }))
-
   // Overlay state - initialized from URL params with view-specific defaults
   const [overlays, setOverlays] = useState<OverlayState>(() =>
     parseOverlaysFromUrl(searchParams.get('overlays'), view)
   )
+
+  // Panel state with localStorage persistence for width
+  // Open with overlay content on load if any overlay with a panel is active
+  const [panel, setPanel] = useState<PanelState>(() => {
+    const initialOverlays = parseOverlaysFromUrl(searchParams.get('overlays'), view)
+    const hasOverlayPanel = Object.entries(initialOverlays)
+      .some(([key, value]) => value && key !== 'bandwidth')
+    return {
+      isOpen: hasOverlayPanel,
+      width: parseInt(localStorage.getItem('topology-panel-width') ?? String(DEFAULT_PANEL_WIDTH), 10),
+      content: 'overlay' as const,
+    }
+  })
 
   // Track previous view to detect view switches
   const prevViewRef = useRef(view)
@@ -178,6 +187,9 @@ export function TopologyProvider({ children, view }: TopologyProviderProps) {
 
   // Hover state
   const [hoveredEntity, setHoveredEntity] = useState<{ type: SelectionType; id: string; x: number; y: number } | null>(null)
+
+  // Hovered discrepancy key for ISIS overlay highlight
+  const [hoveredDiscrepancyKey, setHoveredDiscrepancyKey] = useState<string | null>(null)
 
   // Impact mode multi-select state
   const [impactDevices, setImpactDevices] = useState<string[]>([])
@@ -255,6 +267,10 @@ export function TopologyProvider({ children, view }: TopologyProviderProps) {
   // Panel controls
   const openPanel = useCallback((content: 'details' | 'mode' | 'overlay') => {
     setPanel(prev => ({ ...prev, isOpen: true, content }))
+    // Clear discrepancy hover when switching away from overlay panel
+    if (content !== 'overlay') {
+      setHoveredDiscrepancyKey(null)
+    }
   }, [])
 
   const closePanel = useCallback(() => {
@@ -367,6 +383,8 @@ export function TopologyProvider({ children, view }: TopologyProviderProps) {
     view,
     hoveredEntity,
     setHoveredEntity,
+    hoveredDiscrepancyKey,
+    setHoveredDiscrepancyKey,
   }
 
   return (

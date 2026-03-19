@@ -341,7 +341,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
   const markerClickedRef = useRef(false)
 
   // Get unified topology context
-  const { mode, setMode, overlays, toggleOverlay, panel, openPanel, closePanel, selection, impactDevices, toggleImpactDevice, clearImpactDevices } = useTopology()
+  const { mode, setMode, overlays, toggleOverlay, panel, openPanel, closePanel, selection, impactDevices, toggleImpactDevice, clearImpactDevices, hoveredDiscrepancyKey } = useTopology()
 
   // Derive mode states from context
   const pathModeEnabled = mode === 'path'
@@ -509,7 +509,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
   }, [linkHealthData])
 
   // Build edge health status from compare data (keyed by device pair)
-  // Returns: 'matched' | 'missing' | 'extra' | 'mismatch' | undefined
+  // Returns: 'matched' | 'partial' | 'missing' | 'extra' | undefined
   const edgeHealthStatus = useMemo(() => {
     if (!compareData?.discrepancies) return new Map<string, string>()
     const status = new Map<string, string>()
@@ -522,12 +522,12 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
       if (d.type === 'missing_isis') {
         status.set(key1, 'missing')
         status.set(key2, 'missing')
+      } else if (d.type === 'partial_isis') {
+        status.set(key1, 'partial')
+        status.set(key2, 'partial')
       } else if (d.type === 'extra_isis') {
         status.set(key1, 'extra')
         status.set(key2, 'extra')
-      } else if (d.type === 'metric_mismatch') {
-        status.set(key1, 'mismatch')
-        status.set(key2, 'mismatch')
       }
     }
     return status
@@ -1609,21 +1609,33 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
           displayWeight = 2
         }
 
+        // When hovering a discrepancy item, highlight that link and dim others
+        const isHoveredDiscrepancy = hoveredDiscrepancyKey && (
+          healthKey === hoveredDiscrepancyKey ||
+          healthKey === hoveredDiscrepancyKey.split('|').reverse().join('|')
+        )
+        const isDimmedByHover = hoveredDiscrepancyKey && !isHoveredDiscrepancy
+
         // Color by health status
-        if (healthStatus === 'missing') {
-          displayColor = '#ef4444' // red
+        if (healthStatus === 'partial') {
+          displayColor = '#ef4444' // red — asymmetric adjacency, likely a real problem
+          displayOpacity = isDimmedByHover ? 0.1 : 1
+        } else if (healthStatus === 'missing') {
+          displayColor = '#f59e0b' // amber — no adjacency at all
           useDash = true
-          displayOpacity = 1
+          displayOpacity = isDimmedByHover ? 0.1 : 1
         } else if (healthStatus === 'extra') {
-          displayColor = '#f59e0b' // amber
-          displayOpacity = 1
-        } else if (healthStatus === 'mismatch') {
-          displayColor = '#eab308' // yellow
-          displayOpacity = 1
+          displayColor = '#8b5cf6' // purple — ISIS adjacency with no configured link
+          displayOpacity = isDimmedByHover ? 0.1 : 1
         } else {
           // Default to matched (green)
           displayColor = '#22c55e'
-          displayOpacity = 0.8
+          displayOpacity = isDimmedByHover ? 0.1 : 0.4
+        }
+
+        // Boost hovered link
+        if (isHoveredDiscrepancy) {
+          displayWeight = Math.max(displayWeight, 4)
         }
       } else if (isInSelectedPath && linkPathIndices) {
         // Use the selected path's color
@@ -1726,7 +1738,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
       features,
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [links, devicePositions, isDark, hoveredLink, selectedItem, hoverHighlight, linkPathMap, selectedPathIndex, criticalityOverlayEnabled, linkCriticalityMap, whatifRemovalMode, removalLink, linkHealthMode, linkSlaStatus, trafficFlowMode, getTrafficColor, metroClusteringMode, collapsedMetros, deviceMap, metroMap, contributorLinksMode, contributorIndexMap, bandwidthMode, isisHealthMode, edgeHealthStatus, linkTypeMode, metroPathModeEnabled, metroLinkPathMap, metroPathSelectedPairs, multicastTreesMode, dimOtherLinks])
+  }, [links, devicePositions, isDark, hoveredLink, selectedItem, hoverHighlight, linkPathMap, selectedPathIndex, criticalityOverlayEnabled, linkCriticalityMap, whatifRemovalMode, removalLink, linkHealthMode, linkSlaStatus, trafficFlowMode, getTrafficColor, metroClusteringMode, collapsedMetros, deviceMap, metroMap, contributorLinksMode, contributorIndexMap, bandwidthMode, isisHealthMode, edgeHealthStatus, linkTypeMode, metroPathModeEnabled, metroLinkPathMap, metroPathSelectedPairs, multicastTreesMode, dimOtherLinks, hoveredDiscrepancyKey])
 
   // GeoJSON for validator links (connecting lines)
   const validatorLinksGeoJson = useMemo(() => {
@@ -2463,12 +2475,6 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
       }
     }
 
-    const linkFitsInView = (aLng: number, aLat: number, zLng: number, zLat: number) => {
-      if (!mapRef.current) return false
-      const bounds = mapRef.current.getMap().getBounds()
-      return bounds.contains([aLng, aLat]) && bounds.contains([zLng, zLat])
-    }
-
     let itemFound = false
 
     if (type === 'validator') {
@@ -2568,9 +2574,6 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
           const metroA = deviceA ? metroMap.get(deviceA.metro_pk) : undefined
           const metroZ = deviceZ ? metroMap.get(deviceZ.metro_pk) : undefined
           if (metroA && metroZ) {
-            if (linkFitsInView(metroA.longitude, metroA.latitude, metroZ.longitude, metroZ.latitude)) {
-              // Already in view, no need to fly
-            } else {
             const aLng = metroA.longitude
             let zLng = metroZ.longitude
             const lngDelta = zLng - aLng
@@ -2582,7 +2585,6 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
             if (midLng < -180) midLng += 360
             const midLat = (metroA.latitude + metroZ.latitude) / 2
             flyToLocation(midLng, midLat, 3, true)
-            }
           } else if (metroA) {
             flyToLocation(metroA.longitude, metroA.latitude, 3, true)
           }
@@ -3388,6 +3390,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
               </span>
             ) : undefined
           }
+          onBack={hasOverlayPanelContent ? () => { setSelectedItem(null); openPanel('overlay') } : undefined}
         >
           {/* eslint-disable @typescript-eslint/no-explicit-any */}
           {selectedItem.type === 'device' && (

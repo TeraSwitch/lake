@@ -98,7 +98,7 @@ export function TopologyGraph({
   const setSelectedLinkRef = useRef<(link: LinkInfo | null) => void>(() => {})
 
   // Get unified topology context
-  const { mode, setMode, overlays, toggleOverlay, panel, openPanel, closePanel, impactDevices, toggleImpactDevice, clearImpactDevices } = useTopology()
+  const { mode, setMode, overlays, toggleOverlay, panel, openPanel, closePanel, setSelection, impactDevices, toggleImpactDevice, clearImpactDevices, hoveredDiscrepancyKey } = useTopology()
 
   // Get URL params for link selection (device selection comes via props, but links need direct access)
   const [searchParams, setSearchParams] = useSearchParams()
@@ -592,7 +592,7 @@ export function TopologyGraph({
   }, [data])
 
   // Build edge health status from compare data
-  // Returns: 'matched' | 'missing' | 'extra' | 'mismatch' | undefined
+  // Returns: 'matched' | 'partial' | 'missing' | 'extra' | undefined
   const edgeHealthStatus = useMemo(() => {
     if (!compareData?.discrepancies) return new Map<string, string>()
     const status = new Map<string, string>()
@@ -605,12 +605,12 @@ export function TopologyGraph({
       if (d.type === 'missing_isis') {
         status.set(key1, 'missing')
         status.set(key2, 'missing')
+      } else if (d.type === 'partial_isis') {
+        status.set(key1, 'partial')
+        status.set(key2, 'partial')
       } else if (d.type === 'extra_isis') {
         status.set(key1, 'extra')
         status.set(key2, 'extra')
-      } else if (d.type === 'metric_mismatch') {
-        status.set(key1, 'mismatch')
-        status.set(key2, 'mismatch')
       }
     }
     return status
@@ -618,6 +618,8 @@ export function TopologyGraph({
 
 
   // Filter nodes and edges
+  // When ISIS health overlay is active, inject ghost edges for missing/partial
+  // discrepancies so they're visible in the graph even without ISIS adjacencies
   const filteredData = useMemo(() => {
     if (!data) return null
 
@@ -1267,7 +1269,7 @@ export function TopologyGraph({
 
   // Clear classes when mode changes
   useEffect(() => {
-    const allClasses = 'path-node path-edge path-source path-target path-0 path-1 path-2 path-3 path-4 path-selected health-matched health-extra health-missing health-mismatch criticality-critical criticality-important criticality-redundant whatif-removal-candidate whatif-removed whatif-rerouted whatif-disconnected whatif-added whatif-addition-source whatif-addition-target whatif-improved whatif-redundancy-gained'
+    const allClasses = 'path-node path-edge path-source path-target path-0 path-1 path-2 path-3 path-4 path-selected health-matched health-extra health-missing criticality-critical criticality-important criticality-redundant whatif-removal-candidate whatif-removed whatif-rerouted whatif-disconnected whatif-added whatif-addition-source whatif-addition-target whatif-improved whatif-redundancy-gained'
 
     if (mode === 'explore') {
       setPathSource(null)
@@ -1354,7 +1356,7 @@ export function TopologyGraph({
           }
         })
         previousPathEdgeIdsRef.current.clear()
-        cy.elements().removeClass('path-node path-edge path-source path-target path-0 path-1 path-2 path-3 path-4 path-selected health-matched health-extra health-missing health-mismatch criticality-critical criticality-important criticality-redundant whatif-added whatif-addition-source whatif-addition-target whatif-improved whatif-redundancy-gained')
+        cy.elements().removeClass('path-node path-edge path-source path-target path-0 path-1 path-2 path-3 path-4 path-selected health-matched health-extra health-missing criticality-critical criticality-important criticality-redundant whatif-added whatif-addition-source whatif-addition-target whatif-improved whatif-redundancy-gained')
         // Make edges more prominent for easier clicking
         cy.edges().addClass('whatif-removal-candidate')
       }
@@ -1385,7 +1387,7 @@ export function TopologyGraph({
           }
         })
         previousPathEdgeIdsRef.current.clear()
-        cy.elements().removeClass('path-node path-edge path-source path-target path-0 path-1 path-2 path-3 path-4 path-selected health-matched health-extra health-missing health-mismatch criticality-critical criticality-important criticality-redundant whatif-removal-candidate whatif-removed whatif-rerouted whatif-disconnected')
+        cy.elements().removeClass('path-node path-edge path-source path-target path-0 path-1 path-2 path-3 path-4 path-selected health-matched health-extra health-missing criticality-critical criticality-important criticality-redundant whatif-removal-candidate whatif-removed whatif-rerouted whatif-disconnected')
       }
     }
   }, [mode, isDark])
@@ -1690,35 +1692,70 @@ export function TopologyGraph({
       return 2
     }
 
+    // Hover highlight key conversion (ComparePanel uses '|', graph uses '->')
+    const hoverEdgeKey = hoveredDiscrepancyKey?.replace('|', '->')
+    const hoverEdgeKeyReverse = hoveredDiscrepancyKey?.split('|').reverse().join('->')
+
     cy.batch(() => {
-      // Skip path edges - they have their own styling
+      // Add ghost edges for missing/partial ISIS discrepancies that have no ISIS adjacency edge
+      // ISIS graph is directional — add both A→B and B→A if missing
+      const existingEdgeIds = new Set(cy.edges().map(e => e.id()))
+      for (const d of compareData.discrepancies) {
+        if (d.type !== 'missing_isis' && d.type !== 'partial_isis') continue
+        // Only add if both nodes exist in the graph
+        if (!cy.getElementById(d.deviceAPK).length || !cy.getElementById(d.deviceBPK).length) continue
+        const edgeId = `${d.deviceAPK}->${d.deviceBPK}`
+        const reverseId = `${d.deviceBPK}->${d.deviceAPK}`
+        if (!existingEdgeIds.has(edgeId)) {
+          cy.add({
+            group: 'edges',
+            data: { id: edgeId, source: d.deviceAPK, target: d.deviceBPK, metric: 0, isGhostEdge: true },
+          })
+          existingEdgeIds.add(edgeId)
+        }
+        if (!existingEdgeIds.has(reverseId)) {
+          cy.add({
+            group: 'edges',
+            data: { id: reverseId, source: d.deviceBPK, target: d.deviceAPK, metric: 0, isGhostEdge: true },
+          })
+          existingEdgeIds.add(reverseId)
+        }
+      }
+
+      // Style all edges by health status
       cy.edges().not('.path-edge').forEach(edge => {
         const edgeId = edge.data('id') // format: source->target
         const status = edgeHealthStatus.get(edgeId)
         const metric = edge.data('metric') ?? 0
         const width = getMetricWidth(metric)
 
-        if (status === 'missing') {
+        const isHoveredDiscrepancy = hoveredDiscrepancyKey && (
+          edgeId === hoverEdgeKey ||
+          edgeId === hoverEdgeKeyReverse
+        )
+        const isDimmedByHover = hoveredDiscrepancyKey && !isHoveredDiscrepancy
+
+        if (status === 'partial') {
           edge.style({
             'line-color': '#ef4444',
             'target-arrow-color': '#ef4444',
-            'line-style': 'dashed',
-            'width': width,
-            'opacity': 1,
+            'width': isHoveredDiscrepancy ? Math.max(width, 4) : width,
+            'opacity': isDimmedByHover ? 0.1 : 1,
           })
-        } else if (status === 'extra') {
+        } else if (status === 'missing') {
           edge.style({
             'line-color': '#f59e0b',
             'target-arrow-color': '#f59e0b',
-            'width': width,
-            'opacity': 1,
+            'line-style': 'dashed',
+            'width': isHoveredDiscrepancy ? Math.max(width, 4) : width,
+            'opacity': isDimmedByHover ? 0.1 : 1,
           })
-        } else if (status === 'mismatch') {
+        } else if (status === 'extra') {
           edge.style({
-            'line-color': '#eab308',
-            'target-arrow-color': '#eab308',
-            'width': width,
-            'opacity': 1,
+            'line-color': '#8b5cf6',
+            'target-arrow-color': '#8b5cf6',
+            'width': isHoveredDiscrepancy ? Math.max(width, 4) : width,
+            'opacity': isDimmedByHover ? 0.1 : 1,
           })
         } else {
           // Default to matched if no discrepancy found
@@ -1726,12 +1763,21 @@ export function TopologyGraph({
             'line-color': '#22c55e',
             'target-arrow-color': '#22c55e',
             'width': width,
-            'opacity': 0.8,
+            'opacity': isDimmedByHover ? 0.1 : 0.4,
           })
         }
       })
     })
-  }, [isisHealthEnabled, compareData, edgeHealthStatus, cyGeneration])
+
+    // Cleanup: remove ghost edges when overlay is disabled
+    return () => {
+      if (cyRef.current) {
+        cyRef.current.batch(() => {
+          cyRef.current!.edges('[?isGhostEdge]').remove()
+        })
+      }
+    }
+  }, [isisHealthEnabled, compareData, edgeHealthStatus, cyGeneration, hoveredDiscrepancyKey])
 
   // Apply criticality styles when criticality overlay is enabled
   useEffect(() => {
@@ -2469,7 +2515,7 @@ export function TopologyGraph({
           style: {
             'line-color': '#22c55e',
             'target-arrow-color': '#22c55e',
-            'opacity': 0.8,
+            'opacity': 0.4,
           },
         },
         {
@@ -2487,15 +2533,6 @@ export function TopologyGraph({
             'line-color': '#ef4444',
             'target-arrow-color': '#ef4444',
             'line-style': 'dashed',
-            'width': 3,
-            'opacity': 1,
-          },
-        },
-        {
-          selector: 'edge.health-mismatch',
-          style: {
-            'line-color': '#eab308',
-            'target-arrow-color': '#eab308',
             'width': 3,
             'opacity': 1,
           },
@@ -3597,6 +3634,7 @@ export function TopologyGraph({
             <EntityLink to={`/dz/links/${selectedLink.pk}`}>{selectedLink.code}</EntityLink>
           ) : 'Details'}
           subtitle={selectedDevice ? selectedDevice.deviceType : selectedLink?.linkType}
+          onBack={hasOverlayPanelContent ? () => { setSelection(null); openPanel('overlay') } : undefined}
         >
           {selectedDevice && <DeviceDetails device={selectedDevice} />}
           {selectedLink && <LinkDetails link={selectedLink} />}

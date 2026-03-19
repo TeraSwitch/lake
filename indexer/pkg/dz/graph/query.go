@@ -67,18 +67,15 @@ type ISISAdjacency struct {
 
 // TopologyDiscrepancy represents a difference between configured and ISIS topology.
 type TopologyDiscrepancy struct {
-	Type        string // "missing_isis", "extra_isis", "metric_mismatch"
+	Type        string // "missing_isis", "partial_isis", "extra_isis"
 	LinkPK      string // For configured links
 	LinkCode    string
 	DeviceAPK   string
 	DeviceACode string
 	DeviceBPK   string
 	DeviceBCode string
-	// For metric mismatches
-	ConfiguredRTTNs uint64 // Configured RTT in nanoseconds
-	ISISMetric      uint32 // ISIS metric (typically microseconds)
-	// Additional context
-	Details string
+	ISISMetric  uint32 // ISIS metric (typically microseconds)
+	Details     string
 }
 
 // TopologyComparison contains the results of comparing configured vs ISIS topology.
@@ -927,8 +924,8 @@ func (s *Store) CompareTopology(ctx context.Context) (*TopologyComparison, error
 			comparison.MatchedLinks++
 		}
 
-		// Check for missing ISIS adjacencies on active links
-		if link.linkStatus == "active" && !link.hasForwardAdj && !link.hasReverseAdj {
+		// Check for missing ISIS adjacencies
+		if !link.hasForwardAdj && !link.hasReverseAdj {
 			comparison.Discrepancies = append(comparison.Discrepancies, TopologyDiscrepancy{
 				Type:        "missing_isis",
 				LinkPK:      link.linkPK,
@@ -937,15 +934,15 @@ func (s *Store) CompareTopology(ctx context.Context) (*TopologyComparison, error
 				DeviceACode: link.deviceACode,
 				DeviceBPK:   link.deviceBPK,
 				DeviceBCode: link.deviceBCode,
-				Details:     "Active link has no ISIS adjacency in either direction",
+				Details:     "Link has no ISIS adjacency in either direction",
 			})
-		} else if link.linkStatus == "active" && link.hasForwardAdj != link.hasReverseAdj {
+		} else if link.hasForwardAdj != link.hasReverseAdj {
 			direction := "forward only"
 			if link.hasReverseAdj && !link.hasForwardAdj {
 				direction = "reverse only"
 			}
 			comparison.Discrepancies = append(comparison.Discrepancies, TopologyDiscrepancy{
-				Type:        "missing_isis",
+				Type:        "partial_isis",
 				LinkPK:      link.linkPK,
 				LinkCode:    link.linkCode,
 				DeviceAPK:   link.deviceAPK,
@@ -956,28 +953,6 @@ func (s *Store) CompareTopology(ctx context.Context) (*TopologyComparison, error
 			})
 		}
 
-		// Check for metric mismatch
-		if link.hasForwardAdj && link.configuredRTTNs > 0 && link.isisMetricForward > 0 {
-			configRTTUs := uint64(link.configuredRTTNs) / 1000
-			isisMetric := uint32(link.isisMetricForward)
-			if configRTTUs > 0 {
-				ratio := float64(isisMetric) / float64(configRTTUs)
-				if ratio < 0.5 || ratio > 2.0 {
-					comparison.Discrepancies = append(comparison.Discrepancies, TopologyDiscrepancy{
-						Type:            "metric_mismatch",
-						LinkPK:          link.linkPK,
-						LinkCode:        link.linkCode,
-						DeviceAPK:       link.deviceAPK,
-						DeviceACode:     link.deviceACode,
-						DeviceBPK:       link.deviceBPK,
-						DeviceBCode:     link.deviceBCode,
-						ConfiguredRTTNs: uint64(link.configuredRTTNs),
-						ISISMetric:      isisMetric,
-						Details:         fmt.Sprintf("ISIS metric (%d µs) differs significantly from configured RTT (%d µs)", isisMetric, configRTTUs),
-					})
-				}
-			}
-		}
 	}
 
 	// Query 2: Find ISIS adjacencies that don't correspond to any configured link

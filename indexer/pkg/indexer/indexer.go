@@ -23,14 +23,15 @@ type Indexer struct {
 	log *slog.Logger
 	cfg Config
 
-	svc           *dzsvc.View
-	graphStore    *dzgraph.Store
-	telemLatency  *dztelemlatency.View
-	telemUsage    *dztelemusage.View
-	sol           *sol.View
-	geoip         *mcpgeoip.View
-	isisSource    isis.Source
-	validatorsApp *validatorsapp.View
+	svc              *dzsvc.View
+	graphStore       *dzgraph.Store
+	telemLatency     *dztelemlatency.View
+	telemUsage       *dztelemusage.View
+	sol              *sol.View
+	geoip            *mcpgeoip.View
+	isisSource       isis.Source
+	lastISISDumpFile string // tracks S3 filename to skip redundant syncs
+	validatorsApp    *validatorsapp.View
 
 	startedAt time.Time
 }
@@ -300,12 +301,12 @@ func (i *Indexer) startGraphSync(ctx context.Context) {
 // Otherwise, it syncs just the base graph.
 func (i *Indexer) doGraphSync(ctx context.Context) error {
 	if i.isisSource != nil {
-		// Fetch ISIS data first, then sync everything atomically
+		// Fetch ISIS data first, then sync everything atomically.
+		// If the fetch fails, skip this sync cycle rather than wiping ISIS
+		// adjacencies with a base-only sync (which would cause flapping).
 		lsps, err := i.fetchISISData(ctx)
 		if err != nil {
-			i.log.Warn("graph_sync: failed to fetch ISIS data, syncing without ISIS", "error", err)
-			// Fall back to sync without ISIS data
-			return i.graphStore.Sync(ctx)
+			return fmt.Errorf("failed to fetch ISIS data: %w", err)
 		}
 		return i.graphStore.SyncWithISIS(ctx, lsps)
 	}
@@ -376,6 +377,7 @@ func (i *Indexer) startISISSync(ctx context.Context) {
 }
 
 // doISISSync performs a single IS-IS sync operation.
+// It skips the sync if the S3 dump file hasn't changed since the last sync.
 func (i *Indexer) doISISSync(ctx context.Context) error {
 	i.log.Debug("isis_sync: fetching latest dump")
 
@@ -383,6 +385,12 @@ func (i *Indexer) doISISSync(ctx context.Context) error {
 	dump, err := i.isisSource.FetchLatest(ctx)
 	if err != nil {
 		return fmt.Errorf("failed to fetch ISIS dump: %w", err)
+	}
+
+	// Skip if the dump file hasn't changed since last sync
+	if dump.FileName == i.lastISISDumpFile {
+		i.log.Debug("isis_sync: dump unchanged, skipping", "file", dump.FileName)
+		return nil
 	}
 
 	i.log.Debug("isis_sync: parsing dump", "file", dump.FileName, "size", len(dump.RawJSON))
@@ -400,6 +408,7 @@ func (i *Indexer) doISISSync(ctx context.Context) error {
 		return fmt.Errorf("failed to sync ISIS to graph: %w", err)
 	}
 
+	i.lastISISDumpFile = dump.FileName
 	return nil
 }
 
