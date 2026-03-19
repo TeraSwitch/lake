@@ -1698,10 +1698,8 @@ export interface PathResponse {
   error?: string
 }
 
-export type PathMode = 'hops' | 'latency'
-
-export async function fetchISISPath(fromPK: string, toPK: string, mode: PathMode = 'hops'): Promise<PathResponse> {
-  const res = await apiFetch(`/api/topology/path?from=${encodeURIComponent(fromPK)}&to=${encodeURIComponent(toPK)}&mode=${mode}`)
+export async function fetchISISPath(fromPK: string, toPK: string): Promise<PathResponse> {
+  const res = await apiFetch(`/api/topology/path?from=${encodeURIComponent(fromPK)}&to=${encodeURIComponent(toPK)}`)
   if (!res.ok) {
     throw new Error('Failed to fetch path')
   }
@@ -1714,6 +1712,8 @@ export interface MultiPathHop {
   deviceCode: string
   status: string
   deviceType: string
+  metroPK?: string
+  metroCode?: string
   edgeMetric?: number
   edgeMeasuredMs?: number   // measured RTT in ms to reach this hop
   edgeJitterMs?: number     // measured jitter in ms
@@ -1736,8 +1736,8 @@ export interface MultiPathResponse {
   error?: string
 }
 
-export async function fetchISISPaths(fromPK: string, toPK: string, k: number = 5, mode: 'hops' | 'latency' = 'hops'): Promise<MultiPathResponse> {
-  const res = await apiFetch(`/api/topology/paths?from=${encodeURIComponent(fromPK)}&to=${encodeURIComponent(toPK)}&k=${k}&mode=${mode}`)
+export async function fetchISISPaths(fromPK: string, toPK: string, k: number = 5): Promise<MultiPathResponse> {
+  const res = await apiFetch(`/api/topology/paths?from=${encodeURIComponent(fromPK)}&to=${encodeURIComponent(toPK)}&k=${k}`)
   if (!res.ok) {
     throw new Error('Failed to fetch paths')
   }
@@ -1778,10 +1778,9 @@ export interface MetroDevicePathsResponse {
 export async function fetchMetroDevicePaths(
   fromMetroPK: string,
   toMetroPK: string,
-  mode: PathMode = 'hops'
 ): Promise<MetroDevicePathsResponse> {
   const res = await apiFetch(
-    `/api/topology/metro-device-paths?from=${encodeURIComponent(fromMetroPK)}&to=${encodeURIComponent(toMetroPK)}&mode=${mode}`
+    `/api/topology/metro-device-paths?from=${encodeURIComponent(fromMetroPK)}&to=${encodeURIComponent(toMetroPK)}`
   )
   if (!res.ok) {
     throw new Error('Failed to fetch metro device paths')

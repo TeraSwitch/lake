@@ -341,7 +341,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
   const markerClickedRef = useRef(false)
 
   // Get unified topology context
-  const { mode, setMode, pathMode, setPathMode, overlays, toggleOverlay, panel, openPanel, closePanel, selection, impactDevices, toggleImpactDevice, clearImpactDevices } = useTopology()
+  const { mode, setMode, overlays, toggleOverlay, panel, openPanel, closePanel, selection, impactDevices, toggleImpactDevice, clearImpactDevices } = useTopology()
 
   // Derive mode states from context
   const pathModeEnabled = mode === 'path'
@@ -409,9 +409,10 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
   const [pathsResult, setPathsResult] = useState<MultiPathResponse | null>(null)
   const [pathLoading, setPathLoading] = useState(false)
   const [selectedPathIndex, setSelectedPathIndex] = useState(0)
+  const [pathK, setPathK] = useState(10)
 
   // Reverse path state
-  const [showReverse, setShowReverse] = useState(true)
+  const [showReverse, setShowReverse] = useState(false)
   const [reversePathsResult, setReversePathsResult] = useState<MultiPathResponse | null>(null)
   const [selectedReversePathIndex, setSelectedReversePathIndex] = useState<number>(0)
   const [reversePathLoading, setReversePathLoading] = useState(false)
@@ -949,7 +950,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
 
     setPathLoading(true)
     setSelectedPathIndex(0)
-    fetchISISPaths(pathSource, pathTarget, 5, pathMode)
+    fetchISISPaths(pathSource, pathTarget, pathK)
       .then(result => {
         setPathsResult(result)
         // Turn off device/link type overlays when path is found to make path visualization clearer
@@ -965,18 +966,18 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
         setPathLoading(false)
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps -- overlays/toggleOverlay are intentionally excluded to avoid re-fetching when overlays change
-  }, [pathModeEnabled, pathSource, pathTarget, pathMode])
+  }, [pathModeEnabled, pathSource, pathTarget, pathK])
 
-  // Fetch reverse paths when showReverse is enabled
+  // Pre-fetch reverse paths so toggling direction is instant
   useEffect(() => {
-    if (!pathModeEnabled || !pathSource || !pathTarget || !showReverse) {
+    if (!pathModeEnabled || !pathSource || !pathTarget) {
       setReversePathsResult(null)
       return
     }
 
     setReversePathLoading(true)
     setSelectedReversePathIndex(0)
-    fetchISISPaths(pathTarget, pathSource, 5, pathMode)
+    fetchISISPaths(pathTarget, pathSource, pathK)
       .then(result => {
         setReversePathsResult(result)
       })
@@ -986,7 +987,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
       .finally(() => {
         setReversePathLoading(false)
       })
-  }, [pathModeEnabled, pathSource, pathTarget, pathMode, showReverse])
+  }, [pathModeEnabled, pathSource, pathTarget, pathK])
 
   // Fetch metro paths when source and target metros are set
   const metroPathModeEnabled = mode === 'metro-path'
@@ -998,7 +999,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
     setMetroPathLoading(true)
     setMetroPathViewMode('aggregate')
     setMetroPathSelectedPairs([])
-    fetchMetroDevicePaths(metroPathSource, metroPathTarget, pathMode)
+    fetchMetroDevicePaths(metroPathSource, metroPathTarget)
       .then(result => {
         setMetroPathsResult(result)
         // Turn off device/link type overlays when paths are found
@@ -1029,7 +1030,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
         setMetroPathLoading(false)
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps -- overlays/toggleOverlay are intentionally excluded
-  }, [metroPathModeEnabled, metroPathSource, metroPathTarget, pathMode])
+  }, [metroPathModeEnabled, metroPathSource, metroPathTarget])
 
   // Clear path when exiting path mode
   useEffect(() => {
@@ -3409,15 +3410,15 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
       {panel.isOpen && panel.content === 'mode' && (
         <TopologyPanel
           title={
-            mode === 'path' ? 'Path Finding' :
-            mode === 'metro-path' ? 'Metro Path Finding' :
+            mode === 'path' ? 'Device Paths' :
+            mode === 'metro-path' ? 'Metro Paths' :
             mode === 'whatif-removal' ? 'Simulate Link Removal' :
             mode === 'whatif-addition' ? 'Simulate Link Addition' :
             mode === 'impact' ? 'Device Failure' :
             'Analysis Mode'
           }
           subtitle={
-            mode === 'path' ? 'Find shortest paths between two devices by hop count or latency.' :
+            mode === 'path' ? 'Find shortest paths between two devices.' :
             mode === 'metro-path' ? 'Find all paths between devices in two metros.' :
             mode === 'whatif-removal' ? 'Analyze what happens to network paths if a link is removed.' :
             mode === 'whatif-addition' ? 'See how adding a new link would improve connectivity.' :
@@ -3431,20 +3432,29 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
               pathTarget={pathTarget}
               pathsResult={pathsResult}
               pathLoading={pathLoading}
-              pathMode={pathMode}
               selectedPathIndex={selectedPathIndex}
               devices={deviceOptions}
               showReverse={showReverse}
               reversePathsResult={reversePathsResult}
               reversePathLoading={reversePathLoading}
               selectedReversePathIndex={selectedReversePathIndex}
-              onPathModeChange={setPathMode}
               onSelectPath={setSelectedPathIndex}
               onSelectReversePath={setSelectedReversePathIndex}
               onClearPath={clearPath}
               onSetSource={setPathSource}
               onSetTarget={setPathTarget}
-              onToggleReverse={() => setShowReverse(prev => !prev)}
+              onToggleReverse={() => {
+                setShowReverse(prev => {
+                  if (!prev) {
+                    setSelectedReversePathIndex(selectedPathIndex)
+                  } else {
+                    setSelectedPathIndex(selectedReversePathIndex)
+                  }
+                  return !prev
+                })
+              }}
+              pathK={pathK}
+              onPathKChange={setPathK}
             />
           )}
           {mode === 'metro-path' && (
@@ -3454,12 +3464,10 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
               metros={metroOptions}
               pathsResult={metroPathsResult}
               loading={metroPathLoading}
-              pathMode={pathMode}
               viewMode={metroPathViewMode}
               selectedPairIndices={metroPathSelectedPairs}
               onSetSourceMetro={setMetroPathSource}
               onSetTargetMetro={setMetroPathTarget}
-              onPathModeChange={setPathMode}
               onViewModeChange={setMetroPathViewMode}
               onTogglePair={handleToggleMetroPathPair}
               onClearSelection={() => setMetroPathSelectedPairs([])}
