@@ -1286,9 +1286,18 @@ export interface NonActivatedLink {
   since: string
 }
 
+export interface ISISDeviceIssue {
+  code: string
+  device_type: string
+  metro: string
+  issue: string // "overload", "unreachable"
+  since: string
+}
+
 export interface InfrastructureAlerts {
   devices: NonActivatedDevice[]
   links: NonActivatedLink[]
+  isis_devices: ISISDeviceIssue[]
 }
 
 export interface DeviceUtilization {
@@ -1357,6 +1366,8 @@ export interface LinkHourStatus {
   utilization_out_pct?: number
   // Device-specific: no latency probes detected
   no_probes?: boolean
+  // ISIS state
+  isis_down?: boolean
 }
 
 export interface LinkHistory {
@@ -1435,6 +1446,9 @@ export interface DeviceHourStatus {
   out_discards: number
   carrier_transitions: number
   no_probes?: boolean
+  // ISIS state
+  isis_overload?: boolean
+  isis_unreachable?: boolean
 }
 
 export interface DeviceHistory {
@@ -4135,7 +4149,7 @@ export async function fetchSearch(
 
 // Incidents types and functions
 export type IncidentTimeRange = '3h' | '6h' | '12h' | '24h' | '3d' | '7d' | '30d'
-export type IncidentType = 'packet_loss' | 'errors' | 'fcs' | 'discards' | 'carrier' | 'no_data'
+export type IncidentType = 'packet_loss' | 'errors' | 'fcs' | 'discards' | 'carrier' | 'no_data' | 'isis_down'
 
 export interface LinkIncident {
   id: string
@@ -4233,7 +4247,7 @@ export async function fetchLinkIncidents(params: FetchLinkIncidentsParams = {}):
 }
 
 // Device incident types
-export type DeviceIncidentType = 'errors' | 'fcs' | 'discards' | 'carrier' | 'no_data'
+export type DeviceIncidentType = 'errors' | 'fcs' | 'discards' | 'carrier' | 'no_data' | 'isis_overload' | 'isis_unreachable'
 
 export interface DeviceIncident {
   id: string
