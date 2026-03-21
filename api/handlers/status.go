@@ -13,6 +13,7 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers/dberror"
+	"github.com/malbeclabs/lake/api/health"
 	"github.com/malbeclabs/lake/api/metrics"
 	"golang.org/x/sync/errgroup"
 )
@@ -197,19 +198,16 @@ type InfrastructureAlerts struct {
 	ISISDevices []ISISDeviceIssue    `json:"isis_devices"`
 }
 
-// Thresholds for health classification (matching methodology)
-// Packet loss severity: Minor (<1%), Moderate (1-10%), Severe (≥10%)
+// Thresholds re-exported from the shared health package for local use.
 const (
-	LatencyWarningPct  = 20.0 // 20% over committed RTT
-	LatencyCriticalPct = 50.0 // 50% over committed RTT
-	LossWarningPct     = 1.0  // 1% - Moderate (degraded)
-	LossCriticalPct    = 10.0 // 10% - Severe (unhealthy)
-	UtilWarningPct     = 70.0 // 70%
-	UtilCriticalPct    = 90.0 // 90%
+	LatencyWarningPct  = health.LatencyWarningPct
+	LatencyCriticalPct = health.LatencyCriticalPct
+	LossWarningPct     = health.LossWarningPct
+	LossCriticalPct    = health.LossCriticalPct
+	UtilWarningPct     = health.UtilWarningPct
+	UtilCriticalPct    = health.UtilCriticalPct
 
-	// committedRttProvisioningNs is the sentinel committed_rtt_ns value (1000ms)
-	// that indicates a link is still being provisioned and not yet operational.
-	committedRttProvisioningNs = 1_000_000_000
+	committedRttProvisioningNs = health.CommittedRttProvisioningNs
 )
 
 func GetStatus(w http.ResponseWriter, r *http.Request) {
@@ -2406,20 +2404,7 @@ func fetchLinkHistoryData(ctx context.Context, timeRange string, requestedBucket
 }
 
 func classifyLinkStatus(avgLatency, lossPct, committedRttUs float64) string {
-	// Calculate latency overage percentage vs committed RTT
-	var latencyOveragePct float64
-	if committedRttUs > 0 && avgLatency > 0 {
-		latencyOveragePct = ((avgLatency - committedRttUs) / committedRttUs) * 100
-	}
-
-	// Classify based on thresholds
-	if lossPct >= LossCriticalPct || latencyOveragePct >= LatencyCriticalPct {
-		return "unhealthy"
-	}
-	if lossPct >= LossWarningPct || latencyOveragePct >= LatencyWarningPct {
-		return "degraded"
-	}
-	return "healthy"
+	return health.ClassifyLinkStatus(avgLatency, lossPct, committedRttUs)
 }
 
 func determineOverallStatus(resp *StatusResponse) string {
@@ -3061,18 +3046,7 @@ func fetchDeviceHistoryData(ctx context.Context, timeRange string, requestedBuck
 }
 
 func classifyDeviceStatus(totalErrors, totalDiscards uint64, carrierTransitions uint64) string {
-	// Thresholds for device health (per bucket)
-	// Unhealthy: >= 100 of any metric
-	// Degraded: > 0 and < 100 of any metric
-	const UnhealthyThreshold = 100
-
-	if totalErrors >= UnhealthyThreshold || totalDiscards >= UnhealthyThreshold || carrierTransitions >= UnhealthyThreshold {
-		return "unhealthy"
-	}
-	if totalErrors > 0 || totalDiscards > 0 || carrierTransitions > 0 {
-		return "degraded"
-	}
-	return "healthy"
+	return health.ClassifyDeviceStatus(totalErrors, totalDiscards, carrierTransitions)
 }
 
 // InterfaceIssuesResponse is the response for interface issues endpoint

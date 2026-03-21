@@ -30,6 +30,7 @@ import (
 	"github.com/malbeclabs/lake/indexer/pkg/indexer"
 	"github.com/malbeclabs/lake/indexer/pkg/metrics"
 	"github.com/malbeclabs/lake/indexer/pkg/neo4j"
+	"github.com/malbeclabs/lake/indexer/pkg/rollup"
 	"github.com/malbeclabs/lake/indexer/pkg/server"
 	"github.com/malbeclabs/lake/indexer/pkg/sol"
 	"github.com/malbeclabs/lake/indexer/pkg/validatorsapp"
@@ -109,6 +110,9 @@ func run() error {
 	// validators.app configuration
 	validatorsAppAPIKeyFlag := flag.String("validatorsapp-api-key", "", "validators.app API key (or set VALIDATORSAPP_API_KEY env var)")
 	validatorsAppRefreshIntervalFlag := flag.Duration("validatorsapp-refresh-interval", 5*time.Minute, "validators.app refresh interval (or set VALIDATORSAPP_REFRESH_INTERVAL env var)")
+
+	// Rollup worker configuration
+	noRollupFlag := flag.Bool("no-rollup", false, "Disable the embedded rollup worker (Temporal-based health bucket computation)")
 
 	// Readiness configuration
 	skipReadyWaitFlag := flag.Bool("skip-ready-wait", false, "Skip waiting for views to be ready (for preview/dev environments)")
@@ -511,6 +515,27 @@ func run() error {
 		}
 	}()
 
+	// Start the embedded rollup worker (Temporal-based health bucket computation).
+	var rollupErrCh chan error
+	if !*noRollupFlag {
+		rollupErrCh = make(chan error, 1)
+		go func() {
+			err := rollup.Start(ctx, rollup.Config{
+				Log:                log.With("component", "rollup"),
+				ClickHouseAddr:     *clickhouseAddrFlag,
+				ClickHouseDatabase: *clickhouseDatabaseFlag,
+				ClickHouseUsername: *clickhouseUsernameFlag,
+				ClickHousePassword: *clickhousePasswordFlag,
+				ClickHouseSecure:   *clickhouseSecureFlag,
+			})
+			if err != nil {
+				rollupErrCh <- err
+			}
+		}()
+	} else {
+		log.Info("rollup worker disabled (--no-rollup)")
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Info("server: shutting down", "reason", ctx.Err())
@@ -520,6 +545,9 @@ func run() error {
 		return err
 	case err := <-metricsServerErrCh:
 		log.Error("server: metrics server error causing shutdown", "error", err)
+		return err
+	case err := <-rollupErrCh:
+		log.Error("server: rollup worker error causing shutdown", "error", err)
 		return err
 	}
 }
