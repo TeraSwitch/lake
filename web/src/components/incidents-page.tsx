@@ -66,7 +66,11 @@ function formatDuration(seconds: number | undefined): string {
   }
   const days = Math.floor(seconds / 86400)
   const hours = Math.floor((seconds % 86400) / 3600)
-  return hours > 0 ? `${days}d ${hours}h` : `${days}d`
+  const mins = Math.floor((seconds % 3600) / 60)
+  const parts = [`${days}d`]
+  if (hours > 0) parts.push(`${hours}h`)
+  if (mins > 0 && days < 7) parts.push(`${mins}m`)
+  return parts.join(' ')
 }
 
 
@@ -82,8 +86,20 @@ function formatTimeAgo(isoString: string): string {
 
   if (diffSecs < 60) return `${diffSecs}s ago`
   if (diffSecs < 3600) return `${Math.floor(diffSecs / 60)}m ago`
-  if (diffSecs < 86400) return `${Math.floor(diffSecs / 3600)}h ago`
-  return `${Math.floor(diffSecs / 86400)}d ago`
+
+  const days = Math.floor(diffSecs / 86400)
+  const hours = Math.floor((diffSecs % 86400) / 3600)
+  const minutes = Math.floor((diffSecs % 3600) / 60)
+
+  if (days > 0) {
+    const parts = [`${days}d`]
+    if (hours > 0) parts.push(`${hours}h`)
+    if (minutes > 0 && days < 7) parts.push(`${minutes}m`)
+    return `${parts.join(' ')} ago`
+  }
+  const parts = [`${hours}h`]
+  if (minutes > 0) parts.push(`${minutes}m`)
+  return `${parts.join(' ')} ago`
 }
 
 function formatTimestamp(isoString: string): string {
@@ -390,22 +406,14 @@ export function IncidentsPage() {
   // Client-side type filtering
   const hasTypeFilter = selectedTypes.size > 0
   const activeIncidents = useMemo(() => {
-    if (scope === 'links') {
-      const all = linkData?.active || []
-      if (!hasTypeFilter) return all
-      return all.filter(i => selectedTypes.has(i.incident_type))
-    }
+    if (scope === 'links') return linkData?.active || []
     return [] as LinkIncident[]
-  }, [scope, linkData?.active, hasTypeFilter, selectedTypes])
+  }, [scope, linkData?.active])
 
   const activeDeviceIncidents = useMemo(() => {
-    if (scope === 'devices') {
-      const all = deviceData?.active || []
-      if (!hasTypeFilter) return all
-      return all.filter(i => selectedTypes.has(i.incident_type))
-    }
+    if (scope === 'devices') return deviceData?.active || []
     return [] as DeviceIncident[]
-  }, [scope, deviceData?.active, hasTypeFilter, selectedTypes])
+  }, [scope, deviceData?.active])
 
   const drainedLinks = useMemo(() => {
     const all = linkData?.drained || []
@@ -428,7 +436,8 @@ export function IncidentsPage() {
   }, [deviceData?.drained, hasTypeFilter, selectedTypes])
 
   // Sort state for active view
-  const [sortField, setSortField] = useState<'started_at' | 'duration'>('started_at')
+  type SortField = 'started_at' | 'ended_at' | 'duration'
+  const [sortField, setSortField] = useState<SortField>('started_at')
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc')
 
   // Generic sort helper for incidents of either type
@@ -439,6 +448,10 @@ export function IncidentsPage() {
         const aTime = new Date(a.started_at).getTime()
         const bTime = new Date(b.started_at).getTime()
         return sortDir === 'asc' ? aTime - bTime : bTime - aTime
+      } else if (sortField === 'ended_at') {
+        const aEnd = a.is_ongoing ? Infinity : new Date(a.started_at).getTime() + (a.duration_seconds || 0) * 1000
+        const bEnd = b.is_ongoing ? Infinity : new Date(b.started_at).getTime() + (b.duration_seconds || 0) * 1000
+        return sortDir === 'asc' ? aEnd - bEnd : bEnd - aEnd
       } else {
         const aDur = a.is_ongoing ? Infinity : (a.duration_seconds || 0)
         const bDur = b.is_ongoing ? Infinity : (b.duration_seconds || 0)
@@ -512,7 +525,7 @@ export function IncidentsPage() {
     }
   }, [scope, linkData?.active, deviceData?.active])
 
-  const toggleSort = (field: 'started_at' | 'duration') => {
+  const toggleSort = (field: SortField) => {
     if (sortField === field) {
       setSortDir(sortDir === 'asc' ? 'desc' : 'asc')
     } else {
@@ -891,6 +904,7 @@ export function IncidentsPage() {
                             sortDir={sortDir}
                             toggleSort={toggleSort}
                             coalesceGapMinutes={coalesceGap}
+                            typeFilter={selectedTypes}
                           />
                         ) : (
                           <ActiveDeviceIncidentsTable
@@ -898,6 +912,7 @@ export function IncidentsPage() {
                             sortField={sortField}
                             sortDir={sortDir}
                             toggleSort={toggleSort}
+                            typeFilter={selectedTypes}
                           />
                         )}
                       </IncidentSection>
@@ -1069,31 +1084,44 @@ function ActiveIncidentsTable({
   sortDir,
   toggleSort,
   coalesceGapMinutes = 180,
+  typeFilter,
 }: {
   incidents: LinkIncident[]
   sortField: string
   sortDir: string
-  toggleSort: (field: 'started_at' | 'duration') => void
+  toggleSort: (field: 'started_at' | 'ended_at' | 'duration') => void
   coalesceGapMinutes?: number
+  typeFilter?: Set<string>
 }) {
   // Stable timestamp for computing ongoing durations — avoids calling Date.now() during render
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const renderTimestamp = useMemo(() => Date.now(), [incidents])
 
   const grouped = useMemo(() => {
-    const groups = groupIncidentsByLink(incidents, coalesceGapMinutes)
+    let groups = groupIncidentsByLink(incidents, coalesceGapMinutes)
+    // Filter rows to those containing at least one incident of a selected type
+    if (typeFilter && typeFilter.size > 0) {
+      groups = groups.filter(g => g.incidents.some(i => typeFilter.has(i.incident_type)))
+    }
     return groups.sort((a, b) => {
       if (sortField === 'started_at') {
         const aTime = new Date(a.started_at).getTime()
         const bTime = new Date(b.started_at).getTime()
         return sortDir === 'asc' ? aTime - bTime : bTime - aTime
+      } else if (sortField === 'ended_at') {
+        const aEnd = a.is_ongoing ? Infinity : new Date(a.started_at).getTime() + (a.duration_seconds || 0) * 1000
+        const bEnd = b.is_ongoing ? Infinity : new Date(b.started_at).getTime() + (b.duration_seconds || 0) * 1000
+        return sortDir === 'asc' ? aEnd - bEnd : bEnd - aEnd
       } else {
         const aDur = a.is_ongoing ? Infinity : (a.duration_seconds || 0)
         const bDur = b.is_ongoing ? Infinity : (b.duration_seconds || 0)
         return sortDir === 'asc' ? aDur - bDur : bDur - aDur
       }
     })
-  }, [incidents, coalesceGapMinutes, sortField, sortDir])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidents, coalesceGapMinutes, sortField, sortDir, typeFilter])
+
+  const sortIcon = (field: string) => sortField === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
 
   return (
     <div className="overflow-hidden">
@@ -1101,25 +1129,15 @@ function ActiveIncidentsTable({
         <thead className="bg-muted/50">
           <tr>
             <th className="text-left px-4 py-3 font-medium">Link</th>
-            <th className="text-left px-4 py-3 font-medium">Route</th>
             <th className="text-left px-4 py-3 font-medium">Type</th>
-            <th
-              className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground"
-              onClick={() => toggleSort('started_at')}
-            >
-              Started{' '}
-              {sortField === 'started_at' && (
-                <span className="text-xs">{sortDir === 'asc' ? '↑' : '↓'}</span>
-              )}
+            <th className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground" onClick={() => toggleSort('started_at')}>
+              Started{sortIcon('started_at')}
             </th>
-            <th
-              className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground"
-              onClick={() => toggleSort('duration')}
-            >
-              Duration{' '}
-              {sortField === 'duration' && (
-                <span className="text-xs">{sortDir === 'asc' ? '↑' : '↓'}</span>
-              )}
+            <th className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground" onClick={() => toggleSort('ended_at')}>
+              Ended{sortIcon('ended_at')}
+            </th>
+            <th className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground" onClick={() => toggleSort('duration')}>
+              Duration{sortIcon('duration')}
             </th>
           </tr>
         </thead>
@@ -1153,12 +1171,11 @@ function ActiveIncidentsTable({
                     {group.link_code}
                     <ExternalLink className="h-3 w-3" />
                   </Link>
-                  <div className="text-xs text-muted-foreground">{group.contributor_code} · {group.link_type}</div>
-                </td>
-                <td className="px-4 py-3">
-                  <span className="font-mono">
-                    {group.side_a_metro} &rarr; {group.side_z_metro}
-                  </span>
+                  <div className="text-xs text-muted-foreground">
+                    {group.contributor_code} · {group.link_type}
+                    <span className="mx-1">·</span>
+                    <span className="font-mono">{group.side_a_metro} &rarr; {group.side_z_metro}</span>
+                  </div>
                 </td>
                 <td className="px-4 py-3">
                   <div className="flex items-center gap-1.5 flex-wrap">
@@ -1187,9 +1204,20 @@ function ActiveIncidentsTable({
                 </td>
                 <td className="px-4 py-3">
                   <div>{formatTimeAgo(group.started_at)}</div>
-                  <div className="text-xs text-muted-foreground">
-                    {formatTimestamp(group.started_at)}
-                  </div>
+                  <div className="text-xs text-muted-foreground">{formatTimestamp(group.started_at)}</div>
+                </td>
+                <td className="px-4 py-3">
+                  {group.is_ongoing ? (
+                    <div className="text-muted-foreground">ongoing</div>
+                  ) : group.duration_seconds != null && (() => {
+                    const endedIso = new Date(new Date(group.started_at).getTime() + group.duration_seconds! * 1000).toISOString()
+                    return (
+                      <>
+                        <div>{formatTimeAgo(endedIso)}</div>
+                        <div className="text-xs text-muted-foreground">{formatTimestamp(endedIso)}</div>
+                      </>
+                    )
+                  })()}
                 </td>
                 <td className="px-4 py-3">
                   {group.is_ongoing
@@ -1312,29 +1340,41 @@ function ActiveDeviceIncidentsTable({
   sortField,
   sortDir,
   toggleSort,
+  typeFilter,
 }: {
   incidents: DeviceIncident[]
   sortField: string
   sortDir: string
-  toggleSort: (field: 'started_at' | 'duration') => void
+  toggleSort: (field: 'started_at' | 'ended_at' | 'duration') => void
+  typeFilter?: Set<string>
 }) {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   const renderTimestamp = useMemo(() => Date.now(), [incidents])
 
   const grouped = useMemo(() => {
-    const groups = groupIncidentsByDevice(incidents)
+    let groups = groupIncidentsByDevice(incidents)
+    if (typeFilter && typeFilter.size > 0) {
+      groups = groups.filter(g => g.incidents.some(i => typeFilter.has(i.incident_type)))
+    }
     return groups.sort((a, b) => {
       if (sortField === 'started_at') {
         const aTime = new Date(a.started_at).getTime()
         const bTime = new Date(b.started_at).getTime()
         return sortDir === 'asc' ? aTime - bTime : bTime - aTime
+      } else if (sortField === 'ended_at') {
+        const aEnd = a.is_ongoing ? Infinity : new Date(a.started_at).getTime() + (a.duration_seconds || 0) * 1000
+        const bEnd = b.is_ongoing ? Infinity : new Date(b.started_at).getTime() + (b.duration_seconds || 0) * 1000
+        return sortDir === 'asc' ? aEnd - bEnd : bEnd - aEnd
       } else {
         const aDur = a.is_ongoing ? Infinity : (a.duration_seconds || 0)
         const bDur = b.is_ongoing ? Infinity : (b.duration_seconds || 0)
         return sortDir === 'asc' ? aDur - bDur : bDur - aDur
       }
     })
-  }, [incidents, sortField, sortDir])
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incidents, sortField, sortDir, typeFilter])
+
+  const sortIcon = (field: string) => sortField === field ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''
 
   return (
     <div className="overflow-hidden">
@@ -1342,25 +1382,15 @@ function ActiveDeviceIncidentsTable({
         <thead className="bg-muted/50">
           <tr>
             <th className="text-left px-4 py-3 font-medium">Device</th>
-            <th className="text-left px-4 py-3 font-medium">Metro</th>
             <th className="text-left px-4 py-3 font-medium">Type</th>
-            <th
-              className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground"
-              onClick={() => toggleSort('started_at')}
-            >
-              Started{' '}
-              {sortField === 'started_at' && (
-                <span className="text-xs">{sortDir === 'asc' ? '↑' : '↓'}</span>
-              )}
+            <th className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground" onClick={() => toggleSort('started_at')}>
+              Started{sortIcon('started_at')}
             </th>
-            <th
-              className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground"
-              onClick={() => toggleSort('duration')}
-            >
-              Duration{' '}
-              {sortField === 'duration' && (
-                <span className="text-xs">{sortDir === 'asc' ? '↑' : '↓'}</span>
-              )}
+            <th className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground" onClick={() => toggleSort('ended_at')}>
+              Ended{sortIcon('ended_at')}
+            </th>
+            <th className="text-left px-4 py-3 font-medium cursor-pointer hover:text-foreground" onClick={() => toggleSort('duration')}>
+              Duration{sortIcon('duration')}
             </th>
           </tr>
         </thead>
@@ -1390,10 +1420,10 @@ function ActiveDeviceIncidentsTable({
                   {group.device_code}
                   <ExternalLink className="h-3 w-3" />
                 </Link>
-                <div className="text-xs text-muted-foreground">{group.contributor_code} · {group.device_type}</div>
-              </td>
-              <td className="px-4 py-3">
-                <span className="font-mono">{group.metro}</span>
+                <div className="text-xs text-muted-foreground">
+                  {group.contributor_code} · {group.device_type}
+                  {group.metro && <><span className="mx-1">·</span><span className="font-mono">{group.metro}</span></>}
+                </div>
               </td>
               <td className="px-4 py-3">
                 <div className="flex items-center gap-1.5 flex-wrap">
@@ -1417,9 +1447,20 @@ function ActiveDeviceIncidentsTable({
               </td>
               <td className="px-4 py-3">
                 <div>{formatTimeAgo(group.started_at)}</div>
-                <div className="text-xs text-muted-foreground">
-                  {formatTimestamp(group.started_at)}
-                </div>
+                <div className="text-xs text-muted-foreground">{formatTimestamp(group.started_at)}</div>
+              </td>
+              <td className="px-4 py-3">
+                {group.is_ongoing ? (
+                  <div className="text-muted-foreground">ongoing</div>
+                ) : group.duration_seconds != null && (() => {
+                  const endedIso = new Date(new Date(group.started_at).getTime() + group.duration_seconds! * 1000).toISOString()
+                  return (
+                    <>
+                      <div>{formatTimeAgo(endedIso)}</div>
+                      <div className="text-xs text-muted-foreground">{formatTimestamp(endedIso)}</div>
+                    </>
+                  )
+                })()}
               </td>
               <td className="px-4 py-3">
                 {group.is_ongoing

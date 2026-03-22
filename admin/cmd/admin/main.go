@@ -103,6 +103,7 @@ func run() error {
 	backfillDeviceInterfaceCountersFlag := flag.Bool("backfill-device-interface-counters", false, "Backfill device interface counters fact table from InfluxDB")
 	recomputeSparseDeltasFlag := flag.Bool("recompute-sparse-deltas", false, "Recompute sparse counter deltas (errors/discards) from absolute values in ClickHouse")
 	backfillSparseCountersFlag := flag.Bool("backfill-sparse-counters", false, "Forward-fill NULL sparse counters (errors/discards) from last known values in ClickHouse")
+	backfillRollupFlag := flag.Bool("start-backfill-rollup", false, "Trigger Temporal rollup backfill workflow (requires --start-time-ago or --start-time)")
 
 	// Backfill options (latency - epoch-based)
 	dzEnvFlag := flag.String("dz-env", config.EnvMainnetBeta, "DZ ledger environment (devnet, testnet, mainnet-beta)")
@@ -117,6 +118,7 @@ func run() error {
 	endTimeAgoFlag := flag.Duration("end-time-ago", 0, "End time as duration ago from now (e.g. 1h)")
 	chunkIntervalFlag := flag.Duration("chunk-interval", 1*time.Hour, "Chunk interval for usage backfill")
 	queryDelayFlag := flag.Duration("query-delay", 5*time.Second, "Delay between InfluxDB queries to avoid rate limits")
+	sourceDatabaseFlag := flag.String("source-database", "", "Source database for rollup backfill (e.g. 'lake' for remote proxy tables)")
 
 	// PostgreSQL configuration
 	pgHostFlag := flag.String("pg-host", "localhost", "PostgreSQL host (or set POSTGRES_HOST env var)")
@@ -450,6 +452,18 @@ func run() error {
 				Yes:           *yesFlag,
 			},
 		)
+	}
+
+	if *backfillRollupFlag {
+		if startTime.IsZero() {
+			return fmt.Errorf("--start-time or --start-time-ago is required for --start-backfill-rollup")
+		}
+		return admin.BackfillRollup(log, admin.BackfillRollupConfig{
+			StartTime:      startTime,
+			EndTime:        endTime,
+			ChunkInterval:  *chunkIntervalFlag,
+			SourceDatabase: *sourceDatabaseFlag,
+		})
 	}
 
 	// PostgreSQL migration commands

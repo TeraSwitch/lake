@@ -151,11 +151,22 @@ function isRetryableError(error: unknown, status?: number): boolean {
 const sleep = (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
 
 // Retry wrapper for fetch calls with automatic auth headers
+// forwardSourceParam appends ?source=raw to API URLs when the browser URL has it.
+function forwardSourceParam(url: string): string {
+  const browserSource = new URLSearchParams(window.location.search).get('source')
+  if (browserSource) {
+    const sep = url.includes('?') ? '&' : '?'
+    return `${url}${sep}source=${encodeURIComponent(browserSource)}`
+  }
+  return url
+}
+
 async function fetchWithRetry(
   url: string,
   options?: RequestInit,
   config = RETRY_CONFIG
 ): Promise<Response> {
+  url = forwardSourceParam(url)
   let lastError: unknown
   let lastStatus: number | undefined
 
@@ -1395,10 +1406,11 @@ export interface LinkHistoryResponse {
   bucket_count: number    // Number of buckets
 }
 
-export async function fetchLinkHistory(timeRange?: string, buckets?: number): Promise<LinkHistoryResponse> {
+export async function fetchLinkHistory(timeRange?: string, buckets?: number, filter?: string): Promise<LinkHistoryResponse> {
   const params = new URLSearchParams()
   if (timeRange) params.set('range', timeRange)
   if (buckets) params.set('buckets', buckets.toString())
+  if (filter) params.set('filter', filter)
   const url = `/api/status/link-history${params.toString() ? '?' + params.toString() : ''}`
   const res = await fetchWithRetry(url)
   if (!res.ok) {
@@ -1469,10 +1481,11 @@ export interface DeviceHistoryResponse {
   bucket_count: number    // Number of buckets
 }
 
-export async function fetchDeviceHistory(timeRange?: string, buckets?: number): Promise<DeviceHistoryResponse> {
+export async function fetchDeviceHistory(timeRange?: string, buckets?: number, filter?: string): Promise<DeviceHistoryResponse> {
   const params = new URLSearchParams()
   if (timeRange) params.set('range', timeRange)
   if (buckets) params.set('buckets', buckets.toString())
+  if (filter) params.set('filter', filter)
   const url = `/api/status/device-history${params.toString() ? '?' + params.toString() : ''}`
   const res = await fetchWithRetry(url)
   if (!res.ok) {
@@ -3085,14 +3098,14 @@ export interface TimelineEvent {
   id: string
   event_type: string
   timestamp: string
-  category: 'state_change' | 'packet_loss' | 'interface_carrier' | 'interface_errors' | 'interface_discards'
+  category: string
   severity: 'info' | 'warning' | 'critical' | 'success'
   title: string
   description?: string
   entity_type: string
   entity_pk: string
   entity_code: string
-  details?: EntityChangeDetails | PacketLossEventDetails | InterfaceEventDetails | ValidatorEventDetails
+  details?: EntityChangeDetails | IncidentEventDetails | ValidatorEventDetails
 }
 
 export interface EntityChangeDetails {
@@ -3171,36 +3184,20 @@ export interface UserEntity {
   metro_code?: string
 }
 
-export interface PacketLossEventDetails {
-  link_pk: string
-  link_code: string
-  link_type: string
-  side_a_metro: string
-  side_z_metro: string
-  previous_loss_pct: number
-  current_loss_pct: number
-  direction: 'increased' | 'decreased'
-}
-
-export interface InterfaceEventDetails {
-  device_pk: string
-  device_code: string
-  interface_name: string
-  link_pk?: string
-  link_code?: string
-  in_errors?: number
-  out_errors?: number
-  in_discards?: number
-  out_discards?: number
-  carrier_transitions?: number
-  issue_type: 'errors' | 'discards' | 'carrier'
-}
-
-export interface GroupedInterfaceDetails {
-  device_pk: string
-  device_code: string
-  issue_type: 'errors' | 'discards' | 'carrier'
-  interfaces: InterfaceEventDetails[]
+export interface IncidentEventDetails {
+  entity_pk: string
+  entity_code: string
+  entity_type: 'link' | 'device'
+  incident_type: string
+  peak_value: number
+  duration_seconds: number
+  is_ongoing: boolean
+  link_type?: string
+  side_a_metro?: string
+  side_z_metro?: string
+  metro?: string
+  contributor_code?: string
+  status?: string
 }
 
 export interface ValidatorEventDetails {
