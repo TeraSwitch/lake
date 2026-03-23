@@ -126,7 +126,9 @@ The schema includes pre-built views that the agent is instructed to prefer:
 | `solana_validators_on_dz_connections` | All connection events |
 | `solana_validators_disconnections` | Validators that left DZ |
 | `solana_validators_new_connections` | Recently connected validators |
-| `dz_links_health_current` | Current link health state |
+| `link_rollup_5m` | Per-link latency/loss in 5-minute buckets |
+| `link_incidents_v` | Pre-computed link incidents with start/end times |
+| `device_incidents_v` | Pre-computed device incidents with start/end times |
 | `dz_link_status_changes` | Link status history |
 | `dz_vs_internet_latency_comparison` | DZ vs public internet latency |
 

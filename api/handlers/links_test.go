@@ -101,19 +101,35 @@ func setupLinksTables(t *testing.T) {
 	`)
 	require.NoError(t, err)
 
-	// Create link health table
+	// Create link rollup table
 	err = config.DB.Exec(ctx, `
-		CREATE TABLE IF NOT EXISTS dz_links_health_current (
-			pk String,
-			avg_rtt_us Float64,
-			p95_rtt_us Float64,
-			committed_rtt_ns Int64,
-			loss_pct Float64,
-			exceeds_committed_rtt UInt8,
-			has_packet_loss UInt8,
-			is_dark UInt8,
-			is_down UInt8
-		) ENGINE = Memory
+		CREATE TABLE IF NOT EXISTS link_rollup_5m (
+			bucket_ts DateTime,
+			link_pk String,
+			ingested_at DateTime64(3),
+			a_avg_rtt_us Float64,
+			a_min_rtt_us Float64,
+			a_p50_rtt_us Float64,
+			a_p90_rtt_us Float64,
+			a_p95_rtt_us Float64,
+			a_p99_rtt_us Float64,
+			a_max_rtt_us Float64,
+			a_loss_pct Float64,
+			a_samples UInt32,
+			z_avg_rtt_us Float64,
+			z_min_rtt_us Float64,
+			z_p50_rtt_us Float64,
+			z_p90_rtt_us Float64,
+			z_p95_rtt_us Float64,
+			z_p99_rtt_us Float64,
+			z_max_rtt_us Float64,
+			z_loss_pct Float64,
+			z_samples UInt32,
+			status String DEFAULT '',
+			provisioning Bool DEFAULT false,
+			isis_down Bool DEFAULT false
+		) ENGINE = ReplacingMergeTree(ingested_at)
+		ORDER BY (bucket_ts, link_pk)
 	`)
 	require.NoError(t, err)
 }
@@ -147,10 +163,10 @@ func insertLinksTestData(t *testing.T) {
 
 	// Insert links
 	err = config.DB.Exec(ctx, `
-		INSERT INTO dz_links_current (pk, code, status, link_type, bandwidth_bps, side_a_pk, side_z_pk, contributor_pk) VALUES
-		('link-1', 'NYC-LAX-001', 'up', 'backbone', 10000000000, 'dev-nyc-1', 'dev-lax-1', 'contrib-1'),
-		('link-2', 'NYC-EDGE-001', 'up', 'access', 1000000000, 'dev-nyc-1', 'dev-nyc-2', NULL),
-		('link-3', 'LAX-INTERNAL', 'down', 'internal', 100000000, 'dev-lax-1', NULL, NULL)
+		INSERT INTO dz_links_current (pk, code, status, link_type, bandwidth_bps, side_a_pk, side_z_pk, contributor_pk, committed_rtt_ns) VALUES
+		('link-1', 'NYC-LAX-001', 'up', 'backbone', 10000000000, 'dev-nyc-1', 'dev-lax-1', 'contrib-1', 3000000),
+		('link-2', 'NYC-EDGE-001', 'up', 'access', 1000000000, 'dev-nyc-1', 'dev-nyc-2', NULL, 1000000),
+		('link-3', 'LAX-INTERNAL', 'down', 'internal', 100000000, 'dev-lax-1', NULL, NULL, NULL)
 	`)
 	require.NoError(t, err)
 }
@@ -336,13 +352,14 @@ func TestGetLink_ReturnsDetails(t *testing.T) {
 func setupLinkHealthData(t *testing.T) {
 	ctx := t.Context()
 
-	// Insert link health data
+	// Insert link rollup data (recent bucket so links are not "dark")
 	err := config.DB.Exec(ctx, `
-		INSERT INTO dz_links_health_current (pk, avg_rtt_us, p95_rtt_us, committed_rtt_ns, loss_pct, exceeds_committed_rtt, has_packet_loss, is_dark, is_down) VALUES
-		('link-1', 1500.0, 2000.0, 3000000, 0.0, 0, 0, 0, 0),
-		('link-2', 500.0, 800.0, 1000000, 0.05, 0, 0, 0, 0)
+		INSERT INTO link_rollup_5m (bucket_ts, link_pk, ingested_at, a_avg_rtt_us, a_p95_rtt_us, a_loss_pct, a_samples, z_avg_rtt_us, z_p95_rtt_us, z_loss_pct, z_samples) VALUES
+		(now() - INTERVAL 5 MINUTE, 'link-1', now(), 1500.0, 2000.0, 0.0, 100, 1500.0, 2000.0, 0.0, 100),
+		(now() - INTERVAL 5 MINUTE, 'link-2', now(), 500.0, 800.0, 0.05, 100, 500.0, 800.0, 0.05, 100)
 	`)
 	require.NoError(t, err)
+	require.NoError(t, config.DB.Exec(ctx, `OPTIMIZE TABLE link_rollup_5m FINAL`))
 }
 
 func TestGetLinkHealth_Empty(t *testing.T) {
@@ -443,13 +460,14 @@ func TestGetLinkHealth_IsDownForcesCritical(t *testing.T) {
 
 	ctx := t.Context()
 
-	// Insert health data: link-1 healthy, link-2 is_down
+	// Insert rollup data: link-1 healthy, link-2 is_down (100% loss)
 	err := config.DB.Exec(ctx, `
-		INSERT INTO dz_links_health_current (pk, avg_rtt_us, p95_rtt_us, committed_rtt_ns, loss_pct, exceeds_committed_rtt, has_packet_loss, is_dark, is_down) VALUES
-		('link-1', 1500.0, 2000.0, 3000000, 0.0, 0, 0, 0, 0),
-		('link-2', 500.0, 800.0, 1000000, 100.0, 0, 1, 0, 1)
+		INSERT INTO link_rollup_5m (bucket_ts, link_pk, ingested_at, a_avg_rtt_us, a_p95_rtt_us, a_loss_pct, a_samples, z_avg_rtt_us, z_p95_rtt_us, z_loss_pct, z_samples) VALUES
+		(now() - INTERVAL 5 MINUTE, 'link-1', now(), 1500.0, 2000.0, 0.0, 100, 1500.0, 2000.0, 0.0, 100),
+		(now() - INTERVAL 5 MINUTE, 'link-2', now(), 500.0, 800.0, 100.0, 100, 500.0, 800.0, 100.0, 100)
 	`)
 	require.NoError(t, err)
+	require.NoError(t, config.DB.Exec(ctx, `OPTIMIZE TABLE link_rollup_5m FINAL`))
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/links/health", nil)
 	rr := httptest.NewRecorder()

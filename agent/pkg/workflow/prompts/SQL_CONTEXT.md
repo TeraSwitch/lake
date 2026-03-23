@@ -125,7 +125,9 @@ SELECT MAX(peak) FROM per_window
 | `solana_validators_on_dz_connections` | All connection events with `first_connected_ts`, device_code, device_metro_code |
 | `solana_validators_disconnections` | Validators that left DZ (vote_pubkey, activated_stake_sol, device_code, device_metro_code, connected_ts, disconnected_ts) |
 | `solana_validators_new_connections` | Recently connected validators with device_code, device_metro_code |
-| `dz_links_health_current` | Current link health (status, packet loss, latency vs committed, is_dark, is_down) |
+| `link_rollup_5m` | Per-link latency/loss rollup in 5-minute buckets with per-direction metrics (a_avg_rtt_us, z_avg_rtt_us, a_loss_pct, z_loss_pct, a_samples, z_samples) plus state columns (status, provisioning, isis_down) |
+| `link_incidents_v` | Pre-computed link incidents (packet_loss, isis_down, no_data, errors, fcs, discards, carrier) with start/end times, peak values, and link metadata. Last 8 days only. |
+| `device_incidents_v` | Pre-computed device incidents (errors, fcs, discards, carrier, no_data, isis_overload, isis_unreachable) with start/end times and device metadata. Last 8 days only. |
 | `dz_link_status_changes` | Link status transitions with timestamps (previous_status, new_status, changed_ts) |
 | `dz_vs_internet_latency_comparison` | Compare DZ vs public internet latency for **directly-connected** metro pairs only. For latency between non-adjacent metros (e.g., NYC-TYO), use `execute_cypher` to find the path first. |
 
@@ -192,11 +194,14 @@ FROM solana_validators_off_dz_current
 WHERE city = 'Tokyo'
 ORDER BY activated_stake_sol DESC LIMIT 10;
 
--- Links with current issues
-SELECT code, status, is_soft_drained, is_hard_drained, is_isis_soft_drained,
-       has_packet_loss, loss_pct, exceeds_committed_rtt, is_dark, is_down
-FROM dz_links_health_current
-WHERE is_soft_drained OR is_hard_drained OR is_isis_soft_drained OR has_packet_loss OR exceeds_committed_rtt OR is_dark OR is_down;
+-- Links with current issues (using most recent rollup bucket)
+SELECT l.code, r.status, greatest(r.a_loss_pct, r.z_loss_pct) as loss_pct,
+       r.provisioning, r.isis_down,
+       greatest(r.a_loss_pct, r.z_loss_pct) >= 100 as is_down
+FROM link_rollup_5m r FINAL
+JOIN dz_links_current l ON r.link_pk = l.pk
+WHERE r.bucket_ts >= now() - INTERVAL 10 MINUTE
+  AND (greatest(r.a_loss_pct, r.z_loss_pct) > 0 OR r.isis_down OR r.status IN ('soft-drained', 'hard-drained'));
 
 -- Link status changes in past 7 days
 SELECT link_code, previous_status, new_status, changed_ts
@@ -256,7 +261,7 @@ SELECT code, status, metro_pk FROM dz_devices_current WHERE status = 'drained';
 ```
 
 **For "network health" questions**, check and list:
-1. Link issues from `dz_links_health_current` - **query individual rows** with code, loss_pct, and boolean flags (is_down, is_provisioning, is_soft_drained, is_hard_drained, is_isis_soft_drained, has_packet_loss, exceeds_committed_rtt, is_dark). Do NOT aggregate into counts — list each affected link by code.
+1. Link issues from `link_rollup_5m` (most recent buckets) - **query individual rows** with link code, loss_pct, status, provisioning, isis_down. Join to `dz_links_current` for link code. Do NOT aggregate into counts — list each affected link by code.
 2. Drained devices - **MUST list specific device codes**
 3. Interface errors from `fact_dz_device_interface_counters` - include device code and **actual numeric counts**
 
@@ -636,118 +641,62 @@ ORDER BY stake_sol DESC
 ```
 
 ### Link Health & Status
-**Use `dz_links_health_current` for current state** and **`dz_link_status_changes` for history**.
 
-**`dz_links_health_current` columns:**
-| Column | Description |
-|--------|-------------|
-| `is_provisioning` | Link has committed_rtt_ns = 1000ms (placeholder, not yet operational) |
-| `is_soft_drained` | Link status is 'soft-drained' |
-| `is_hard_drained` | Link status is 'hard-drained' |
-| `is_isis_soft_drained` | ISIS delay override set to 1000ms |
-| `has_packet_loss` | Loss >= 1% in last hour |
-| `loss_pct` | Packet loss percentage (last hour) |
-| `exceeds_committed_rtt` | Avg latency exceeds committed RTT |
-| `avg_rtt_us`, `p95_rtt_us` | Latency metrics (last hour) |
-| `is_dark` | No telemetry in last 2 hours |
-| `is_down` | 100% packet loss in last 5 minutes (link currently down) |
-
+**Current health** — use `link_rollup_5m` (5-minute buckets with per-direction latency/loss):
 ```sql
--- Links with current issues
-SELECT code, side_a_metro, side_z_metro, status, loss_pct,
-       is_provisioning, is_soft_drained, is_hard_drained, is_isis_soft_drained, has_packet_loss, exceeds_committed_rtt, is_dark, is_down
-FROM dz_links_health_current
-WHERE is_provisioning OR is_soft_drained OR is_hard_drained OR is_isis_soft_drained OR has_packet_loss OR exceeds_committed_rtt OR is_dark OR is_down;
-
--- Links with issues in a specific metro
-SELECT code, status, loss_pct, is_dark, is_down
-FROM dz_links_health_current
-WHERE (side_a_metro = 'sao' OR side_z_metro = 'sao')
-  AND (is_soft_drained OR is_hard_drained OR has_packet_loss OR is_dark OR is_down);
+-- Links with current issues (most recent bucket)
+SELECT l.code, greatest(r.a_loss_pct, r.z_loss_pct) as loss_pct,
+       r.status, r.isis_down, greatest(r.a_loss_pct, r.z_loss_pct) >= 100 as is_down
+FROM link_rollup_5m r FINAL
+JOIN dz_links_current l ON r.link_pk = l.pk
+WHERE r.bucket_ts >= now() - INTERVAL 10 MINUTE
+  AND (greatest(r.a_loss_pct, r.z_loss_pct) > 0 OR r.isis_down OR r.status IN ('soft-drained', 'hard-drained'));
 ```
 
-**`dz_link_status_changes` for history:**
-```sql
--- When did a link go down?
-SELECT link_code, previous_status, new_status, changed_ts
-FROM dz_link_status_changes
-WHERE link_code = 'nyc-lon-1'
-ORDER BY changed_ts DESC;
+Key `link_rollup_5m` columns: `bucket_ts`, `link_pk`, `a_avg_rtt_us`/`z_avg_rtt_us`, `a_p95_rtt_us`/`z_p95_rtt_us`, `a_loss_pct`/`z_loss_pct`, `a_samples`/`z_samples`, `status`, `provisioning`, `isis_down`.
 
--- Recent status changes
-SELECT link_code, previous_status, new_status, changed_ts, side_a_metro, side_z_metro
+**Status change history** — use `dz_link_status_changes`:
+```sql
+SELECT link_code, previous_status, new_status, changed_ts
 FROM dz_link_status_changes
 WHERE changed_ts > now() - INTERVAL 48 HOUR
 ORDER BY changed_ts DESC;
 ```
 
-**For historical packet loss / latency** (beyond the last hour), query `fact_dz_device_link_latency` directly:
+### Link & Device Incidents
+
+**CRITICAL: For questions about "outages", "issues", or "problems", you MUST query BOTH:**
+1. `link_incidents_v` — covers packet loss, ISIS down, errors, no data
+2. `dz_link_status_changes` — covers drain events (soft-drained, hard-drained)
+
+**Do NOT query just one.** Drain events have no rollup data (they won't appear in `link_incidents_v`). Packet loss has no status change (it won't appear in `dz_link_status_changes`).
+
+**`link_incidents_v`** detects incidents from rollup data (last 8 days), groups consecutive above-threshold buckets into incidents, and joins link metadata.
+
+Columns: `entity_pk`, `incident_type`, `started_at`, `ended_at`, `is_ongoing`, `peak_value`, `total_buckets`, `duration_seconds`, `link_code`, `link_type`, `status`, `side_a_metro`, `side_z_metro`, `contributor_code`
+
+Incident types: `packet_loss` (loss >= 10%), `isis_down`, `no_data` (missing rollup rows), `errors`, `fcs`, `discards`, `carrier`
+
+**`device_incidents_v`** — same structure for devices. Columns: `entity_pk`, `incident_type`, `started_at`, `ended_at`, `is_ongoing`, `peak_value`, `total_buckets`, `duration_seconds`, `device_code`, `device_type`, `status`, `metro`, `contributor_code`. Types: `errors`, `fcs`, `discards`, `carrier`, `no_data`, `isis_overload`, `isis_unreachable`.
 
 ```sql
--- Historical packet loss by link (last 30 days, hourly buckets)
-SELECT
-    l.code AS link_code,
-    toStartOfHour(f.event_ts) AS hour,
-    count(*) AS samples,
-    countIf(f.loss = true) AS lost_samples,
-    round(countIf(f.loss = true) * 100.0 / count(*), 1) AS loss_pct
-FROM fact_dz_device_link_latency f
-JOIN dz_links_current l ON f.link_pk = l.pk
-WHERE f.event_ts > now() - INTERVAL 30 DAY
-  AND f.link_pk != ''
-GROUP BY l.code, hour
-HAVING loss_pct >= 1  -- Only show hours with packet loss
-ORDER BY hour DESC;
+-- Telemetry-based incidents (packet loss, errors, ISIS down, etc.)
+SELECT link_code, incident_type, started_at, ended_at, is_ongoing, peak_value, duration_seconds
+FROM link_incidents_v
+ORDER BY started_at DESC;
 
--- Packet loss for links in a specific metro
-SELECT
-    l.code AS link_code,
-    ma.code AS side_a_metro,
-    mz.code AS side_z_metro,
-    toDate(f.event_ts) AS date,
-    round(countIf(f.loss = true) * 100.0 / count(*), 1) AS loss_pct
-FROM fact_dz_device_link_latency f
-JOIN dz_links_current l ON f.link_pk = l.pk
-LEFT JOIN dz_devices_current da ON l.side_a_pk = da.pk
-LEFT JOIN dz_devices_current dz ON l.side_z_pk = dz.pk
-LEFT JOIN dz_metros_current ma ON da.metro_pk = ma.pk
-LEFT JOIN dz_metros_current mz ON dz.metro_pk = mz.pk
-WHERE f.event_ts > now() - INTERVAL 30 DAY
-  AND (ma.code = 'sao' OR mz.code = 'sao')
-GROUP BY l.code, ma.code, mz.code, date
-HAVING loss_pct >= 1
-ORDER BY date DESC;
-```
-
-### Link Outages (Multiple Data Sources)
-
-**"Outage" can mean multiple things - check ALL sources:**
-
-1. **Status-based outages** → `dz_link_status_changes` (soft-drained, hard-drained)
-2. **Packet loss outages** → `fact_dz_device_link_latency` (loss percentage)
-3. **Current health issues** → `dz_links_health_current` (combined view)
-
-**For questions about "outages", "issues", or "problems" on links, query BOTH:**
-
-```sql
--- 1. Status changes (soft-drain, hard-drain events)
-SELECT link_code, previous_status, new_status, changed_ts
+-- Status-based outages (drain events) — ALWAYS run this too!
+SELECT link_code, previous_status, new_status, changed_ts, side_a_metro, side_z_metro
 FROM dz_link_status_changes
-WHERE (side_a_metro = 'sao' OR side_z_metro = 'sao')
-  AND changed_ts > now() - INTERVAL 30 DAY;
+WHERE changed_ts > now() - INTERVAL 30 DAY
+ORDER BY changed_ts DESC;
 
--- 2. Packet loss events (may have no status change!)
-SELECT l.code AS link_code, toDate(f.event_ts) AS date,
-       round(countIf(f.loss = true) * 100.0 / count(*), 1) AS loss_pct
-FROM fact_dz_device_link_latency f
-JOIN dz_links_current l ON f.link_pk = l.pk
-WHERE (l.side_a_metro = 'sao' OR l.side_z_metro = 'sao')
-  AND f.event_ts > now() - INTERVAL 30 DAY
-GROUP BY l.code, date
-HAVING loss_pct >= 1;
+-- Incident timeline for a specific link
+SELECT incident_type, started_at, ended_at, is_ongoing, peak_value, duration_seconds
+FROM link_incidents_v
+WHERE link_code = 'nyc-lon-1'
+ORDER BY started_at DESC;
 ```
-
-**WRONG:** Only checking `dz_link_status_changes` - misses packet loss events that don't trigger status changes.
 
 ### Validators by Region/Metro
 The pre-built views include `device_code`, `device_metro_code`, and `device_metro_name` columns. Use these for regional analysis:
