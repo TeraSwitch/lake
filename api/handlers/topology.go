@@ -437,7 +437,7 @@ type TrafficResponse struct {
 	Error      string                      `json:"error,omitempty"`
 }
 
-func GetTopologyTraffic(w http.ResponseWriter, r *http.Request) {
+func GetEntityTraffic(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
 	defer cancel()
 
@@ -450,88 +450,35 @@ func GetTopologyTraffic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Parse time range parameters
-	rangeParam := r.URL.Query().Get("range")
-	fromParam := r.URL.Query().Get("from")
-	toParam := r.URL.Query().Get("to")
-	bucketParam := r.URL.Query().Get("bucket")
-	metricParam := r.URL.Query().Get("metric") // "packets" for pps, default is bps
-
-	var timeFilter string
-	var bucketSeconds int
-	var timeFormat string
-	isPresetRange := false
-
-	if fromParam != "" && toParam != "" {
-		fromTime, err := time.Parse("2006-01-02-15:04:05", fromParam)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(TrafficResponse{Error: "invalid 'from' format, use yyyy-mm-dd-hh:mm:ss"})
-			return
-		}
-		toTime, err := time.Parse("2006-01-02-15:04:05", toParam)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(TrafficResponse{Error: "invalid 'to' format, use yyyy-mm-dd-hh:mm:ss"})
-			return
-		}
-		duration := toTime.Sub(fromTime)
-		bucketSeconds = calculateBucketSize(duration)
-		timeFormat = timeFormatForBucket(bucketSeconds)
-		timeFilter = fmt.Sprintf("event_ts >= '%s' AND event_ts <= '%s'",
-			fromTime.UTC().Format("2006-01-02 15:04:05"),
-			toTime.UTC().Format("2006-01-02 15:04:05"))
-	} else {
-		isPresetRange = true
-		var intervalMinutes int
-		switch rangeParam {
-		case "15m":
-			intervalMinutes = 15
-		case "30m":
-			intervalMinutes = 30
-		case "1h":
-			intervalMinutes = 60
-		case "3h":
-			intervalMinutes = 180
-		case "6h":
-			intervalMinutes = 360
-		case "12h":
-			intervalMinutes = 720
-		case "2d":
-			intervalMinutes = 2880
-		case "7d":
-			intervalMinutes = 10080
-		default: // 24h
-			intervalMinutes = 1440
-		}
-		bucketSeconds = calculateBucketSize(time.Duration(intervalMinutes) * time.Minute)
-		timeFormat = timeFormatForBucket(bucketSeconds)
-		timeFilter = fmt.Sprintf("event_ts > now() - INTERVAL %d MINUTE", intervalMinutes)
+	// Normalize topology params to the shared time filter system.
+	// The topology API uses "range" (not "time_range") and "from"/"to" (not "start_time"/"end_time").
+	q := r.URL.Query()
+	if q.Get("range") != "" && q.Get("time_range") == "" {
+		q.Set("time_range", q.Get("range"))
 	}
-
-	// Allow client to override auto bucket size
-	if bucketParam != "" && bucketParam != "auto" {
-		override := parseBucketParam(bucketParam)
-		if override > 0 {
-			bucketSeconds = override
-			timeFormat = timeFormatForBucket(bucketSeconds)
+	if q.Get("from") != "" && q.Get("to") != "" && q.Get("start_time") == "" {
+		fromTime, err1 := time.Parse("2006-01-02-15:04:05", q.Get("from"))
+		toTime, err2 := time.Parse("2006-01-02-15:04:05", q.Get("to"))
+		if err1 == nil && err2 == nil {
+			q.Set("start_time", fmt.Sprintf("%d", fromTime.Unix()))
+			q.Set("end_time", fmt.Sprintf("%d", toTime.Unix()))
 		}
 	}
+	r.URL.RawQuery = q.Encode()
 
-	// Exclude the current incomplete bucket for preset ranges so the chart
-	// line doesn't drop to zero at the trailing edge.
-	if isPresetRange {
-		timeFilter += fmt.Sprintf(" AND event_ts < toStartOfInterval(now(), INTERVAL %d SECOND)", bucketSeconds)
-	}
+	// Use shared time filter with raw/rollup routing
+	timeFilter, bucketInterval, useRaw := trafficTimeFilter(r)
 
-	bucketExpr := fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %d SECOND)", bucketSeconds)
-
-	start := time.Now()
-
+	metricParam := r.URL.Query().Get("metric")
 	breakdown := r.URL.Query().Get("breakdown")
-	var points []TrafficDataPoint
-	var whereColumn string
 
+	// Parse aggregation mode
+	aggParam := r.URL.Query().Get("agg")
+	if aggParam == "" {
+		aggParam = "max"
+	}
+
+	var whereColumn string
 	switch itemType {
 	case "link":
 		whereColumn = "link_pk"
@@ -541,353 +488,248 @@ func GetTopologyTraffic(w http.ResponseWriter, r *http.Request) {
 		whereColumn = "device_pk"
 	}
 
-	// Select metric expressions based on metric param
-	var avgInExpr, avgOutExpr, peakInExpr, peakOutExpr string
-	if metricParam == "packets" {
-		avgInExpr = "avg(in_pkts_delta / nullIf(delta_duration, 0))"
-		avgOutExpr = "avg(out_pkts_delta / nullIf(delta_duration, 0))"
-		peakInExpr = "max(in_pkts_delta / nullIf(delta_duration, 0))"
-		peakOutExpr = "max(out_pkts_delta / nullIf(delta_duration, 0))"
+	start := time.Now()
+	var points []TrafficDataPoint
+	response := TrafficResponse{Points: points}
+
+	if useRaw {
+		// Raw fact table path
+		var rawAggFunc string
+		switch aggParam {
+		case "avg":
+			rawAggFunc = "avg"
+		case "min":
+			rawAggFunc = "min"
+		case "p50":
+			rawAggFunc = "quantile(0.5)"
+		case "p90":
+			rawAggFunc = "quantile(0.9)"
+		case "p95":
+			rawAggFunc = "quantile(0.95)"
+		case "p99":
+			rawAggFunc = "quantile(0.99)"
+		default:
+			rawAggFunc = "max"
+		}
+
+		var avgInExpr, avgOutExpr, peakInExpr, peakOutExpr string
+		if metricParam == "packets" {
+			avgInExpr = "avg(in_pkts_delta / nullIf(delta_duration, 0))"
+			avgOutExpr = "avg(out_pkts_delta / nullIf(delta_duration, 0))"
+			peakInExpr = fmt.Sprintf("%s(in_pkts_delta / nullIf(delta_duration, 0))", rawAggFunc)
+			peakOutExpr = fmt.Sprintf("%s(out_pkts_delta / nullIf(delta_duration, 0))", rawAggFunc)
+		} else {
+			avgInExpr = "avg(in_octets_delta * 8 / nullIf(delta_duration, 0))"
+			avgOutExpr = "avg(out_octets_delta * 8 / nullIf(delta_duration, 0))"
+			peakInExpr = fmt.Sprintf("%s(in_octets_delta * 8 / nullIf(delta_duration, 0))", rawAggFunc)
+			peakOutExpr = fmt.Sprintf("%s(out_octets_delta * 8 / nullIf(delta_duration, 0))", rawAggFunc)
+		}
+
+		bucketExpr := fmt.Sprintf("toStartOfInterval(event_ts, INTERVAL %s)", bucketInterval)
+
+		// Aggregated query (skip when only interface breakdown needed)
+		if breakdown != "interface" || (itemType != "device" && itemType != "link") {
+			query := fmt.Sprintf(`
+				SELECT
+					formatDateTime(%s, '%%Y-%%m-%%dT%%H:%%i:%%SZ') as time_bucket,
+					%s as avg_in, %s as avg_out,
+					%s as peak_in, %s as peak_out
+				FROM fact_dz_device_interface_counters
+				WHERE %s AND %s = $1
+					AND delta_duration > 0 AND in_octets_delta >= 0 AND out_octets_delta >= 0
+				GROUP BY time_bucket
+				ORDER BY min(event_ts)
+			`, bucketExpr, avgInExpr, avgOutExpr, peakInExpr, peakOutExpr, timeFilter, whereColumn)
+
+			points = scanTrafficPoints(ctx, query, pk)
+		}
+
+		// Per-interface breakdown
+		if breakdown == "interface" && (itemType == "device" || itemType == "link") {
+			intfExpr := "intf"
+			if itemType == "link" {
+				intfExpr = "concat(link_side, ':', intf)"
+			}
+			intfQuery := fmt.Sprintf(`
+				SELECT
+					formatDateTime(%s, '%%Y-%%m-%%dT%%H:%%i:%%SZ') as time_bucket,
+					%s as intf_key,
+					%s as avg_in, %s as avg_out,
+					%s as peak_in, %s as peak_out
+				FROM fact_dz_device_interface_counters
+				WHERE %s AND %s = $1
+					AND delta_duration > 0 AND in_octets_delta >= 0 AND out_octets_delta >= 0
+				GROUP BY time_bucket, intf_key
+				ORDER BY min(event_ts), intf_key
+			`, bucketExpr, intfExpr, avgInExpr, avgOutExpr, peakInExpr, peakOutExpr, timeFilter, whereColumn)
+
+			response.Interfaces = scanInterfaceTrafficPoints(ctx, intfQuery, pk)
+		}
 	} else {
-		avgInExpr = "avg(in_octets_delta * 8 / nullIf(delta_duration, 0))"
-		avgOutExpr = "avg(out_octets_delta * 8 / nullIf(delta_duration, 0))"
-		peakInExpr = "max(in_octets_delta * 8 / nullIf(delta_duration, 0))"
-		peakOutExpr = "max(out_octets_delta * 8 / nullIf(delta_duration, 0))"
-	}
-
-	// Skip aggregated query when only interface breakdown is needed — the caller
-	// doesn't use the points array and running both queries sequentially under
-	// the same timeout budget causes unnecessary timeouts.
-	if breakdown != "interface" || (itemType != "device" && itemType != "link") {
-		query := fmt.Sprintf(`
-			SELECT
-				formatDateTime(%s, '%s') as time_bucket,
-				%s as avg_in,
-				%s as avg_out,
-				%s as peak_in,
-				%s as peak_out
-			FROM fact_dz_device_interface_counters
-			WHERE %s
-				AND %s = $1
-				AND delta_duration > 0
-				AND in_octets_delta >= 0
-				AND out_octets_delta >= 0
-			GROUP BY time_bucket
-			ORDER BY min(event_ts)
-		`, bucketExpr, timeFormat, avgInExpr, avgOutExpr, peakInExpr, peakOutExpr, timeFilter, whereColumn)
-
-		rows, err := envDB(ctx).Query(ctx, query, pk)
-		if err != nil {
-			slog.Error("traffic query error", "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(TrafficResponse{Error: dberror.UserMessage(err)})
-			return
-		}
-		defer rows.Close()
-
-		for rows.Next() {
-			var p TrafficDataPoint
-			var avgIn, avgOut, peakIn, peakOut *float64
-			if err := rows.Scan(&p.Time, &avgIn, &avgOut, &peakIn, &peakOut); err != nil {
-				slog.Error("traffic scan error", "error", err)
-				w.Header().Set("Content-Type", "application/json")
-				_ = json.NewEncoder(w).Encode(TrafficResponse{Error: dberror.UserMessage(err)})
-				return
-			}
-			if avgIn != nil {
-				p.AvgIn = *avgIn
-			}
-			if avgOut != nil {
-				p.AvgOut = *avgOut
-			}
-			if peakIn != nil {
-				p.PeakIn = *peakIn
-			}
-			if peakOut != nil {
-				p.PeakOut = *peakOut
-			}
-			points = append(points, p)
+		// Rollup path
+		aggPrefix := "max"
+		switch aggParam {
+		case "avg":
+			aggPrefix = "avg"
+		case "min":
+			aggPrefix = "min"
+		case "p50":
+			aggPrefix = "p50"
+		case "p90":
+			aggPrefix = "p90"
+		case "p95":
+			aggPrefix = "p95"
+		case "p99":
+			aggPrefix = "p99"
 		}
 
-		duration := time.Since(start)
-		metrics.RecordClickHouseQuery(duration, rows.Err())
+		rollupAggFunc := "MAX"
+		switch aggParam {
+		case "avg":
+			rollupAggFunc = "AVG"
+		case "min":
+			rollupAggFunc = "MIN"
+		}
+
+		var avgInCol, avgOutCol, peakInCol, peakOutCol string
+		if metricParam == "packets" {
+			avgInCol = "avg_in_pps"
+			avgOutCol = "avg_out_pps"
+			peakInCol = fmt.Sprintf("%s_in_pps", aggPrefix)
+			peakOutCol = fmt.Sprintf("%s_out_pps", aggPrefix)
+		} else {
+			avgInCol = "avg_in_bps"
+			avgOutCol = "avg_out_bps"
+			peakInCol = fmt.Sprintf("%s_in_bps", aggPrefix)
+			peakOutCol = fmt.Sprintf("%s_out_bps", aggPrefix)
+		}
+
+		bucketExpr := fmt.Sprintf("toStartOfInterval(bucket_ts, INTERVAL %s)", bucketInterval)
+
+		// Aggregated query
+		if breakdown != "interface" || (itemType != "device" && itemType != "link") {
+			query := fmt.Sprintf(`
+				SELECT
+					formatDateTime(%s, '%%Y-%%m-%%dT%%H:%%i:%%SZ') as time_bucket,
+					AVG(%s) as avg_in, AVG(%s) as avg_out,
+					%s(%s) as peak_in, %s(%s) as peak_out
+				FROM device_interface_rollup_5m
+				WHERE %s AND %s = $1
+				GROUP BY time_bucket
+				ORDER BY time_bucket
+			`, bucketExpr, avgInCol, avgOutCol, rollupAggFunc, peakInCol, rollupAggFunc, peakOutCol, timeFilter, whereColumn)
+
+			points = scanTrafficPoints(ctx, query, pk)
+		}
+
+		// Per-interface breakdown
+		if breakdown == "interface" && (itemType == "device" || itemType == "link") {
+			intfExpr := "intf"
+			if itemType == "link" {
+				intfExpr = "concat(link_side, ':', intf)"
+			}
+			intfQuery := fmt.Sprintf(`
+				SELECT
+					formatDateTime(%s, '%%Y-%%m-%%dT%%H:%%i:%%SZ') as time_bucket,
+					%s as intf_key,
+					AVG(%s) as avg_in, AVG(%s) as avg_out,
+					%s(%s) as peak_in, %s(%s) as peak_out
+				FROM device_interface_rollup_5m
+				WHERE %s AND %s = $1
+				GROUP BY time_bucket, intf_key
+				ORDER BY time_bucket, intf_key
+			`, bucketExpr, intfExpr, avgInCol, avgOutCol, rollupAggFunc, peakInCol, rollupAggFunc, peakOutCol, timeFilter, whereColumn)
+
+			response.Interfaces = scanInterfaceTrafficPoints(ctx, intfQuery, pk)
+		}
 	}
+
+	duration := time.Since(start)
+	metrics.RecordClickHouseQuery(duration, nil)
 
 	if points == nil {
 		points = []TrafficDataPoint{}
 	}
-
-	response := TrafficResponse{Points: points}
-
-	// If breakdown=interface requested and type is device or link, run per-interface query
-	if breakdown == "interface" && (itemType == "device" || itemType == "link") {
-		// For links, prefix intf with link_side ('A:'/'Z:') to distinguish sides
-		// that may share the same interface name (e.g. both sides have Ethernet1/1)
-		intfExpr := "intf"
-		if itemType == "link" {
-			intfExpr = "concat(link_side, ':', intf)"
-		}
-		intfQuery := fmt.Sprintf(`
-			SELECT
-				formatDateTime(%s, '%s') as time_bucket,
-				%s as intf_key,
-				%s as avg_in,
-				%s as avg_out,
-				%s as peak_in,
-				%s as peak_out
-			FROM fact_dz_device_interface_counters
-			WHERE %s
-				AND %s = $1
-				AND delta_duration > 0
-				AND in_octets_delta >= 0
-				AND out_octets_delta >= 0
-			GROUP BY time_bucket, intf_key
-			ORDER BY min(event_ts), intf_key
-		`, bucketExpr, timeFormat, intfExpr, avgInExpr, avgOutExpr, peakInExpr, peakOutExpr, timeFilter, whereColumn)
-
-		intfRows, intfErr := envDB(ctx).Query(ctx, intfQuery, pk)
-		if intfErr != nil {
-			slog.Error("interface traffic query error", "error", intfErr)
-		} else {
-			defer intfRows.Close()
-			var intfPoints []InterfaceTrafficDataPoint
-			for intfRows.Next() {
-				var p InterfaceTrafficDataPoint
-				var avgIn, avgOut, peakIn, peakOut *float64
-				if err := intfRows.Scan(&p.Time, &p.Intf, &avgIn, &avgOut, &peakIn, &peakOut); err != nil {
-					slog.Error("interface traffic scan error", "error", err)
-					break
-				}
-				if avgIn != nil {
-					p.AvgIn = *avgIn
-				}
-				if avgOut != nil {
-					p.AvgOut = *avgOut
-				}
-				if peakIn != nil {
-					p.PeakIn = *peakIn
-				}
-				if peakOut != nil {
-					p.PeakOut = *peakOut
-				}
-				intfPoints = append(intfPoints, p)
-			}
-			response.Interfaces = intfPoints
-		}
-	}
+	response.Points = points
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(response)
 }
 
-// Link latency data point for charts
-type LinkLatencyDataPoint struct {
-	Time         string  `json:"time"`
-	AvgRttMs     float64 `json:"avgRttMs"`
-	P95RttMs     float64 `json:"p95RttMs"`
-	AvgJitter    float64 `json:"avgJitter"`
-	LossPct      float64 `json:"lossPct"`
-	AvgRttAtoZMs float64 `json:"avgRttAtoZMs"`
-	P95RttAtoZMs float64 `json:"p95RttAtoZMs"`
-	AvgRttZtoAMs float64 `json:"avgRttZtoAMs"`
-	P95RttZtoAMs float64 `json:"p95RttZtoAMs"`
-	JitterAtoZMs float64 `json:"jitterAtoZMs"`
-	JitterZtoAMs float64 `json:"jitterZtoAMs"`
-}
-
-type LinkLatencyResponse struct {
-	Points []LinkLatencyDataPoint `json:"points"`
-	Error  string                 `json:"error,omitempty"`
-}
-
-// parseBucketParam converts a bucket size string like "10 SECOND", "1 MINUTE", "1 HOUR" to seconds.
-func parseBucketParam(bucket string) int {
-	switch bucket {
-	case "10 SECOND":
-		return 10
-	case "30 SECOND":
-		return 30
-	case "1 MINUTE":
-		return 60
-	case "5 MINUTE":
-		return 300
-	case "10 MINUTE":
-		return 600
-	case "30 MINUTE":
-		return 1800
-	case "1 HOUR":
-		return 3600
-	default:
-		return 0
-	}
-}
-
-// calculateBucketSize returns an appropriate bucket size in seconds for the given duration,
-// matching the traffic dashboard's granularity.
-func calculateBucketSize(d time.Duration) int {
-	switch {
-	case d <= 1*time.Hour:
-		return 10 // 10 second buckets
-	case d <= 3*time.Hour:
-		return 30 // 30 second buckets
-	case d <= 12*time.Hour:
-		return 60 // 1 minute buckets
-	case d <= 24*time.Hour:
-		return 300 // 5 minute buckets
-	case d <= 3*24*time.Hour:
-		return 600 // 10 minute buckets
-	case d <= 7*24*time.Hour:
-		return 1800 // 30 minute buckets
-	default:
-		return 3600 // 1 hour buckets
-	}
-}
-
-// timeFormatForBucket returns the ClickHouse time format string for API responses.
-// Always returns ISO 8601 format so the frontend can parse timestamps and format them locally.
-func timeFormatForBucket(_ int) string {
-	return "%Y-%m-%dT%H:%i:%S"
-}
-
-func GetLinkLatencyHistory(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
-	defer cancel()
-
-	pk := r.URL.Query().Get("pk")
-
-	if pk == "" {
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(LinkLatencyResponse{Points: []LinkLatencyDataPoint{}})
-		return
-	}
-
-	// Parse time range parameters
-	rangeParam := r.URL.Query().Get("range")
-	fromParam := r.URL.Query().Get("from")
-	toParam := r.URL.Query().Get("to")
-
-	// Determine time filter and bucket size
-	var timeFilter string
-	var bucketSeconds int
-	var timeFormat string
-
-	if fromParam != "" && toParam != "" {
-		// Custom date range: from=2024-01-20-14:30:00 to=2024-01-21-14:30:00
-		fromTime, err := time.Parse("2006-01-02-15:04:05", fromParam)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(LinkLatencyResponse{Error: "invalid 'from' format, use yyyy-mm-dd-hh:mm:ss"})
-			return
-		}
-		toTime, err := time.Parse("2006-01-02-15:04:05", toParam)
-		if err != nil {
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(LinkLatencyResponse{Error: "invalid 'to' format, use yyyy-mm-dd-hh:mm:ss"})
-			return
-		}
-		duration := toTime.Sub(fromTime)
-		bucketSeconds = calculateBucketSize(duration)
-		timeFormat = timeFormatForBucket(bucketSeconds)
-		timeFilter = fmt.Sprintf("f.event_ts >= '%s' AND f.event_ts <= '%s'",
-			fromTime.UTC().Format("2006-01-02 15:04:05"),
-			toTime.UTC().Format("2006-01-02 15:04:05"))
-	} else {
-		// Preset range
-		var intervalMinutes int
-		switch rangeParam {
-		case "15m":
-			intervalMinutes = 15
-		case "30m":
-			intervalMinutes = 30
-		case "1h":
-			intervalMinutes = 60
-		case "3h":
-			intervalMinutes = 180
-		case "6h":
-			intervalMinutes = 360
-		case "12h":
-			intervalMinutes = 720
-		case "2d":
-			intervalMinutes = 2880
-		case "7d":
-			intervalMinutes = 10080
-		default: // 24h
-			intervalMinutes = 1440
-		}
-		bucketSeconds = calculateBucketSize(time.Duration(intervalMinutes) * time.Minute)
-		timeFormat = timeFormatForBucket(bucketSeconds)
-		timeFilter = fmt.Sprintf("f.ingested_at > now() - INTERVAL %d MINUTE", intervalMinutes)
-	}
-
-	isPresetRange := fromParam == "" || toParam == ""
-
-	start := time.Now()
-
-	// Get latency stats for a link with per-direction breakdown.
-	// Loss is computed as the max of 5-minute sub-bucket loss percentages within each
-	// display bucket, matching Grafana's [5m] window for sharper spike visibility.
-	topoDisplayTs := "if(h.sampling_interval_us > 0 AND f.sample_index >= h.latest_sample_index - 1000, f.ingested_at, f.event_ts)"
-	topoHeaderJoin := `LEFT JOIN (
-				SELECT origin_device_pk, target_device_pk, link_pk AS _hdr_link_pk, epoch,
-					   max(latest_sample_index) AS latest_sample_index,
-					   any(sampling_interval_us) AS sampling_interval_us
-				FROM fact_dz_device_link_latency_sample_header
-				GROUP BY origin_device_pk, target_device_pk, link_pk, epoch
-			) h ON f.origin_device_pk = h.origin_device_pk
-				AND f.target_device_pk = h.target_device_pk
-				AND f.link_pk = h._hdr_link_pk
-				AND f.epoch = h.epoch`
-	displayBucketExpr := fmt.Sprintf("toStartOfInterval(%s, INTERVAL %d SECOND)", topoDisplayTs, bucketSeconds)
-	lossBucketExpr := fmt.Sprintf("toStartOfInterval(%s, INTERVAL %d SECOND)", topoDisplayTs, min(bucketSeconds, 300))
-
-	// Exclude the current incomplete bucket so the chart line doesn't drop to zero.
-	if isPresetRange {
-		timeFilter += fmt.Sprintf(" AND %s < toStartOfInterval(now(), INTERVAL %d SECOND)", displayBucketExpr, bucketSeconds)
-	}
-	query := `
-		WITH loss_sub AS (
-			SELECT
-				` + displayBucketExpr + ` as display_bucket,
-				countIf(f.loss) * 100.0 / count(*) as loss_pct
-			FROM fact_dz_device_link_latency f
-			JOIN dz_links_current l ON f.link_pk = l.pk
-			` + topoHeaderJoin + `
-			WHERE ` + timeFilter + `
-				AND f.link_pk = $1
-			GROUP BY display_bucket, ` + lossBucketExpr + `
-		),
-		loss_max AS (
-			SELECT display_bucket, max(loss_pct) as loss_pct
-			FROM loss_sub
-			GROUP BY display_bucket
-		)
-		SELECT
-			formatDateTime(` + displayBucketExpr + `, '` + timeFormat + `') as time_bucket,
-			avg(f.rtt_us) / 1000.0 as avg_rtt_ms,
-			quantile(0.95)(f.rtt_us) / 1000.0 as p95_rtt_ms,
-			avg(abs(f.ipdv_us)) / 1000.0 as avg_jitter_ms,
-			COALESCE(max(lm.loss_pct), 0) as loss_pct,
-			avgIf(f.rtt_us, f.origin_device_pk = l.side_a_pk) / 1000.0 as avg_rtt_a_to_z_ms,
-			quantileIf(0.95)(f.rtt_us, f.origin_device_pk = l.side_a_pk) / 1000.0 as p95_rtt_a_to_z_ms,
-			avgIf(f.rtt_us, f.origin_device_pk = l.side_z_pk) / 1000.0 as avg_rtt_z_to_a_ms,
-			quantileIf(0.95)(f.rtt_us, f.origin_device_pk = l.side_z_pk) / 1000.0 as p95_rtt_z_to_a_ms,
-			avgIf(abs(f.ipdv_us), f.origin_device_pk = l.side_a_pk) / 1000.0 as jitter_a_to_z_ms,
-			avgIf(abs(f.ipdv_us), f.origin_device_pk = l.side_z_pk) / 1000.0 as jitter_z_to_a_ms
-		FROM fact_dz_device_link_latency f
-		JOIN dz_links_current l ON f.link_pk = l.pk
-		` + topoHeaderJoin + `
-		LEFT JOIN loss_max lm ON lm.display_bucket = ` + displayBucketExpr + `
-		WHERE ` + timeFilter + `
-			AND f.link_pk = $2
-		GROUP BY ` + displayBucketExpr + `
-		ORDER BY ` + displayBucketExpr
-
-	rows, err := envDB(ctx).Query(ctx, query, pk, pk)
+// scanTrafficPoints executes a query and scans aggregated traffic data points.
+func scanTrafficPoints(ctx context.Context, query, pk string) []TrafficDataPoint {
+	rows, err := envDB(ctx).Query(ctx, query, pk)
 	if err != nil {
-		slog.Error("latency query error", "pk", pk, "error", err)
-		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(LinkLatencyResponse{Error: dberror.UserMessage(err)})
-		return
+		slog.Error("traffic query error", "error", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var points []TrafficDataPoint
+	for rows.Next() {
+		var p TrafficDataPoint
+		var avgIn, avgOut, peakIn, peakOut *float64
+		if err := rows.Scan(&p.Time, &avgIn, &avgOut, &peakIn, &peakOut); err != nil {
+			slog.Error("traffic scan error", "error", err)
+			return points
+		}
+		if avgIn != nil {
+			p.AvgIn = *avgIn
+		}
+		if avgOut != nil {
+			p.AvgOut = *avgOut
+		}
+		if peakIn != nil {
+			p.PeakIn = *peakIn
+		}
+		if peakOut != nil {
+			p.PeakOut = *peakOut
+		}
+		points = append(points, p)
+	}
+	return points
+}
+
+// scanInterfaceTrafficPoints executes a query and scans per-interface traffic data points.
+func scanInterfaceTrafficPoints(ctx context.Context, query, pk string) []InterfaceTrafficDataPoint {
+	rows, err := envDB(ctx).Query(ctx, query, pk)
+	if err != nil {
+		slog.Error("interface traffic query error", "error", err)
+		return nil
+	}
+	defer rows.Close()
+
+	var points []InterfaceTrafficDataPoint
+	for rows.Next() {
+		var p InterfaceTrafficDataPoint
+		var avgIn, avgOut, peakIn, peakOut *float64
+		if err := rows.Scan(&p.Time, &p.Intf, &avgIn, &avgOut, &peakIn, &peakOut); err != nil {
+			slog.Error("interface traffic scan error", "error", err)
+			return points
+		}
+		if avgIn != nil {
+			p.AvgIn = *avgIn
+		}
+		if avgOut != nil {
+			p.AvgOut = *avgOut
+		}
+		if peakIn != nil {
+			p.PeakIn = *peakIn
+		}
+		if peakOut != nil {
+			p.PeakOut = *peakOut
+		}
+		points = append(points, p)
+	}
+	return points
+}
+
+// scanLatencyPoints executes a query and scans latency data points.
+func scanLatencyPoints(ctx context.Context, query string, args ...any) []LinkLatencyDataPoint {
+	rows, err := envDB(ctx).Query(ctx, query, args...)
+	if err != nil {
+		slog.Error("latency query error", "error", err)
+		return nil
 	}
 	defer rows.Close()
 
@@ -897,9 +739,7 @@ func GetLinkLatencyHistory(w http.ResponseWriter, r *http.Request) {
 		var avgRtt, p95Rtt, avgJitter, lossPct, avgRttAtoZ, p95RttAtoZ, avgRttZtoA, p95RttZtoA, jitterAtoZ, jitterZtoA *float64
 		if err := rows.Scan(&p.Time, &avgRtt, &p95Rtt, &avgJitter, &lossPct, &avgRttAtoZ, &p95RttAtoZ, &avgRttZtoA, &p95RttZtoA, &jitterAtoZ, &jitterZtoA); err != nil {
 			slog.Error("latency scan error", "error", err)
-			w.Header().Set("Content-Type", "application/json")
-			_ = json.NewEncoder(w).Encode(LinkLatencyResponse{Error: dberror.UserMessage(err)})
-			return
+			return points
 		}
 		if avgRtt != nil && !math.IsNaN(*avgRtt) {
 			p.AvgRttMs = *avgRtt
@@ -933,16 +773,214 @@ func GetLinkLatencyHistory(w http.ResponseWriter, r *http.Request) {
 		}
 		points = append(points, p)
 	}
+	return points
+}
 
-	duration := time.Since(start)
-	metrics.RecordClickHouseQuery(duration, rows.Err())
+// Link latency data point for charts
+type LinkLatencyDataPoint struct {
+	Time         string  `json:"time"`
+	AvgRttMs     float64 `json:"avgRttMs"`
+	P95RttMs     float64 `json:"p95RttMs"`
+	AvgJitter    float64 `json:"avgJitter"`
+	LossPct      float64 `json:"lossPct"`
+	AvgRttAtoZMs float64 `json:"avgRttAtoZMs"`
+	P95RttAtoZMs float64 `json:"p95RttAtoZMs"`
+	AvgRttZtoAMs float64 `json:"avgRttZtoAMs"`
+	P95RttZtoAMs float64 `json:"p95RttZtoAMs"`
+	JitterAtoZMs float64 `json:"jitterAtoZMs"`
+	JitterZtoAMs float64 `json:"jitterZtoAMs"`
+}
 
-	if err := rows.Err(); err != nil {
-		slog.Error("latency rows iteration error", "pk", pk, "error", err)
+type LinkLatencyResponse struct {
+	Points []LinkLatencyDataPoint `json:"points"`
+	Error  string                 `json:"error,omitempty"`
+}
+
+func GetLinkLatencyHistory(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+
+	pk := r.URL.Query().Get("pk")
+
+	if pk == "" {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(LinkLatencyResponse{Error: dberror.UserMessage(err)})
+		_ = json.NewEncoder(w).Encode(LinkLatencyResponse{Points: []LinkLatencyDataPoint{}})
 		return
 	}
+
+	// Normalize topology params to shared time filter system
+	q := r.URL.Query()
+	if q.Get("range") != "" && q.Get("time_range") == "" {
+		q.Set("time_range", q.Get("range"))
+	}
+	if q.Get("from") != "" && q.Get("to") != "" && q.Get("start_time") == "" {
+		fromTime, err1 := time.Parse("2006-01-02-15:04:05", q.Get("from"))
+		toTime, err2 := time.Parse("2006-01-02-15:04:05", q.Get("to"))
+		if err1 == nil && err2 == nil {
+			q.Set("start_time", fmt.Sprintf("%d", fromTime.Unix()))
+			q.Set("end_time", fmt.Sprintf("%d", toTime.Unix()))
+		}
+	}
+	r.URL.RawQuery = q.Encode()
+
+	// Use shared time filter with raw/rollup routing
+	timeFilter, bucketInterval, useRaw := trafficTimeFilter(r)
+
+	// Parse aggregation mode for RTT and jitter
+	aggParam := r.URL.Query().Get("agg")
+	if aggParam == "" {
+		aggParam = "avg"
+	}
+
+	start := time.Now()
+	var points []LinkLatencyDataPoint
+
+	if useRaw {
+		// Raw fact table path — complex query with display timestamps and sub-bucket loss
+		topoDisplayTs := "if(h.sampling_interval_us > 0 AND f.sample_index >= h.latest_sample_index - 1000, f.ingested_at, f.event_ts)"
+		topoHeaderJoin := `LEFT JOIN (
+				SELECT origin_device_pk, target_device_pk, link_pk AS _hdr_link_pk, epoch,
+					   max(latest_sample_index) AS latest_sample_index,
+					   any(sampling_interval_us) AS sampling_interval_us
+				FROM fact_dz_device_link_latency_sample_header
+				GROUP BY origin_device_pk, target_device_pk, link_pk, epoch
+			) h ON f.origin_device_pk = h.origin_device_pk
+				AND f.target_device_pk = h.target_device_pk
+				AND f.link_pk = h._hdr_link_pk
+				AND f.epoch = h.epoch`
+		displayBucketExpr := fmt.Sprintf("toStartOfInterval(%s, INTERVAL %s)", topoDisplayTs, bucketInterval)
+		lossBucketExpr := fmt.Sprintf("toStartOfInterval(%s, INTERVAL 5 MINUTE)", topoDisplayTs)
+
+		// Map agg to SQL function for RTT and jitter
+		var rttAggFunc, jitterAggFunc string
+		switch aggParam {
+		case "min":
+			rttAggFunc = "min"
+			jitterAggFunc = "min"
+		case "p50":
+			rttAggFunc = "quantile(0.5)"
+			jitterAggFunc = "quantile(0.5)"
+		case "p90":
+			rttAggFunc = "quantile(0.9)"
+			jitterAggFunc = "quantile(0.9)"
+		case "p95":
+			rttAggFunc = "quantile(0.95)"
+			jitterAggFunc = "quantile(0.95)"
+		case "p99":
+			rttAggFunc = "quantile(0.99)"
+			jitterAggFunc = "quantile(0.99)"
+		case "max":
+			rttAggFunc = "max"
+			jitterAggFunc = "max"
+		default: // avg
+			rttAggFunc = "avg"
+			jitterAggFunc = "avg"
+		}
+
+		query := fmt.Sprintf(`
+			WITH loss_sub AS (
+				SELECT
+					%s as display_bucket,
+					countIf(f.loss) * 100.0 / count(*) as loss_pct
+				FROM fact_dz_device_link_latency f
+				JOIN dz_links_current l ON f.link_pk = l.pk
+				%s
+				WHERE %s AND f.link_pk = $1
+				GROUP BY display_bucket, %s
+			),
+			loss_max AS (
+				SELECT display_bucket, max(loss_pct) as loss_pct
+				FROM loss_sub
+				GROUP BY display_bucket
+			)
+			SELECT
+				formatDateTime(%s, '%%Y-%%m-%%dT%%H:%%i:%%SZ') as time_bucket,
+				avg(f.rtt_us) / 1000.0 as avg_rtt_ms,
+				%s(f.rtt_us) / 1000.0 as p95_rtt_ms,
+				avg(abs(f.ipdv_us)) / 1000.0 as avg_jitter_ms,
+				COALESCE(max(lm.loss_pct), 0) as loss_pct,
+				avgIf(f.rtt_us, f.origin_device_pk = l.side_a_pk) / 1000.0 as avg_rtt_a_to_z_ms,
+				%sIf(f.rtt_us, f.origin_device_pk = l.side_a_pk) / 1000.0 as p95_rtt_a_to_z_ms,
+				avgIf(f.rtt_us, f.origin_device_pk = l.side_z_pk) / 1000.0 as avg_rtt_z_to_a_ms,
+				%sIf(f.rtt_us, f.origin_device_pk = l.side_z_pk) / 1000.0 as p95_rtt_z_to_a_ms,
+				%sIf(abs(f.ipdv_us), f.origin_device_pk = l.side_a_pk) / 1000.0 as jitter_a_to_z_ms,
+				%sIf(abs(f.ipdv_us), f.origin_device_pk = l.side_z_pk) / 1000.0 as jitter_z_to_a_ms
+			FROM fact_dz_device_link_latency f
+			JOIN dz_links_current l ON f.link_pk = l.pk
+			%s
+			LEFT JOIN loss_max lm ON lm.display_bucket = %s
+			WHERE %s AND f.link_pk = $2
+			GROUP BY %s
+			ORDER BY %s`,
+			displayBucketExpr, topoHeaderJoin, timeFilter, lossBucketExpr,
+			displayBucketExpr,
+			rttAggFunc,
+			rttAggFunc, rttAggFunc,
+			jitterAggFunc, jitterAggFunc,
+			topoHeaderJoin, displayBucketExpr,
+			timeFilter, displayBucketExpr, displayBucketExpr)
+
+		points = scanLatencyPoints(ctx, query, pk, pk)
+	} else {
+		// Rollup path — read from link_rollup_5m
+		var aggPrefix string
+		switch aggParam {
+		case "min":
+			aggPrefix = "min"
+		case "p50":
+			aggPrefix = "p50"
+		case "p90":
+			aggPrefix = "p90"
+		case "p95":
+			aggPrefix = "p95"
+		case "p99":
+			aggPrefix = "p99"
+		case "max":
+			aggPrefix = "max"
+		default:
+			aggPrefix = "avg"
+		}
+
+		rollupAggFunc := "AVG"
+		switch aggParam {
+		case "max":
+			rollupAggFunc = "MAX"
+		case "min":
+			rollupAggFunc = "MIN"
+		}
+
+		query := fmt.Sprintf(`
+			SELECT
+				formatDateTime(toStartOfInterval(bucket_ts, INTERVAL %s), '%%Y-%%m-%%dT%%H:%%i:%%SZ') as time_bucket,
+				AVG(a_avg_rtt_us + z_avg_rtt_us) / 2.0 / 1000.0 as avg_rtt_ms,
+				%s(greatest(a_%s_rtt_us, z_%s_rtt_us)) / 1000.0 as p95_rtt_ms,
+				AVG(a_avg_jitter_us + z_avg_jitter_us) / 2.0 / 1000.0 as avg_jitter_ms,
+				MAX(greatest(a_loss_pct, z_loss_pct)) as loss_pct,
+				%s(a_%s_rtt_us) / 1000.0 as avg_rtt_a_to_z_ms,
+				%s(a_%s_rtt_us) / 1000.0 as p95_rtt_a_to_z_ms,
+				%s(z_%s_rtt_us) / 1000.0 as avg_rtt_z_to_a_ms,
+				%s(z_%s_rtt_us) / 1000.0 as p95_rtt_z_to_a_ms,
+				%s(a_%s_jitter_us) / 1000.0 as jitter_a_to_z_ms,
+				%s(z_%s_jitter_us) / 1000.0 as jitter_z_to_a_ms
+			FROM link_rollup_5m
+			WHERE %s AND link_pk = $1
+			GROUP BY time_bucket
+			ORDER BY time_bucket`,
+			bucketInterval,
+			rollupAggFunc, aggPrefix, aggPrefix,
+			"AVG", "avg", // avg_rtt A→Z always avg for the "avg" column
+			rollupAggFunc, aggPrefix, // p95_rtt A→Z uses selected agg
+			"AVG", "avg", // avg_rtt Z→A always avg
+			rollupAggFunc, aggPrefix, // p95_rtt Z→A uses selected agg
+			rollupAggFunc, aggPrefix, // jitter A→Z
+			rollupAggFunc, aggPrefix, // jitter Z→A
+			timeFilter)
+
+		points = scanLatencyPoints(ctx, query, pk)
+	}
+
+	duration := time.Since(start)
+	metrics.RecordClickHouseQuery(duration, nil)
 
 	if points == nil {
 		points = []LinkLatencyDataPoint{}
@@ -1250,95 +1288,46 @@ func GetLatencyHistory(w http.ResponseWriter, r *http.Request) {
 		metro1, metro2 = metro2, metro1
 	}
 
-	// Parse time range (default 24h)
-	timeRange := r.URL.Query().Get("range")
-	if timeRange == "" {
-		timeRange = "24h"
-	}
-
-	var intervalHours int
-	switch timeRange {
-	case "1h":
-		intervalHours = 1
-	case "6h":
-		intervalHours = 6
-	case "12h":
-		intervalHours = 12
-	case "3d":
-		intervalHours = 72
-	case "7d":
-		intervalHours = 168
-	default:
-		intervalHours = 24
-	}
-
-	// Calculate bucket size (aim for ~48 points)
-	bucketMinutes := (intervalHours * 60) / 48
-	if bucketMinutes < 5 {
-		bucketMinutes = 5
-	}
-
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 
 	start := time.Now()
 
-	// Query to get time-bucketed latency data for both DZ and Internet
-	query := fmt.Sprintf(`
+	// Fixed 24h window with 30-minute buckets (48 points).
+	// DZ side uses link_rollup_5m (re-aggregated to 30m); internet side uses raw fact table.
+	query := `
 		WITH
-		lookback AS (
-			SELECT now() - INTERVAL %d HOUR AS min_ts
-		),
 		time_buckets AS (
-			SELECT
-				toStartOfInterval(event_ts, INTERVAL %d MINUTE) AS bucket
-			FROM (
-				SELECT arrayJoin(
-					arrayMap(
-						x -> now() - INTERVAL x * %d MINUTE,
-						range(0, %d)
-					)
-				) AS event_ts
-			)
+			SELECT toStartOfInterval(
+				now() - INTERVAL number * 30 MINUTE, INTERVAL 30 MINUTE
+			) AS bucket
+			FROM numbers(48)
 		),
 		dz_data AS (
 			SELECT
-				toStartOfInterval(if(h.sampling_interval_us > 0 AND f.sample_index >= h.latest_sample_index - 1000, f.ingested_at, f.event_ts), INTERVAL %d MINUTE) AS bucket,
-				round(avg(f.rtt_us) / 1000.0, 2) AS avg_rtt_ms,
-				round(avg(f.ipdv_us) / 1000.0, 2) AS avg_jitter_ms,
-				count() AS sample_count
-			FROM fact_dz_device_link_latency f
-			CROSS JOIN lookback
-			JOIN dz_links_current l ON f.link_pk = l.pk
+				toStartOfInterval(r.bucket_ts, INTERVAL 30 MINUTE) AS bucket,
+				round(AVG((r.a_avg_rtt_us + r.z_avg_rtt_us) / 2.0) / 1000.0, 2) AS avg_rtt_ms,
+				round(AVG((r.a_avg_jitter_us + r.z_avg_jitter_us) / 2.0) / 1000.0, 2) AS avg_jitter_ms,
+				SUM(r.a_samples + r.z_samples) AS sample_count
+			FROM link_rollup_5m r
+			JOIN dz_links_current l ON r.link_pk = l.pk
 			JOIN dz_devices_current da ON l.side_a_pk = da.pk
 			JOIN dz_devices_current dz ON l.side_z_pk = dz.pk
 			JOIN dz_metros_current ma ON da.metro_pk = ma.pk
 			JOIN dz_metros_current mz ON dz.metro_pk = mz.pk
-			LEFT JOIN (
-				SELECT origin_device_pk, target_device_pk, link_pk AS _hdr_link_pk, epoch,
-					   max(latest_sample_index) AS latest_sample_index,
-					   any(sampling_interval_us) AS sampling_interval_us
-				FROM fact_dz_device_link_latency_sample_header
-				GROUP BY origin_device_pk, target_device_pk, link_pk, epoch
-			) h ON f.origin_device_pk = h.origin_device_pk
-				AND f.target_device_pk = h.target_device_pk
-				AND f.link_pk = h._hdr_link_pk
-				AND f.epoch = h.epoch
-			WHERE f.ingested_at >= lookback.min_ts
-				AND f.link_pk != ''
-				AND f.loss = false
+			WHERE r.bucket_ts >= now() - INTERVAL 24 HOUR
+				AND r.link_pk != ''
 				AND least(ma.code, mz.code) = $1
 				AND greatest(ma.code, mz.code) = $2
 			GROUP BY bucket
 		),
 		inet_data AS (
 			SELECT
-				toStartOfInterval(if(ih.sampling_interval_us > 0 AND f.sample_index >= ih.latest_sample_index - 1000, f.ingested_at, f.event_ts), INTERVAL %d MINUTE) AS bucket,
+				toStartOfInterval(if(ih.sampling_interval_us > 0 AND f.sample_index >= ih.latest_sample_index - 1000, f.ingested_at, f.event_ts), INTERVAL 30 MINUTE) AS bucket,
 				round(avg(f.rtt_us) / 1000.0, 2) AS avg_rtt_ms,
 				round(avg(f.ipdv_us) / 1000.0, 2) AS avg_jitter_ms,
 				count() AS sample_count
 			FROM fact_dz_internet_metro_latency f
-			CROSS JOIN lookback
 			LEFT JOIN (
 				SELECT origin_metro_pk, target_metro_pk, data_provider AS _hdr_data_provider, epoch,
 					   latest_sample_index, sampling_interval_us
@@ -1349,7 +1338,7 @@ func GetLatencyHistory(w http.ResponseWriter, r *http.Request) {
 				AND f.epoch = ih.epoch
 			JOIN dz_metros_current ma ON f.origin_metro_pk = ma.pk
 			JOIN dz_metros_current mz ON f.target_metro_pk = mz.pk
-			WHERE f.ingested_at >= lookback.min_ts
+			WHERE f.ingested_at >= now() - INTERVAL 24 HOUR
 				AND least(ma.code, mz.code) = $1
 				AND greatest(ma.code, mz.code) = $2
 			GROUP BY bucket
@@ -1365,10 +1354,10 @@ func GetLatencyHistory(w http.ResponseWriter, r *http.Request) {
 		FROM time_buckets tb
 		LEFT JOIN dz_data dz ON tb.bucket = dz.bucket
 		LEFT JOIN inet_data inet ON tb.bucket = inet.bucket
-		WHERE tb.bucket >= now() - INTERVAL %d HOUR
-		  AND tb.bucket < toStartOfInterval(now(), INTERVAL %d MINUTE)
+		WHERE tb.bucket >= now() - INTERVAL 24 HOUR
+		  AND tb.bucket < toStartOfInterval(now(), INTERVAL 30 MINUTE)
 		ORDER BY tb.bucket ASC
-	`, intervalHours, bucketMinutes, bucketMinutes, 48, bucketMinutes, bucketMinutes, intervalHours, bucketMinutes)
+	`
 
 	rows, err := envDB(ctx).Query(ctx, query, metro1, metro2)
 	duration := time.Since(start)

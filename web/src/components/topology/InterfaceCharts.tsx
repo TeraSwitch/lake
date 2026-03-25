@@ -1,11 +1,12 @@
 import { useMemo, useCallback, useRef, useState } from 'react'
-import { useQuery, keepPreviousData } from '@tanstack/react-query'
+import { Loader2, RefreshCw } from 'lucide-react'
+import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
 import uPlot from 'uplot'
 import { useChartLegend, type UseChartLegendReturn } from '@/hooks/use-chart-legend'
 import { useUPlotChart } from '@/hooks/use-uplot-chart'
 import { useUPlotLegendSync } from '@/hooks/use-uplot-legend-sync'
 import { InterfaceLegendTable, type InterfaceValues } from './InterfaceLegendTable'
-import { fetchTrafficHistoryByInterface, formatChartAxisRate, formatChartTooltipRate, formatHoveredTime, resolveAutoBucket, bucketLabels, type TimeRange, type TimeRangePreset, type InterfaceTrafficPoint, type BucketSize, type TrafficMetric } from './utils'
+import { fetchTrafficHistoryByInterface, formatChartAxisRate, formatChartTooltipRate, formatHoveredTime, resolveAutoBucket, bucketLabels, type TimeRange, type TimeRangePreset, type InterfaceTrafficPoint, type BucketSize, type TrafficMetric, type TrafficView } from './utils'
 import { fetchDeviceInterfaceHistory } from '@/lib/api'
 import { TrafficFilters } from './TimeRangeSelector'
 
@@ -231,8 +232,8 @@ interface InterfaceChartsProps {
   onBucketChange?: (bucket: BucketSize) => void
   metric?: TrafficMetric
   onMetricChange?: (metric: TrafficMetric) => void
-  trafficView?: 'avg' | 'peak'
-  onTrafficViewChange?: (view: 'avg' | 'peak') => void
+  trafficView?: TrafficView
+  onTrafficViewChange?: (view: TrafficView) => void
   /** Additional CSS classes for the outer wrapper */
   className?: string
 }
@@ -394,14 +395,29 @@ function buildHealthColumnar(
   return { data: arrays as uPlot.AlignedData, hasData }
 }
 
+function RefreshButton({ fetching, onClick }: { fetching: boolean; onClick: () => void }) {
+  if (fetching) return <Loader2 className="h-3 w-3 animate-spin" />
+  return (
+    <button onClick={onClick} className="opacity-0 group-hover/chart:opacity-100 transition-opacity text-muted-foreground hover:text-foreground" title="Refresh">
+      <RefreshCw className="h-3 w-3" />
+    </button>
+  )
+}
+
 export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabels, bucket: controlledBucket, onBucketChange, metric: controlledMetric, onMetricChange, trafficView: controlledTrafficView, onTrafficViewChange, className }: InterfaceChartsProps) {
+  const queryClient = useQueryClient()
   const effectiveRange = timeRange ?? { preset: '24h' as const }
 
   const timeRangeStr = effectiveRange.preset === 'custom' ? 'custom' : effectiveRange.preset
 
+  const chartScales = useMemo((): uPlot.Scales => ({
+    x: { time: true },
+    y: { auto: true },
+  }), [])
+
   const [internalBucket, setInternalBucket] = useState<BucketSize>('auto')
   const [internalMetric, setInternalMetric] = useState<TrafficMetric>('throughput')
-  const [internalTrafficView, setInternalTrafficView] = useState<'avg' | 'peak'>('avg')
+  const [internalTrafficView, setInternalTrafficView] = useState<TrafficView>('peak')
 
   const bucket = controlledBucket ?? internalBucket
   const setBucket = onBucketChange ?? setInternalBucket
@@ -426,17 +442,20 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
   const discardChartRef = useRef<HTMLDivElement>(null)
   const transitionChartRef = useRef<HTMLDivElement>(null)
 
+  // Map trafficView to agg param: 'peak' → 'max', 'avg' → 'avg', else pass through
+  const aggParam = trafficView === 'peak' ? 'max' : trafficView
+
   // Traffic data
-  const { data: rawPoints, isLoading: trafficLoading, error: trafficError } = useQuery({
-    queryKey: ['topology-traffic-interface', entityType, entityPk, effectiveRange, bucket, metric],
-    queryFn: () => fetchTrafficHistoryByInterface(entityType, entityPk, effectiveRange, bucket, metric),
+  const { data: rawPoints, isLoading: trafficLoading, isFetching: trafficFetching, error: trafficError } = useQuery({
+    queryKey: ['topology-traffic-interface', entityType, entityPk, effectiveRange, bucket, metric, aggParam],
+    queryFn: () => fetchTrafficHistoryByInterface(entityType, entityPk, effectiveRange, bucket, metric, aggParam),
     refetchInterval: 60000,
     retry: 2,
     placeholderData: keepPreviousData,
   })
 
   // Health data (only for devices)
-  const { data: historyData, isLoading: healthLoading } = useQuery({
+  const { data: historyData, isLoading: healthLoading, isFetching: healthFetching } = useQuery({
     queryKey: ['device-interface-health', entityPk, timeRangeStr],
     queryFn: () => fetchDeviceInterfaceHistory(entityPk, timeRangeStr),
     refetchInterval: 60000,
@@ -607,6 +626,8 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     setTransitionHoveredIdx(idx)
   }, [])
 
+  // 'avg' view uses avgData (always computed as average), everything else uses peakData
+  // (which contains whichever agg was requested via the agg param)
   const trafficData = trafficView === 'avg' ? avgData : peakData
 
   // Charts
@@ -616,6 +637,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     series: trafficSeries,
     height: 144,
     axes: trafficAxes,
+    scales: chartScales,
     onCursorIdx: handleCursorIdx,
   })
 
@@ -625,6 +647,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     series: healthBidirectionalSeries,
     height: 144,
     axes: healthAxes,
+    scales: chartScales,
     onCursorIdx: handleErrorCursorIdx,
   })
 
@@ -634,6 +657,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     series: healthSeries,
     height: 144,
     axes: healthAxes,
+    scales: chartScales,
     onCursorIdx: handleFcsErrorCursorIdx,
   })
 
@@ -643,6 +667,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     series: healthBidirectionalSeries,
     height: 144,
     axes: healthAxes,
+    scales: chartScales,
     onCursorIdx: handleDiscardCursorIdx,
   })
 
@@ -652,6 +677,7 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
     series: healthSeries,
     height: 144,
     axes: healthAxes,
+    scales: chartScales,
     onCursorIdx: handleTransitionCursorIdx,
   })
 
@@ -744,9 +770,16 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
   return (
     <div className="space-y-6">
       {errorHealth?.hasData && (
-        <div className={className}>
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
-            Errors</div>
+        <div className={`${className} group/chart`}>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wider mb-1">
+            <span>Errors</span>
+            <RefreshButton fetching={healthFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ['device-interface-history'] })} />
+          </div>
+          <div className="h-0.5 w-full overflow-hidden rounded-full mb-1">
+            {healthFetching && (
+              <div className="h-full w-1/3 bg-muted-foreground/40 animate-[shimmer_1.5s_ease-in-out_infinite] rounded-full" />
+            )}
+          </div>
           <div ref={errorChartRef} className="h-36" />
           <HealthLegendTable
             interfaces={interfaces}
@@ -763,9 +796,16 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
       )}
 
       {fcsErrorHealth?.hasData && (
-        <div className={className}>
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
-            FCS Errors</div>
+        <div className={`${className} group/chart`}>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wider mb-1">
+            <span>FCS Errors</span>
+            <RefreshButton fetching={healthFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ['device-interface-history'] })} />
+          </div>
+          <div className="h-0.5 w-full overflow-hidden rounded-full mb-1">
+            {healthFetching && (
+              <div className="h-full w-1/3 bg-muted-foreground/40 animate-[shimmer_1.5s_ease-in-out_infinite] rounded-full" />
+            )}
+          </div>
           <div ref={fcsErrorChartRef} className="h-36" />
           <HealthLegendTable
             interfaces={interfaces}
@@ -781,9 +821,16 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
       )}
 
       {discardHealth?.hasData && (
-        <div className={className}>
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
-            Discards</div>
+        <div className={`${className} group/chart`}>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wider mb-1">
+            <span>Discards</span>
+            <RefreshButton fetching={healthFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ['device-interface-history'] })} />
+          </div>
+          <div className="h-0.5 w-full overflow-hidden rounded-full mb-1">
+            {healthFetching && (
+              <div className="h-full w-1/3 bg-muted-foreground/40 animate-[shimmer_1.5s_ease-in-out_infinite] rounded-full" />
+            )}
+          </div>
           <div ref={discardChartRef} className="h-36" />
           <HealthLegendTable
             interfaces={interfaces}
@@ -800,9 +847,16 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
       )}
 
       {transitionHealth?.hasData && (
-        <div className={className}>
-          <div className="text-xs text-muted-foreground uppercase tracking-wider mb-2">
-            Carrier Transitions</div>
+        <div className={`${className} group/chart`}>
+          <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wider mb-1">
+            <span>Carrier Transitions</span>
+            <RefreshButton fetching={healthFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ['device-interface-history'] })} />
+          </div>
+          <div className="h-0.5 w-full overflow-hidden rounded-full mb-1">
+            {healthFetching && (
+              <div className="h-full w-1/3 bg-muted-foreground/40 animate-[shimmer_1.5s_ease-in-out_infinite] rounded-full" />
+            )}
+          </div>
           <div ref={transitionChartRef} className="h-36" />
           <HealthLegendTable
             interfaces={interfaces}
@@ -817,10 +871,12 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
         </div>
       )}
 
-      <div className={className}>
-        <div className="flex items-center justify-between mb-2">
-          <div className="text-xs text-muted-foreground uppercase tracking-wider">
-            {trafficView === 'avg' ? 'Avg' : 'Peak'} Traffic</div>
+      <div className={`${className} group/chart`}>
+        <div className="flex items-center justify-between mb-1">
+          <div className="flex items-center gap-2 text-xs text-muted-foreground uppercase tracking-wider">
+            <span>{trafficView === 'avg' ? 'Avg' : trafficView === 'peak' ? 'Max' : trafficView.toUpperCase()} Traffic</span>
+            <RefreshButton fetching={trafficFetching} onClick={() => queryClient.invalidateQueries({ queryKey: ['topology-traffic-interface'] })} />
+          </div>
           <TrafficFilters
             bucket={!controlledBucket ? bucket : undefined}
             onBucketChange={!controlledBucket ? setBucket : undefined}
@@ -830,6 +886,11 @@ export function InterfaceCharts({ entityType, entityPk, timeRange, interfaceLabe
             trafficView={trafficView}
             onTrafficViewChange={setTrafficView}
           />
+        </div>
+        <div className="h-0.5 w-full overflow-hidden rounded-full mb-1">
+          {trafficFetching && (
+            <div className="h-full w-1/3 bg-muted-foreground/40 animate-[shimmer_1.5s_ease-in-out_infinite] rounded-full" />
+          )}
         </div>
         <div ref={trafficChartRef} className="h-36" />
 
