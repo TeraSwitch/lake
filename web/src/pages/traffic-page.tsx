@@ -1,9 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, Loader2, Network } from 'lucide-react'
+import { ChevronDown, Network } from 'lucide-react'
 import { fetchTrafficData, fetchTopology } from '@/lib/api'
 import { TrafficChart } from '@/components/traffic-chart-uplot'
-import { DiscardsChart } from '@/components/discards-chart'
 import { DashboardProvider, useDashboard, dashboardFilterParams, resolveAutoBucket } from '@/components/traffic-dashboard/dashboard-context'
 import { DashboardFilters, DashboardFilterBadges } from '@/components/traffic-dashboard/dashboard-filters'
 import { PageHeader } from '@/components/page-header'
@@ -50,11 +49,16 @@ function LazyChart({ children, height = 600 }: { children: React.ReactNode; heig
   )
 }
 
-type AggMethod = 'max' | 'avg'
+type AggMethod = 'max' | 'avg' | 'min' | 'p50' | 'p90' | 'p95' | 'p99'
 
 const aggLabels: Record<AggMethod, string> = {
   'max': 'Max',
+  'p99': 'P99',
+  'p95': 'P95',
+  'p90': 'P90',
+  'p50': 'P50',
   'avg': 'Average',
+  'min': 'Min',
 }
 
 type ChartSection = 'non-tunnel-stacked' | 'non-tunnel' | 'tunnel-stacked' | 'tunnel' | 'discards'
@@ -95,7 +99,7 @@ function AggSelector({
         <>
           <div className="fixed inset-0 z-40" onClick={() => setIsOpen(false)} />
           <div className="absolute right-0 top-full mt-1 z-50 bg-popover border border-border rounded-md shadow-lg py-1 min-w-[140px]">
-            {(['max', 'avg'] as AggMethod[]).map((agg) => (
+            {(['max', 'p99', 'p95', 'p90', 'p50', 'avg', 'min'] as AggMethod[]).map((agg) => (
               <button
                 key={agg}
                 onClick={() => {
@@ -242,10 +246,8 @@ function TrafficPageContent() {
     }
   }, [allTrafficData, intfType])
 
-  const tunnelLoading = trafficLoading
   const tunnelFetching = trafficFetching
   const tunnelError = trafficError
-  const nonTunnelLoading = trafficLoading
   const nonTunnelFetching = trafficFetching
   const nonTunnelError = trafficError
 
@@ -259,18 +261,50 @@ function TrafficPageContent() {
     refetchInterval: dashboardState.refetchInterval,
   })
 
-  // Derive discards data from the combined traffic response
-  const discardsData = useMemo(() => {
-    if (!nonTunnelData) return { points: [], series: [] }
-    return {
-      points: nonTunnelData.points
-        .filter(p => p.in_discards > 0 || p.out_discards > 0)
-        .map(p => ({ time: p.time, device_pk: p.device_pk, device: p.device, intf: p.intf, in_discards: p.in_discards, out_discards: p.out_discards })),
-      series: nonTunnelData.discards_series,
+  // Derive interface counters (errors/discards/fcs/carrier) from the traffic response.
+  // Transforms counter fields into TrafficPoint-compatible format for the TrafficChart.
+  const countersData = useMemo(() => {
+    if (!nonTunnelData) return null
+    // Sum all counter types per interface to find which interfaces have any events
+    const intfTotals = new Map<string, { device: string; devicePk: string; intf: string; total: number }>()
+    for (const p of nonTunnelData.points) {
+      const total = p.in_discards + p.out_discards + p.in_errors + p.out_errors + p.in_fcs_errors + p.carrier_transitions
+      if (total === 0) continue
+      const key = `${p.device}-${p.intf}`
+      const existing = intfTotals.get(key)
+      if (existing) {
+        existing.total += total
+      } else {
+        intfTotals.set(key, { device: p.device, devicePk: p.device_pk, intf: p.intf, total })
+      }
     }
+    if (intfTotals.size === 0) return null
+
+    // Build points using combined counters as in/out values:
+    // in = in_discards + in_errors + in_fcs_errors + carrier_transitions
+    // out = out_discards + out_errors (negated for bidirectional)
+    const points = nonTunnelData.points
+      .filter(p => {
+        const total = p.in_discards + p.out_discards + p.in_errors + p.out_errors + p.in_fcs_errors + p.carrier_transitions
+        return total > 0
+      })
+      .map(p => ({
+        ...p,
+        in_bps: p.in_discards + p.in_errors + p.in_fcs_errors + p.carrier_transitions,
+        out_bps: p.out_discards + p.out_errors,
+      }))
+
+    // Build series info sorted by total events
+    const sorted = [...intfTotals.entries()].sort((a, b) => b[1].total - a[1].total)
+    const series = sorted.flatMap(([, info]) => [
+      { key: `${info.device}-${info.intf} (in)`, device: info.device, intf: info.intf, direction: 'in' as const, mean: 0 },
+      { key: `${info.device}-${info.intf} (out)`, device: info.device, intf: info.intf, direction: 'out' as const, mean: 0 },
+    ])
+
+    return { points, series }
   }, [nonTunnelData])
-  const discardsLoading = trafficLoading
-  const discardsFetching = trafficFetching
+  const countersLoading = trafficLoading
+  const countersFetching = trafficFetching
 
   // Build link lookup: device_pk + interface -> link info
   const linkLookup = useMemo(() => {
@@ -308,21 +342,26 @@ function TrafficPageContent() {
   const renderChartSection = (section: ChartSection) => {
     if (!isSectionAllowed(section)) return null
 
-    // Handle discards chart separately
+    // Handle counters chart (errors/discards/fcs/carrier) separately
     if (section === 'discards') {
+      if (!countersData && !countersLoading) {
+        return (
+          <div key={section} className="border border-border rounded-lg p-4 flex items-center justify-center h-[400px]">
+            <p className="text-green-600 dark:text-green-400">No errors or discards in the selected time range</p>
+          </div>
+        )
+      }
       return (
-        <div key={section} className="border border-border rounded-lg p-4 relative">
-          {discardsFetching && !discardsLoading && (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/50 rounded-lg">
-              <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-            </div>
-          )}
+        <div key={section} className="border border-border rounded-lg p-4">
           <LazyChart key={`${section}-${layout}`}>
-            <DiscardsChart
-              title="Interface Discards"
-              data={discardsData?.points || []}
-              series={discardsData?.series || []}
-              isLoading={discardsLoading}
+            <TrafficChart
+              title="Interface Errors & Discards"
+              data={countersData?.points || []}
+              series={countersData?.series || []}
+              bidirectional={bidirectional}
+              onTimeRangeSelect={dashboardState.setCustomRange}
+              metric="counters"
+              loading={countersFetching}
             />
           </LazyChart>
         </div>
@@ -359,50 +398,33 @@ function TrafficPageContent() {
     const title = `${typeLabel} ${metricLabel} Per Device & Interface${stacked ? ' (stacked)' : ''}`
 
     const data = isTunnel ? tunnelData : nonTunnelData
-    const loading = isTunnel ? tunnelLoading : nonTunnelLoading
     const fetching = isTunnel ? tunnelFetching : nonTunnelFetching
     const error = isTunnel ? tunnelError : nonTunnelError
 
     return (
-      <div key={section} className="border border-border rounded-lg p-4 relative">
-        {fetching && !loading && (
-          <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/50 rounded-lg">
-            <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
-          </div>
-        )}
+      <div key={section} className="border border-border rounded-lg p-4">
         <LazyChart key={section}>
-          {loading ? (
+          {error ? (
             <div className="flex flex-col space-y-2">
-              <h3 className="text-lg font-semibold">{title}</h3>
-              <div className="flex items-center justify-center h-[400px]">
-                <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-semibold">{title}</h3>
               </div>
-            </div>
-          ) : error ? (
-            <div className="flex flex-col space-y-2">
-              <h3 className="text-lg font-semibold">{title}</h3>
               <div className="border border-border rounded-lg p-8 flex items-center justify-center h-[400px]">
                 <p className="text-muted-foreground">Error: {(error as Error).message || String(error)}</p>
               </div>
             </div>
-          ) : data ? (
+          ) : (
             <TrafficChart
               title={title}
-              data={data.points}
-              series={data.series}
+              data={data?.points || []}
+              series={data?.series || []}
               stacked={stacked}
               linkLookup={linkLookup}
               bidirectional={bidirectional}
               onTimeRangeSelect={dashboardState.setCustomRange}
               metric={metric}
+              loading={fetching}
             />
-          ) : (
-            <div className="flex flex-col space-y-2">
-              <h3 className="text-lg font-semibold">{title}</h3>
-              <div className="border border-border rounded-lg p-8 flex items-center justify-center h-[400px]">
-                <p className="text-muted-foreground">No data available</p>
-              </div>
-            </div>
           )}
         </LazyChart>
       </div>
@@ -412,16 +434,19 @@ function TrafficPageContent() {
   const gridClass = layout === '2x2' ? 'grid grid-cols-1 lg:grid-cols-2 gap-6' : 'space-y-6'
 
   return (
-    <div className="flex-1 overflow-auto">
-      <div className="max-w-7xl mx-auto px-4 sm:px-8 py-8">
-        <PageHeader
-          icon={Network}
-          title="Interfaces"
-          actions={<DashboardFilters excludeMetrics={['utilization']} />}
-        />
-        <div className="-mt-3 mb-6 flex flex-col gap-3">
+    <div className="flex-1 flex flex-col overflow-hidden">
+      {/* Sticky header */}
+      <div className="flex-none bg-background border-b border-border px-4 sm:px-8 pt-6 pb-4 z-10">
+        <div className="[&>div]:mb-0">
+          <PageHeader
+            icon={Network}
+            title="Interfaces"
+            actions={<DashboardFilters excludeMetrics={['utilization']} />}
+          />
+        </div>
+        <div className="flex items-center gap-3 mt-3">
           <DashboardFilterBadges />
-          <div className="flex items-center gap-3 flex-wrap justify-end">
+          <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
             <button
               onClick={() => setBidirectional(!bidirectional)}
               className={`px-3 py-1.5 text-sm border rounded-md transition-colors inline-flex items-center gap-1.5 ${
@@ -437,7 +462,10 @@ function TrafficPageContent() {
             <AggSelector value={aggMethod} onChange={setAggMethod} />
           </div>
         </div>
+      </div>
 
+      {/* Scrollable content */}
+      <div className="flex-1 overflow-auto px-4 sm:px-8 py-6">
         {/* Truncation warning */}
         {(tunnelData?.truncated || nonTunnelData?.truncated) && (
           <div className="mb-4 px-4 py-3 bg-yellow-500/10 border border-yellow-500/30 rounded-md text-sm text-yellow-700 dark:text-yellow-200">
@@ -456,7 +484,7 @@ function TrafficPageContent() {
 
 export function TrafficPage() {
   return (
-    <DashboardProvider defaultTimeRange="3h">
+    <DashboardProvider defaultTimeRange="24h">
       <TrafficPageContent />
     </DashboardProvider>
   )

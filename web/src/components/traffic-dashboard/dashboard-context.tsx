@@ -1,5 +1,5 @@
 /* eslint-disable react-refresh/only-export-components */
-import { createContext, useContext, useState, useMemo, useCallback, type ReactNode } from 'react'
+import { createContext, useContext, useState, useMemo, useCallback, useTransition, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 
 export type TimeRange = '1h' | '3h' | '6h' | '12h' | '24h' | '3d' | '7d' | '14d' | '30d' | 'custom'
@@ -15,7 +15,7 @@ export interface SelectedEntity {
   intf?: string
 }
 
-export type BucketSize = 'auto' | '10 SECOND' | '30 SECOND' | '1 MINUTE' | '5 MINUTE' | '10 MINUTE' | '30 MINUTE' | '1 HOUR'
+export type BucketSize = 'auto' | '10 SECOND' | '30 SECOND' | '1 MINUTE' | '5 MINUTE' | '10 MINUTE' | '15 MINUTE' | '30 MINUTE' | '1 HOUR' | '4 HOUR' | '12 HOUR' | '1 DAY'
 
 export const bucketLabels: Record<BucketSize, string> = {
   'auto': 'Auto',
@@ -24,14 +24,18 @@ export const bucketLabels: Record<BucketSize, string> = {
   '1 MINUTE': '1m',
   '5 MINUTE': '5m',
   '10 MINUTE': '10m',
+  '15 MINUTE': '15m',
   '30 MINUTE': '30m',
   '1 HOUR': '1h',
+  '4 HOUR': '4h',
+  '12 HOUR': '12h',
+  '1 DAY': '1d',
 }
 
-const validBuckets: Set<string> = new Set(['auto', '10 SECOND', '30 SECOND', '1 MINUTE', '5 MINUTE', '10 MINUTE', '30 MINUTE', '1 HOUR'])
+const validBuckets: Set<string> = new Set(['auto', '10 SECOND', '30 SECOND', '1 MINUTE', '5 MINUTE', '10 MINUTE', '15 MINUTE', '30 MINUTE', '1 HOUR', '4 HOUR', '12 HOUR', '1 DAY'])
 
 // Resolve auto bucket to an effective bucket size based on time range.
-// This mirrors the backend's effectiveBucket() function.
+// Sub-5m buckets use raw fact table data; >= 5m uses pre-computed rollups.
 export function resolveAutoBucket(timeRange: TimeRange): BucketSize {
   switch (timeRange) {
     case '1h':
@@ -39,19 +43,21 @@ export function resolveAutoBucket(timeRange: TimeRange): BucketSize {
     case '3h':
       return '30 SECOND'
     case '6h':
+      return '1 MINUTE'
     case '12h':
-      return '1 MINUTE'
-    case '24h':
-      return '5 MINUTE'
-    case '3d':
       return '10 MINUTE'
-    case '7d':
+    case '24h':
+      return '15 MINUTE'
+    case '3d':
       return '30 MINUTE'
+    case '7d':
+      return '4 HOUR'
     case '14d':
+      return '12 HOUR'
     case '30d':
-      return '1 HOUR'
+      return '1 DAY'
     default:
-      return '1 MINUTE'
+      return '5 MINUTE'
   }
 }
 
@@ -145,8 +151,19 @@ function parseList(param: string | null): string[] {
   return param.split(',').filter(Boolean)
 }
 
-export function DashboardProvider({ children, defaultTimeRange = '6h' as TimeRange }: { children: ReactNode; defaultTimeRange?: TimeRange }) {
-  const [searchParams, setSearchParams] = useSearchParams()
+export function DashboardProvider({ children, defaultTimeRange = '24h' as TimeRange }: { children: ReactNode; defaultTimeRange?: TimeRange }) {
+  const [searchParams, setSearchParamsRaw] = useSearchParams()
+  const [, startTransition] = useTransition()
+  // Wrap setSearchParams in a transition so URL changes render immediately
+  // while expensive chart re-renders are deferred.
+  const setSearchParams = useCallback(
+    (updater: (prev: URLSearchParams) => URLSearchParams) => {
+      startTransition(() => {
+        setSearchParamsRaw(updater)
+      })
+    },
+    [setSearchParamsRaw, startTransition]
+  )
   const [refreshIntervalKey, setRefreshIntervalKey] = useState<RefreshInterval>('off')
   const refetchInterval = refreshIntervalMs[refreshIntervalKey]
 

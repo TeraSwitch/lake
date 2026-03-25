@@ -144,6 +144,7 @@ function DrilldownChart({ entity }: { entity: SelectedEntity }) {
 
     plotRef.current?.destroy()
 
+    const splinePaths = uPlot.paths.spline?.()
     const series: uPlot.Series[] = [{}]
     uplotData.intfs.forEach((intf, i) => {
       const color = seriesColors[i % seriesColors.length]
@@ -152,6 +153,8 @@ function DrilldownChart({ entity }: { entity: SelectedEntity }) {
         stroke: color,
         width: 1.5,
         fill: color.replace('65%', '65%') + '/10',
+        paths: splinePaths,
+        points: { show: false },
       })
       series.push({
         label: `${intf} Tx`,
@@ -159,6 +162,8 @@ function DrilldownChart({ entity }: { entity: SelectedEntity }) {
         width: 1.5,
         dash: [4, 2],
         fill: color.replace('65%', '65%') + '/10',
+        paths: splinePaths,
+        points: { show: false },
       })
     })
 
@@ -183,6 +188,7 @@ function DrilldownChart({ entity }: { entity: SelectedEntity }) {
       ],
       cursor: {
         drag: { x: true, y: false, setScale: false },
+        points: { size: 12, width: 2 },
       },
       hooks: {
         setCursor: [(u: uPlot) => {
@@ -231,6 +237,18 @@ function DrilldownChart({ entity }: { entity: SelectedEntity }) {
     })
     return m
   }, [hoveredIdx, uplotData])
+
+  // Format hovered timestamp for legend display
+  const hoveredTime = useMemo(() => {
+    if (!uplotData) return undefined
+    const timestamps = uplotData.aligned[0] as ArrayLike<number>
+    if (!timestamps || timestamps.length === 0) return undefined
+    const idx = hoveredIdx != null && hoveredIdx < timestamps.length ? hoveredIdx : timestamps.length - 1
+    const ts = timestamps[idx]
+    if (ts == null) return undefined
+    const d = new Date(ts * 1000)
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  }, [uplotData, hoveredIdx])
 
   // Latest values: last non-null Rx/Tx per interface
   const latestValues = useMemo(() => {
@@ -401,8 +419,8 @@ function DrilldownChart({ entity }: { entity: SelectedEntity }) {
         <>
           <div className="relative w-full">
             <div ref={chartRef} className="w-full" />
-            <span className="absolute top-1 left-[72px] text-[10px] text-muted-foreground/60 pointer-events-none">▲ Rx (in)</span>
-            <span className="absolute bottom-8 left-[72px] text-[10px] text-muted-foreground/60 pointer-events-none">▼ Tx (out)</span>
+            <span className="absolute top-1 right-3 text-[10px] text-muted-foreground/50 pointer-events-none">▲ Rx (in)</span>
+            <span className="absolute bottom-8 right-3 text-[10px] text-muted-foreground/50 pointer-events-none">▼ Tx (out)</span>
           </div>
           {multiIntf ? (
             <div ref={listContainerRef} className="relative mt-2" style={{ height: `${listHeight}px` }}>
@@ -413,6 +431,9 @@ function DrilldownChart({ entity }: { entity: SelectedEntity }) {
                     <div className="text-xs font-medium whitespace-nowrap">
                       Interfaces ({visibleIntfs.size === 0 ? 0 : [...visibleIntfs].filter(i => uplotData.intfs.includes(i)).length}/{sortedFilteredIntfs.length})
                     </div>
+                    {hoveredTime && (
+                      <span className="text-[10px] text-muted-foreground ml-auto">{hoveredTime}</span>
+                    )}
                     {searchExpanded ? (
                       <div className="relative flex-1">
                         <input

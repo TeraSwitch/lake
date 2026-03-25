@@ -79,17 +79,18 @@ export function StressPanel() {
 
     plotRef.current?.destroy()
 
+    const splinePaths = uPlot.paths.spline?.()
     const opts: uPlot.Options = {
       width: chartRef.current.offsetWidth,
       height: 280,
       series: [
         {},
-        { label: 'P50 Rx', stroke: P50_COLOR, width: 2 },
-        { label: 'P95 Rx', stroke: P95_COLOR, width: 2 },
-        { label: 'Max Rx', stroke: MAX_COLOR, width: 2, dash: [4, 4] },
-        { label: 'P50 Tx', stroke: P50_COLOR, width: 2 },
-        { label: 'P95 Tx', stroke: P95_COLOR, width: 2 },
-        { label: 'Max Tx', stroke: MAX_COLOR, width: 2, dash: [4, 4] },
+        { label: 'P50 Rx', stroke: P50_COLOR, width: 2, paths: splinePaths, points: { show: false } },
+        { label: 'P95 Rx', stroke: P95_COLOR, width: 2, paths: splinePaths, points: { show: false } },
+        { label: 'Max Rx', stroke: MAX_COLOR, width: 2, dash: [4, 4], paths: splinePaths, points: { show: false } },
+        { label: 'P50 Tx', stroke: P50_COLOR, width: 2, paths: splinePaths, points: { show: false } },
+        { label: 'P95 Tx', stroke: P95_COLOR, width: 2, paths: splinePaths, points: { show: false } },
+        { label: 'Max Tx', stroke: MAX_COLOR, width: 2, dash: [4, 4], paths: splinePaths, points: { show: false } },
       ],
       scales: {
         x: { time: true },
@@ -106,6 +107,7 @@ export function StressPanel() {
       ],
       cursor: {
         drag: { x: true, y: false },
+        points: { size: 12, width: 2 },
       },
       hooks: {
         setCursor: [(u: uPlot) => {
@@ -158,6 +160,14 @@ export function StressPanel() {
     }
   }, [hoveredIdx, data])
 
+  // Format hovered timestamp for legend display
+  const hoveredTime = useMemo(() => {
+    if (!data?.timestamps?.length) return undefined
+    const idx = hoveredIdx != null && hoveredIdx < data.timestamps.length ? hoveredIdx : data.timestamps.length - 1
+    const d = new Date(data.timestamps[idx])
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  }, [hoveredIdx, data])
+
   return (
     <div>
       {isLoading ? (
@@ -170,11 +180,11 @@ export function StressPanel() {
         </div>
       ) : (
         <div className="relative">
-          <div className="absolute left-1 top-1 z-10 flex flex-col gap-0.5 text-[10px] text-muted-foreground pointer-events-none">
-            <span>&#9650; Rx (in)</span>
+          <div className="absolute right-3 top-1 z-10 text-[10px] text-muted-foreground/50 pointer-events-none">
+            ▲ Rx (in)
           </div>
-          <div className="absolute left-1 bottom-1 z-10 flex flex-col gap-0.5 text-[10px] text-muted-foreground pointer-events-none">
-            <span>&#9660; Tx (out)</span>
+          <div className="absolute right-3 bottom-[42px] z-10 text-[10px] text-muted-foreground/50 pointer-events-none">
+            ▼ Tx (out)
           </div>
           <div ref={chartRef} className="w-full" />
         </div>
@@ -193,6 +203,7 @@ export function StressPanel() {
         </div>
         {displayValues && (
           <div className="flex items-center gap-3 text-xs text-muted-foreground">
+            {hoveredTime && <span className="text-muted-foreground/60">{hoveredTime}</span>}
             <span className="text-muted-foreground/60">Rx:</span>
             <span>P50 <span className="font-medium text-foreground">{fmt(displayValues.p50In)}</span></span>
             <span>P95 <span className="font-medium text-foreground">{fmt(displayValues.p95In)}</span></span>

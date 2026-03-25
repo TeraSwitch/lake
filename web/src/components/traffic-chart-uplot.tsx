@@ -1,7 +1,7 @@
 import { useState, useMemo, memo, useRef, useEffect, useCallback } from 'react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
-import { X, Search, ChevronUp, ChevronDown } from 'lucide-react'
+import { X, Search, ChevronUp, ChevronDown, Loader2 } from 'lucide-react'
 import type { TrafficPoint, SeriesInfo } from '@/lib/api'
 import type { LinkLookupInfo } from '@/pages/traffic-page'
 import { useTheme } from '@/hooks/use-theme'
@@ -26,7 +26,8 @@ interface TrafficChartProps {
   linkLookup?: Map<string, LinkLookupInfo>
   bidirectional?: boolean
   onTimeRangeSelect?: (startSec: number, endSec: number) => void
-  metric?: 'throughput' | 'packets' | 'utilization'
+  metric?: 'throughput' | 'packets' | 'utilization' | 'counters'
+  loading?: boolean
 }
 
 // Represents one interface with paired in/out in bidirectional mode
@@ -73,17 +74,31 @@ function formatPpsAxis(pps: number): string {
   return Math.round(pps) + ' pps'
 }
 
-function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bidirectional = false, onTimeRangeSelect, metric = 'throughput' }: TrafficChartProps) {
+function formatCount(n: number): string {
+  if (n >= 1e9) return (n / 1e9).toFixed(1) + 'B'
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + 'M'
+  if (n >= 1e3) return (n / 1e3).toFixed(1) + 'K'
+  return n.toFixed(0)
+}
+
+function formatCountAxis(n: number): string {
+  if (n >= 1e9) return Math.round(n / 1e9) + 'B'
+  if (n >= 1e6) return Math.round(n / 1e6) + 'M'
+  if (n >= 1e3) return Math.round(n / 1e3) + 'K'
+  return Math.round(n).toString()
+}
+
+function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bidirectional = false, onTimeRangeSelect, metric = 'throughput', loading = false }: TrafficChartProps) {
   const { resolvedTheme } = useTheme()
   const chartRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
   const linkLookupRef = useRef(linkLookup)
   const onTimeRangeSelectRef = useRef(onTimeRangeSelect)
   onTimeRangeSelectRef.current = onTimeRangeSelect
-  const fmtValue = metric === 'packets' ? formatPps : formatBandwidth
+  const fmtValue = metric === 'counters' ? formatCount : metric === 'packets' ? formatPps : formatBandwidth
   const fmtValueRef = useRef(fmtValue)
   fmtValueRef.current = fmtValue
-  const fmtAxisValue = metric === 'packets' ? formatPpsAxis : formatBandwidthAxis
+  const fmtAxisValue = metric === 'counters' ? formatCountAxis : metric === 'packets' ? formatPpsAxis : formatBandwidthAxis
   const fmtAxisValueRef = useRef(fmtAxisValue)
   fmtAxisValueRef.current = fmtAxisValue
   const seriesMetadataRef = useRef<Map<string, { devicePk: string; device: string; intf: string; direction: string }>>(new Map())
@@ -205,18 +220,26 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
   }, [filteredSeries, sortBy, sortDir])
 
   // Build series metadata map (device_pk for each series)
+  // Keyed by multiple formats: "device-intf (in)", "device-intf (out)", and "device-intf" (base key)
   const seriesMetadata = useMemo(() => {
     const map = new Map<string, { devicePk: string; device: string; intf: string; direction: string }>()
     for (const s of series) {
       // Find a data point for this series to get device_pk
       const point = data.find(p => p.device === s.device && p.intf === s.intf)
       if (point) {
-        map.set(s.key, {
+        const entry = {
           devicePk: point.device_pk,
           device: s.device,
           intf: s.intf,
           direction: s.direction,
-        })
+        }
+        // Key by series key format: "device-intf (in)" / "device-intf (out)"
+        map.set(s.key, entry)
+        // Also key by base intfKey: "device-intf" (used by bidirectional label lookup)
+        const intfKey = `${s.device}-${s.intf}`
+        if (!map.has(intfKey)) {
+          map.set(intfKey, entry)
+        }
       }
     }
     return map
@@ -264,6 +287,12 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
   useEffect(() => {
     seriesMetadataRef.current = seriesMetadata
   }, [seriesMetadata])
+
+  // Spline paths for smoother lines
+  const splinePaths = useMemo(() => uPlot.paths.spline?.(), [])
+
+  // For sparse data (counters), show dots on every data point so spikes are visible
+  const showDataPoints = metric === 'counters'
 
   // Transform data for uPlot
   const { uplotData, uplotSeries } = useMemo(() => {
@@ -340,6 +369,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
             fill: color + '80',
             band: [prevIdx, currentIdx],
             scale: 'y',
+            paths: splinePaths,
           } as uPlot.Series)
         }
 
@@ -373,6 +403,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
             stroke: 'transparent',
             width: 0,
             fill: color + '40',
+            paths: splinePaths,
             band: [prevIdx, currentIdx],
             scale: 'y',
           } as uPlot.Series)
@@ -391,19 +422,21 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
           dataArrays.push(rxVals)
           seriesConfigs.push({
             label: `${g.intfKey} Rx`,
-            points: { show: false },
+            points: { show: showDataPoints, size: 6 },
             stroke: color,
             width: 1.5,
             scale: 'y',
+            paths: splinePaths,
           })
           dataArrays.push(txVals)
           seriesConfigs.push({
             label: `${g.intfKey} Tx`,
-            points: { show: false },
+            points: { show: showDataPoints, size: 6 },
             stroke: color,
             width: 1.5,
             dash: [4, 2],
             scale: 'y',
+            paths: splinePaths,
           })
         }
       }
@@ -485,15 +518,17 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
           fill: color + '80',
           band: [previousIndex, currentIndex],
           scale: 'y',
+          paths: splinePaths,
         } as uPlot.Series)
       } else {
         dataArrays.push(rawSeriesData[i])
         seriesConfigs.push({
           label: s.key,
-          points: { show: false },
+          points: { show: showDataPoints, size: 6 },
           stroke: color,
           width: 1.5,
           scale: 'y',
+          paths: splinePaths,
         })
       }
     }
@@ -502,7 +537,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
       uplotData: dataArrays as uPlot.AlignedData,
       uplotSeries: seriesConfigs,
     }
-  }, [data, visibleSeriesList, series, stacked, bidirectional, interfaceGroups])
+  }, [data, visibleSeriesList, series, stacked, bidirectional, interfaceGroups, splinePaths, showDataPoints])
 
   // Create/update chart
   useEffect(() => {
@@ -543,22 +578,11 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
       cursor: {
         drag: { x: true, y: false, setScale: false },
         focus: {
-          prox: stacked ? Infinity : 30,
+          prox: stacked ? Infinity : 50,
         },
         points: {
-          size: (u: uPlot, seriesIdx: number) => {
-            // Only show point on focused series in non-stacked mode
-            if (stacked) return 0
-
-            // If pinned, show point on pinned series
-            if (isPinnedRef.current) {
-              return seriesIdx === pinnedSeriesIdxRef.current ? 8 : 0
-            }
-
-            const series = u.series[seriesIdx] as uPlot.Series & { _focus?: boolean }
-            return series._focus ? 8 : 0
-          },
-          width: 1.5,
+          size: 12,
+          width: 2,
         },
       },
       hooks: {
@@ -846,6 +870,17 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
     return m
   }, [hoveredIdx, uplotData, uplotSeries, bidirectional, interfaceGroups])
 
+  // Format hovered timestamp for legend display
+  const hoveredTime = useMemo(() => {
+    const timestamps = uplotData[0] as ArrayLike<number>
+    if (!timestamps || timestamps.length === 0) return undefined
+    const idx = hoveredIdx != null && hoveredIdx < timestamps.length ? hoveredIdx : timestamps.length - 1
+    const ts = timestamps[idx]
+    if (ts == null) return undefined
+    const d = new Date(ts * 1000)
+    return d.toLocaleString(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false })
+  }, [uplotData, hoveredIdx])
+
   // In bidirectional mode, filter/sort interface groups for legend
   const filteredInterfaceGroups = useMemo(() => {
     if (!bidirectional) return []
@@ -964,9 +999,12 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
   if (!data.length || !series.length) {
     return (
       <div className="flex flex-col space-y-2">
-        <h3 className="text-lg font-semibold">{title}</h3>
-        <div className="border border-border rounded-lg p-8 flex items-center justify-center h-[400px]">
-          <p className="text-muted-foreground">No data available</p>
+        <div className="flex items-center gap-2">
+          <h3 className="text-lg font-semibold">{title}</h3>
+          {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+        </div>
+        <div className="flex items-center justify-center h-[400px]">
+          {!loading && <p className="text-muted-foreground">No data available</p>}
         </div>
       </div>
     )
@@ -990,7 +1028,17 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
 
   return (
     <div className="flex flex-col space-y-2">
-      <h3 className="text-lg font-semibold">{title}</h3>
+      <div className="flex items-center gap-2">
+        <h3 className="text-lg font-semibold">{title}</h3>
+        {loading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+      </div>
+
+      {/* Loading bar — always reserves space to avoid layout shift */}
+      <div className="h-0.5 w-full overflow-hidden rounded-full">
+        {loading && (
+          <div className="h-full w-1/3 bg-muted-foreground/40 animate-[shimmer_1.5s_ease-in-out_infinite] rounded-full" />
+        )}
+      </div>
 
       {/* Chart */}
       <div className="relative w-full">
@@ -1071,8 +1119,8 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
         {/* Direction labels for bidirectional mode */}
         {bidirectional && (
           <>
-            <span className="absolute top-1 left-[72px] text-[10px] text-muted-foreground/60 pointer-events-none">▲ Rx (in)</span>
-            <span className="absolute bottom-8 left-[72px] text-[10px] text-muted-foreground/60 pointer-events-none">▼ Tx (out)</span>
+            <span className="absolute top-1 right-3 text-[10px] text-muted-foreground/50 pointer-events-none">▲ Rx (in)</span>
+            <span className="absolute bottom-12 right-3 text-[10px] text-muted-foreground/50 pointer-events-none">▼ Tx (out)</span>
           </>
         )}
       </div>
@@ -1089,6 +1137,9 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
                   : `Series (${visibleSeriesList.length}/${sortedFilteredSeries.length})`
                 }
               </div>
+              {hoveredTime && (
+                <span className="text-[10px] text-muted-foreground ml-auto">{hoveredTime}</span>
+              )}
               {/* Collapsible search */}
               {searchExpanded ? (
                 <div className="relative flex-1">
