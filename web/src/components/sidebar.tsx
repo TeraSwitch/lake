@@ -33,6 +33,7 @@ import {
   Layers,
   BookOpen,
   Trophy,
+  ArrowRightLeft,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/use-theme'
@@ -77,6 +78,7 @@ export function Sidebar() {
 
   // Performance sub-routes
   const isPerformanceDzVsInternet = location.pathname === '/performance/dz-vs-internet'
+  const isPerformanceLinkLatency = location.pathname === '/performance/link-latency'
   const isPerformancePathLatency = location.pathname === '/performance/path-latency'
 
   // Traffic sub-routes
@@ -400,6 +402,10 @@ export function Sidebar() {
                 <Link to="/performance/dz-vs-internet" className={subNavItemClass(isPerformanceDzVsInternet)}>
                   <Zap className="h-4 w-4" />
                   DZ vs Internet
+                </Link>
+                <Link to="/performance/link-latency" className={subNavItemClass(isPerformanceLinkLatency)}>
+                  <ArrowRightLeft className="h-4 w-4" />
+                  Link Latency
                 </Link>
                 {hasNeo4j && (
                   <Link to="/performance/path-latency" className={subNavItemClass(isPerformancePathLatency)}>

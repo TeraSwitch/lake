@@ -542,6 +542,10 @@ func main() {
 		r.Get("/api/traffic/dashboard/burstiness", handlers.GetTrafficDashboardBurstiness)
 		r.Get("/api/traffic/dashboard/health", handlers.GetTrafficDashboardHealth)
 
+		// Performance analytics routes
+		r.Get("/api/performance/link-latency", handlers.GetLinkLatencyData)
+		r.Get("/api/performance/link-latency/history", handlers.GetMultiLinkLatencyHistory)
+
 		// Topology endpoints (ClickHouse only)
 		r.Get("/api/topology", handlers.GetTopology)
 		r.Get("/api/traffic/entity", handlers.GetEntityTraffic)
