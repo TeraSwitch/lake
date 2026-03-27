@@ -15,55 +15,51 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupDevicesTables(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-}
-
 func insertDevicesTestData(t *testing.T) {
 	ctx := t.Context()
 
-	seedContributor(t, "contrib-1", "CONTRIB1")
+	// Insert contributors
+	err := config.DB.Exec(ctx, `
+		INSERT INTO dim_dz_contributors_history
+		(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, name) VALUES
+		('contrib-1', now(), now(), generateUUIDv4(), 0, 1, 'contrib-1', 'CONTRIB1', 'Contributor One')
+	`)
+	require.NoError(t, err)
 
-	// Insert metros with names (seedMetro doesn't include name)
-	for _, m := range []struct{ pk, code, name string }{
-		{"metro-nyc", "NYC", "New York"},
-		{"metro-lax", "LAX", "Los Angeles"},
-	} {
-		require.NoError(t, config.DB.Exec(ctx, `INSERT INTO dim_dz_metros_history (
-			entity_id, snapshot_ts, ingested_at, op_id, is_deleted, pk, code, name
-		) VALUES ($1, now(), now(), $2, 0, $3, $4, $5)`,
-			m.pk, "00000000-0000-0000-0000-000000000003", m.pk, m.code, m.name,
-		))
-	}
-	seedDeviceMetadata(t, "dev-1", "NYC-CORE-01", "router", "contrib-1", "metro-nyc", 100, "up")
-	seedDeviceMetadata(t, "dev-2", "NYC-EDGE-01", "switch", "", "metro-nyc", 50, "up")
-	seedDeviceMetadata(t, "dev-3", "LAX-CORE-01", "router", "contrib-1", "metro-lax", 100, "down")
+	// Insert metros
+	err = config.DB.Exec(ctx, `
+		INSERT INTO dim_dz_metros_history
+		(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, name, latitude, longitude) VALUES
+		('metro-nyc', now(), now(), generateUUIDv4(), 0, 1, 'metro-nyc', 'NYC', 'New York', 40.7128, -74.0060),
+		('metro-lax', now(), now(), generateUUIDv4(), 0, 2, 'metro-lax', 'LAX', 'Los Angeles', 34.0522, -118.2437)
+	`)
+	require.NoError(t, err)
+
+	// Insert devices
+	err = config.DB.Exec(ctx, `
+		INSERT INTO dim_dz_devices_history
+		(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, status, device_type, contributor_pk, metro_pk, public_ip, max_users) VALUES
+		('dev-1', now(), now(), generateUUIDv4(), 0, 1, 'dev-1', 'NYC-CORE-01', 'up', 'router', 'contrib-1', 'metro-nyc', '10.0.0.1', 100),
+		('dev-2', now(), now(), generateUUIDv4(), 0, 2, 'dev-2', 'NYC-EDGE-01', 'up', 'switch', '', 'metro-nyc', '10.0.0.2', 50),
+		('dev-3', now(), now(), generateUUIDv4(), 0, 3, 'dev-3', 'LAX-CORE-01', 'down', 'router', 'contrib-1', 'metro-lax', '10.0.1.1', 100)
+	`)
+	require.NoError(t, err)
 
 	// Insert users
-	for _, u := range []struct {
-		pk, status, devicePK, clientIP string
-	}{
-		{"user-1", "activated", "dev-1", "192.168.1.1"},
-		{"user-2", "activated", "dev-1", "192.168.1.2"},
-		{"user-3", "pending", "dev-1", "192.168.1.3"},
-		{"user-4", "activated", "dev-3", "192.168.2.1"},
-	} {
-		require.NoError(t, config.DB.Exec(ctx, `INSERT INTO dim_dz_users_history (
-			entity_id, snapshot_ts, ingested_at, op_id, is_deleted,
-			pk, status, device_pk, client_ip, dz_ip, kind, owner_pubkey
-		) VALUES ($1, now(), now(), $2, 0, $3, $4, $5, $6, $7, 'validator', 'pubkey')`,
-			u.pk, "00000000-0000-0000-0000-000000000001", u.pk, u.status, u.devicePK, u.clientIP, u.clientIP,
-		))
-	}
-
-	require.NoError(t, config.DB.Exec(ctx, `OPTIMIZE TABLE dim_dz_devices_history FINAL`))
-	require.NoError(t, config.DB.Exec(ctx, `OPTIMIZE TABLE dim_dz_metros_history FINAL`))
-	require.NoError(t, config.DB.Exec(ctx, `OPTIMIZE TABLE dim_dz_contributors_history FINAL`))
-	require.NoError(t, config.DB.Exec(ctx, `OPTIMIZE TABLE dim_dz_users_history FINAL`))
+	err = config.DB.Exec(ctx, `
+		INSERT INTO dim_dz_users_history
+		(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, status, device_pk, kind, owner_pubkey, client_ip, dz_ip, tunnel_id) VALUES
+		('user-1', now(), now(), generateUUIDv4(), 0, 1, 'user-1', 'activated', 'dev-1', 'validator', 'pubkey1', '192.168.1.1', '192.168.1.1', 0),
+		('user-2', now(), now(), generateUUIDv4(), 0, 2, 'user-2', 'activated', 'dev-1', 'validator', 'pubkey2', '192.168.1.2', '192.168.1.2', 0),
+		('user-3', now(), now(), generateUUIDv4(), 0, 3, 'user-3', 'pending', 'dev-1', 'validator', 'pubkey3', '192.168.1.3', '192.168.1.3', 0),
+		('user-4', now(), now(), generateUUIDv4(), 0, 4, 'user-4', 'activated', 'dev-3', 'validator', 'pubkey4', '192.168.2.1', '192.168.2.1', 0)
+	`)
+	require.NoError(t, err)
 }
 
 func TestGetDevices_Empty(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices", nil)
 	rr := httptest.NewRecorder()
@@ -79,7 +75,9 @@ func TestGetDevices_Empty(t *testing.T) {
 }
 
 func TestGetDevices_ReturnsAllDevices(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices", nil)
@@ -96,7 +94,9 @@ func TestGetDevices_ReturnsAllDevices(t *testing.T) {
 }
 
 func TestGetDevices_IncludesMetroInfo(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices", nil)
@@ -124,7 +124,9 @@ func TestGetDevices_IncludesMetroInfo(t *testing.T) {
 }
 
 func TestGetDevices_IncludesUserCounts(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices", nil)
@@ -150,7 +152,9 @@ func TestGetDevices_IncludesUserCounts(t *testing.T) {
 }
 
 func TestGetDevices_Pagination(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	// First page
@@ -181,7 +185,9 @@ func TestGetDevices_Pagination(t *testing.T) {
 }
 
 func TestGetDevices_OrderedByCode(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices", nil)
@@ -201,7 +207,9 @@ func TestGetDevices_OrderedByCode(t *testing.T) {
 }
 
 func TestGetDevice_NotFound(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices/nonexistent", nil)
@@ -216,7 +224,8 @@ func TestGetDevice_NotFound(t *testing.T) {
 }
 
 func TestGetDevice_MissingPK(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices/", nil)
 	rctx := chi.NewRouteContext()
@@ -230,7 +239,9 @@ func TestGetDevice_MissingPK(t *testing.T) {
 }
 
 func TestGetDevice_ReturnsDetails(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices/dev-1", nil)
@@ -260,7 +271,9 @@ func TestGetDevice_ReturnsDetails(t *testing.T) {
 }
 
 func TestGetDevice_IncludesContributorInfo(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/devices/dev-1", nil)
@@ -282,7 +295,9 @@ func TestGetDevice_IncludesContributorInfo(t *testing.T) {
 }
 
 func TestGetDevice_HandlesNullContributor(t *testing.T) {
-	setupDevicesTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertDevicesTestData(t)
 
 	// dev-2 has no contributor

@@ -15,55 +15,45 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func setupMetrosTables(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-}
-
 func insertMetrosTestData(t *testing.T) {
 	ctx := t.Context()
 
-	// Insert metros with names and coordinates
-	for _, m := range []struct {
-		pk, code, name string
-		lat, lon       float64
-	}{
-		{"metro-nyc", "NYC", "New York", 40.7128, -74.0060},
-		{"metro-lax", "LAX", "Los Angeles", 34.0522, -118.2437},
-		{"metro-chi", "CHI", "Chicago", 41.8781, -87.6298},
-	} {
-		require.NoError(t, config.DB.Exec(ctx, `INSERT INTO dim_dz_metros_history (
-			entity_id, snapshot_ts, ingested_at, op_id, is_deleted, pk, code, name, latitude, longitude
-		) VALUES ($1, now(), now(), $2, 0, $3, $4, $5, $6, $7)`,
-			m.pk, "00000000-0000-0000-0000-000000000001", m.pk, m.code, m.name, m.lat, m.lon))
-	}
+	// Insert metros
+	err := config.DB.Exec(ctx, `
+		INSERT INTO dim_dz_metros_history
+		(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, name, latitude, longitude) VALUES
+		('metro-nyc', now(), now(), generateUUIDv4(), 0, 1, 'metro-nyc', 'NYC', 'New York', 40.7128, -74.0060),
+		('metro-lax', now(), now(), generateUUIDv4(), 0, 2, 'metro-lax', 'LAX', 'Los Angeles', 34.0522, -118.2437),
+		('metro-chi', now(), now(), generateUUIDv4(), 0, 3, 'metro-chi', 'CHI', 'Chicago', 41.8781, -87.6298)
+	`)
+	require.NoError(t, err)
 
 	// Insert devices
-	seedDeviceMetadata(t, "dev-1", "NYC-CORE-01", "router", "", "metro-nyc", 0, "activated")
-	seedDeviceMetadata(t, "dev-2", "NYC-EDGE-01", "switch", "", "metro-nyc", 0, "activated")
-	seedDeviceMetadata(t, "dev-3", "LAX-CORE-01", "router", "", "metro-lax", 0, "activated")
-	seedDeviceMetadata(t, "dev-4", "CHI-CORE-01", "router", "", "metro-chi", 0, "activated")
+	err = config.DB.Exec(ctx, `
+		INSERT INTO dim_dz_devices_history
+		(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, status, device_type, metro_pk, public_ip, contributor_pk, max_users) VALUES
+		('dev-1', now(), now(), generateUUIDv4(), 0, 1, 'dev-1', 'NYC-CORE-01', 'up', 'router', 'metro-nyc', '10.0.0.1', '', 0),
+		('dev-2', now(), now(), generateUUIDv4(), 0, 2, 'dev-2', 'NYC-EDGE-01', 'up', 'switch', 'metro-nyc', '10.0.0.2', '', 0),
+		('dev-3', now(), now(), generateUUIDv4(), 0, 3, 'dev-3', 'LAX-CORE-01', 'up', 'router', 'metro-lax', '10.0.1.1', '', 0),
+		('dev-4', now(), now(), generateUUIDv4(), 0, 4, 'dev-4', 'CHI-CORE-01', 'up', 'router', 'metro-chi', '10.0.2.1', '', 0)
+	`)
+	require.NoError(t, err)
 
 	// Insert users
-	for _, u := range []struct{ pk, status, devicePK, clientIP string }{
-		{"user-1", "activated", "dev-1", "192.168.1.1"},
-		{"user-2", "activated", "dev-1", "192.168.1.2"},
-		{"user-3", "activated", "dev-3", "192.168.2.1"},
-		{"user-4", "pending", "dev-2", "192.168.1.3"},
-	} {
-		require.NoError(t, config.DB.Exec(ctx, `INSERT INTO dim_dz_users_history (
-			entity_id, snapshot_ts, ingested_at, op_id, is_deleted,
-			pk, status, device_pk, client_ip, dz_ip, kind, owner_pubkey
-		) VALUES ($1, now(), now(), $2, 0, $3, $4, $5, $6, $7, 'validator', 'pubkey')`,
-			u.pk, "00000000-0000-0000-0000-000000000001", u.pk, u.status, u.devicePK, u.clientIP, u.clientIP))
-	}
-
-	for _, table := range []string{"dim_dz_metros_history", "dim_dz_devices_history", "dim_dz_users_history"} {
-		require.NoError(t, config.DB.Exec(ctx, "OPTIMIZE TABLE "+table+" FINAL"))
-	}
+	err = config.DB.Exec(ctx, `
+		INSERT INTO dim_dz_users_history
+		(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, status, device_pk, kind, owner_pubkey, client_ip, dz_ip, tunnel_id) VALUES
+		('user-1', now(), now(), generateUUIDv4(), 0, 1, 'user-1', 'activated', 'dev-1', 'validator', 'pubkey1', '192.168.1.1', '192.168.1.1', 0),
+		('user-2', now(), now(), generateUUIDv4(), 0, 2, 'user-2', 'activated', 'dev-1', 'validator', 'pubkey2', '192.168.1.2', '192.168.1.2', 0),
+		('user-3', now(), now(), generateUUIDv4(), 0, 3, 'user-3', 'activated', 'dev-3', 'validator', 'pubkey3', '192.168.2.1', '192.168.2.1', 0),
+		('user-4', now(), now(), generateUUIDv4(), 0, 4, 'user-4', 'pending', 'dev-2', 'validator', 'pubkey4', '192.168.1.3', '192.168.1.3', 0)
+	`)
+	require.NoError(t, err)
 }
 
 func TestGetMetros_Empty(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros", nil)
 	rr := httptest.NewRecorder()
@@ -79,7 +69,9 @@ func TestGetMetros_Empty(t *testing.T) {
 }
 
 func TestGetMetros_ReturnsAllMetros(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertMetrosTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros", nil)
@@ -101,7 +93,9 @@ func TestGetMetros_ReturnsAllMetros(t *testing.T) {
 }
 
 func TestGetMetros_IncludesDeviceCounts(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertMetrosTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros", nil)
@@ -127,7 +121,9 @@ func TestGetMetros_IncludesDeviceCounts(t *testing.T) {
 }
 
 func TestGetMetros_IncludesUserCounts(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertMetrosTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros", nil)
@@ -153,7 +149,9 @@ func TestGetMetros_IncludesUserCounts(t *testing.T) {
 }
 
 func TestGetMetros_Pagination(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertMetrosTestData(t)
 
 	// First page
@@ -184,7 +182,9 @@ func TestGetMetros_Pagination(t *testing.T) {
 }
 
 func TestGetMetros_IncludesCoordinates(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertMetrosTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros", nil)
@@ -211,7 +211,9 @@ func TestGetMetros_IncludesCoordinates(t *testing.T) {
 }
 
 func TestGetMetro_NotFound(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertMetrosTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros/nonexistent", nil)
@@ -226,7 +228,8 @@ func TestGetMetro_NotFound(t *testing.T) {
 }
 
 func TestGetMetro_MissingPK(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros/", nil)
 	rctx := chi.NewRouteContext()
@@ -240,7 +243,9 @@ func TestGetMetro_MissingPK(t *testing.T) {
 }
 
 func TestGetMetro_ReturnsDetails(t *testing.T) {
-	setupMetrosTables(t)
+	t.Parallel()
+	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+
 	insertMetrosTestData(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/metros/metro-nyc", nil)
