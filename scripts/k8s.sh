@@ -45,7 +45,7 @@ cluster_exists() {
 }
 
 # Default ports that Tilt will forward
-DEFAULT_PORTS=(5432 8123 9100 7474 7687 7233 8233 8080 3010 5173)
+DEFAULT_PORTS=(5432 8123 9100 7474 7687 7233 8233 8080 3010 5173 10350)
 
 # Check if a port is in use
 port_in_use() {
@@ -146,9 +146,19 @@ ensure_registry() {
     k3d registry create "$registry_name" --port 5050
 }
 
+cluster_stopped() {
+    k3d cluster list 2>/dev/null | grep "^$CLUSTER_NAME " | grep -q "0/1"
+}
+
 ensure_cluster() {
     if cluster_exists; then
-        info "Cluster '$CLUSTER_NAME' already exists."
+        if cluster_stopped; then
+            info "Starting stopped cluster '$CLUSTER_NAME'..."
+            k3d cluster start "$CLUSTER_NAME"
+            info "Cluster started."
+        else
+            info "Cluster '$CLUSTER_NAME' already running."
+        fi
         # Re-export kubeconfig in case it was lost
         k3d kubeconfig get "$CLUSTER_NAME" > "$KUBECONFIG" 2>/dev/null
         return
@@ -214,43 +224,75 @@ cmd_up() {
     check_prereqs
     ensure_env
     ensure_geoip
+
+    # Detect port conflicts before creating the cluster, so we don't
+    # mistake our own Tilt port-forwards for external conflicts.
+    local offset=0
+    if cluster_exists; then
+        # Cluster already running — Tilt will reclaim its existing port-forwards.
+        offset=0
+    else
+        offset=$(detect_port_offset)
+    fi
+
     ensure_cluster
     sync_secrets
-
-    # Detect port conflicts and pick an offset
-    local offset
-    offset=$(detect_port_offset)
     export LAKE_PORT_OFFSET="$offset"
 
     if [ "$offset" -ne 0 ]; then
         warn "Default ports are in use — shifting all ports by +$offset"
-        echo ""
-        echo "  web:         http://localhost:$((5173 + offset))"
-        echo "  api:         http://localhost:$((8080 + offset))"
-        echo "  clickhouse:  localhost:$((8123 + offset)) (HTTP), localhost:$((9100 + offset)) (TCP)"
-        echo "  postgres:    localhost:$((5432 + offset))"
-        echo "  neo4j:       localhost:$((7474 + offset)) (browser), localhost:$((7687 + offset)) (bolt)"
-        echo "  temporal-ui: http://localhost:$((8233 + offset))"
-        echo ""
     fi
+    echo ""
+    echo "  web:         http://localhost:$((5173 + offset))"
+    echo "  api:         http://localhost:$((8080 + offset))"
+    echo "  clickhouse:  localhost:$((8123 + offset)) (HTTP), localhost:$((9100 + offset)) (TCP)"
+    echo "  postgres:    localhost:$((5432 + offset))"
+    echo "  neo4j:       localhost:$((7474 + offset)) (browser), localhost:$((7687 + offset)) (bolt)"
+    echo "  temporal-ui: http://localhost:$((8233 + offset))"
+    echo "  tilt:        http://localhost:$((10350 + offset))"
+    echo ""
 
     export LAKE_CLUSTER_NAME="$CLUSTER_NAME"
 
     info "Starting Tilt (cluster: $CLUSTER_NAME)..."
     cd "$LAKE_ROOT"
-    exec tilt up
+    exec tilt up --port "$((10350 + offset))"
 }
 
 cmd_down() {
     check_prereqs
 
-    if cluster_exists; then
-        info "Deleting cluster '$CLUSTER_NAME'..."
+    if ! cluster_exists; then
+        info "Cluster '$CLUSTER_NAME' does not exist — nothing to do."
+        return
+    fi
+
+    if [ "${CLEAN:-}" = "true" ]; then
+        if [ "${YES:-}" != "true" ]; then
+            warn "This will delete cluster '$CLUSTER_NAME' and ALL data (volumes, PVCs)."
+            printf "Are you sure? [y/N] "
+            read -r confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                info "Aborted."
+                return
+            fi
+        fi
+        info "Deleting cluster '$CLUSTER_NAME' (including all data)..."
         k3d cluster delete "$CLUSTER_NAME"
         rm -f "$KUBECONFIG_DIR/$CLUSTER_NAME.kubeconfig"
         info "Cluster deleted."
     else
-        info "Cluster '$CLUSTER_NAME' does not exist — nothing to do."
+        if [ "${YES:-}" != "true" ]; then
+            printf "Stop cluster '$CLUSTER_NAME'? [y/N] "
+            read -r confirm
+            if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+                info "Aborted."
+                return
+            fi
+        fi
+        info "Stopping cluster '$CLUSTER_NAME' (data preserved)..."
+        k3d cluster stop "$CLUSTER_NAME"
+        info "Cluster stopped. Run 'up' to restart, or 'down --clean' to delete."
     fi
 }
 
@@ -296,7 +338,21 @@ cmd_list() {
 # Main
 # ---------------------------------------------------------------------------
 ACTION="${1:-}"
-NAME_ARG="${2:-}"
+shift || true
+
+# Parse remaining args: flags (--clean) and positional (name)
+CLEAN=false
+YES=false
+NAME_ARG=""
+for arg in "$@"; do
+    case "$arg" in
+        --clean) CLEAN=true ;;
+        -y|--yes) YES=true ;;
+        *)       NAME_ARG="$arg" ;;
+    esac
+done
+export CLEAN YES
+
 CLUSTER_NAME="$(resolve_cluster_name "$NAME_ARG")"
 use_isolated_kubeconfig
 
@@ -306,12 +362,14 @@ case "$ACTION" in
     status) cmd_status ;;
     list)   cmd_list ;;
     *)
-        echo "Usage: $0 {up|down|status|list} [name]"
+        echo "Usage: $0 {up|down|status|list} [name] [--clean] [-y|--yes]"
         echo ""
-        echo "  up [name]      Create cluster and start Tilt"
-        echo "  down [name]    Destroy cluster"
-        echo "  status [name]  Show cluster and pod status"
-        echo "  list           List all lake clusters"
+        echo "  up [name]           Create cluster and start Tilt"
+        echo "  down [name]         Stop cluster (preserves data)"
+        echo "  down --clean        Delete cluster and all data"
+        echo "  down -y|--yes       Skip confirmation prompt"
+        echo "  status [name]       Show cluster and pod status"
+        echo "  list                List all lake clusters"
         echo ""
         echo "  [name] is optional — lets you run multiple clusters:"
         echo "    $0 up              # lake-${USER:-dev}"

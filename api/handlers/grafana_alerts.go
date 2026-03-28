@@ -139,7 +139,7 @@ func formatLinkAlert(ctx context.Context, alert grafanaAlert) string {
 	bandwidth := l["bandwidth"]
 	metro := l["metro"]
 
-	e := enrichLink(ctx, linkPK, alert.Labels["alertname"])
+	e := enrichLink(ctx, linkPK, alert)
 
 	linkURL := fmt.Sprintf("https://data.malbeclabs.com/dz/links/%s", linkPK)
 
@@ -164,7 +164,7 @@ type linkEnrichment struct {
 	StartedAt  string
 }
 
-func enrichLink(ctx context.Context, linkPK, alertName string) linkEnrichment {
+func enrichLink(ctx context.Context, linkPK string, alert grafanaAlert) linkEnrichment {
 	db := config.DB
 	if db == nil {
 		return linkEnrichment{Duration: "-", StartedAt: "-"}
@@ -172,31 +172,33 @@ func enrichLink(ctx context.Context, linkPK, alertName string) linkEnrichment {
 
 	var e linkEnrichment
 
-	// Filter for the alerting condition so we get the latest *alerting* row,
-	// not a recovered row that happens to be newer.
-	alertCond := "greatest(r.a_loss_pct, r.z_loss_pct) > 10 OR r.isis_down" // link down
-	okCond := "NOT (greatest(a_loss_pct, z_loss_pct) > 10 OR isis_down)"
-	if strings.Contains(alertName, "Degraded") {
-		alertCond = "greatest(r.a_loss_pct, r.z_loss_pct) > 1 AND greatest(r.a_loss_pct, r.z_loss_pct) < 50 AND NOT r.isis_down"
-		okCond = "greatest(a_loss_pct, z_loss_pct) <= 1"
-	}
-
-	row := db.QueryRow(ctx, fmt.Sprintf(`
+	// Current state — latest row, no condition filter.
+	row := db.QueryRow(ctx, `
 		SELECT r.a_loss_pct, r.z_loss_pct, greatest(r.a_loss_pct, r.z_loss_pct), r.isis_down
 		FROM lake.link_rollup_5m r FINAL
 		WHERE r.link_pk = ?
 		  AND r.bucket_ts >= now() - INTERVAL 20 MINUTE
 		  AND NOT r.provisioning
-		  AND (%s)
 		ORDER BY r.bucket_ts DESC
-		LIMIT 1`, alertCond), linkPK)
+		LIMIT 1`, linkPK)
 	if err := row.Scan(&e.ALossPct, &e.ZLossPct, &e.MaxLossPct, &e.IsisDown); err != nil {
 		slog.Warn("grafana webhook: link rollup query failed", "error", err, "link_pk", linkPK)
-		return linkEnrichment{Duration: "-", StartedAt: "-"}
 	}
-	e.Duration, e.StartedAt = queryDuration(ctx,
-		"lake.link_rollup_5m", "link_pk", linkPK,
-		"AND NOT provisioning AND "+okCond)
+
+	// Duration — from Grafana's startsAt if available, otherwise ClickHouse lookup.
+	if !alert.StartsAt.IsZero() {
+		e.StartedAt = alert.StartsAt.UTC().Format("Jan 02 15:04 UTC")
+		e.Duration = fmtDuration(time.Since(alert.StartsAt))
+	} else {
+		alertName := alert.Labels["alertname"]
+		okCond := "NOT (greatest(a_loss_pct, z_loss_pct) > 10 OR isis_down)"
+		if strings.Contains(alertName, "Degraded") {
+			okCond = "greatest(a_loss_pct, z_loss_pct) <= 1"
+		}
+		e.Duration, e.StartedAt = queryDuration(ctx,
+			"lake.link_rollup_5m", "link_pk", linkPK,
+			"AND NOT provisioning AND "+okCond)
+	}
 
 	return e
 }

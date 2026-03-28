@@ -25,10 +25,11 @@ Do NOT manage the `api` or `web` services. The user runs these separately and wi
 The project has a local k3d + Tilt dev environment managed by `scripts/k8s.sh`:
 
 ```bash
-./scripts/k8s.sh up        # Create cluster and start Tilt
-./scripts/k8s.sh down      # Destroy cluster
-./scripts/k8s.sh status    # Show cluster and pod status
-./scripts/k8s.sh list      # List all lake clusters
+./scripts/k8s.sh up          # Create cluster and start Tilt
+./scripts/k8s.sh down        # Stop cluster (preserves data)
+./scripts/k8s.sh down --clean  # Delete cluster and all data
+./scripts/k8s.sh status      # Show cluster and pod status
+./scripts/k8s.sh list        # List all lake clusters
 ```
 
 The cluster name follows the pattern `lake-$USER` (e.g., `lake-snormore`). Kubeconfig is isolated at `.tmp/k8s/<cluster-name>.kubeconfig` — use it with:
@@ -38,6 +39,17 @@ KUBECONFIG=.tmp/k8s/lake-snormore.kubeconfig kubectl -n lake-dev ...
 ```
 
 Services run in the `lake-dev` namespace. Tilt port-forwards them to localhost (with automatic offset if ports conflict).
+
+### ClickHouse Databases (Local vs Remote)
+
+The local ClickHouse has two databases:
+
+- **`default`** — local data written by the local indexer. This is what the API queries when running locally (without `--use-remote`).
+- **`lake`** — remote proxy tables (`remoteSecure()`) pointing to production ClickHouse Cloud. Created by the indexer's `--setup-remote-tables` flag.
+
+Both databases have the same table names. When querying local data (e.g., via the local MCP at `localhost:8080/api/mcp`), the API reads from `default`. The `lake` database is only used when the API runs with `--use-remote` or when querying prod data directly.
+
+The cloud-hosted MCP (`claude_ai_DoubleZero`) always queries production. To verify local indexer changes, use the local `doublezero` MCP (which hits the local API on `localhost:8080`).
 
 ## Commands
 
