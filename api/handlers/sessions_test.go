@@ -10,7 +10,6 @@ import (
 
 	"github.com/go-chi/chi/v5"
 	"github.com/google/uuid"
-	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers"
 	apitesting "github.com/malbeclabs/lake/api/testing"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +17,7 @@ import (
 )
 
 // createTestAccount creates a test account in the database and returns it
-func createTestAccount(t *testing.T, ctx context.Context) *handlers.Account {
+func createTestAccount(t *testing.T, ctx context.Context, api *handlers.API) *handlers.Account {
 	t.Helper()
 	account := &handlers.Account{
 		ID:          uuid.New(),
@@ -28,7 +27,7 @@ func createTestAccount(t *testing.T, ctx context.Context) *handlers.Account {
 	walletAddr := "test_wallet_" + uuid.New().String()[:8]
 	account.WalletAddress = &walletAddr
 
-	_, err := config.PgPool.Exec(ctx, `
+	_, err := api.PgPool.Exec(ctx, `
 		INSERT INTO accounts (id, account_type, wallet_address, is_active)
 		VALUES ($1, $2, $3, $4)
 	`, account.ID, account.AccountType, account.WalletAddress, account.IsActive)
@@ -53,10 +52,11 @@ func withChiURLParams(r *http.Request, params map[string]string) *http.Request {
 }
 
 func TestCreateSession_Authenticated(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	sessionID := uuid.New()
 	reqBody := handlers.CreateSessionRequestWithOwner{
@@ -72,7 +72,7 @@ func TestCreateSession_Authenticated(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.CreateSession(rr, req)
+	api.CreateSession(rr, req)
 
 	assert.Equal(t, http.StatusCreated, rr.Code)
 
@@ -88,7 +88,8 @@ func TestCreateSession_Authenticated(t *testing.T) {
 }
 
 func TestCreateSession_Anonymous(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 
 	sessionID := uuid.New()
 	anonymousID := "anon_" + uuid.New().String()[:8]
@@ -104,7 +105,7 @@ func TestCreateSession_Anonymous(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handlers.CreateSession(rr, req)
+	api.CreateSession(rr, req)
 
 	assert.Equal(t, http.StatusCreated, rr.Code)
 
@@ -119,7 +120,8 @@ func TestCreateSession_Anonymous(t *testing.T) {
 }
 
 func TestCreateSession_NoAuth(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 
 	sessionID := uuid.New()
 	reqBody := handlers.CreateSessionRequestWithOwner{
@@ -134,16 +136,17 @@ func TestCreateSession_NoAuth(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 
 	rr := httptest.NewRecorder()
-	handlers.CreateSession(rr, req)
+	api.CreateSession(rr, req)
 
 	assert.Equal(t, http.StatusUnauthorized, rr.Code)
 }
 
 func TestCreateSession_InvalidType(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	sessionID := uuid.New()
 	reqBody := handlers.CreateSessionRequestWithOwner{
@@ -158,20 +161,21 @@ func TestCreateSession_InvalidType(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.CreateSession(rr, req)
+	api.CreateSession(rr, req)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
 func TestGetSession_Owner(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	// Create a session directly in DB
 	sessionID := uuid.New()
-	_, err := config.PgPool.Exec(ctx, `
+	_, err := api.PgPool.Exec(ctx, `
 		INSERT INTO sessions (id, type, name, content, account_id)
 		VALUES ($1, 'chat', 'Test Session', '[]', $2)
 	`, sessionID, account.ID)
@@ -182,7 +186,7 @@ func TestGetSession_Owner(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.GetSession(rr, req)
+	api.GetSession(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -193,31 +197,33 @@ func TestGetSession_Owner(t *testing.T) {
 }
 
 func TestGetSession_NotFound(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/sessions/"+uuid.New().String(), nil)
 	req = withChiURLParams(req, map[string]string{"id": uuid.New().String()})
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.GetSession(rr, req)
+	api.GetSession(rr, req)
 
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 func TestGetSession_Forbidden(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	owner := createTestAccount(t, ctx)
-	otherUser := createTestAccount(t, ctx)
+	owner := createTestAccount(t, ctx, api)
+	otherUser := createTestAccount(t, ctx, api)
 
 	// Create a session owned by owner
 	sessionID := uuid.New()
-	_, err := config.PgPool.Exec(ctx, `
+	_, err := api.PgPool.Exec(ctx, `
 		INSERT INTO sessions (id, type, name, content, account_id)
 		VALUES ($1, 'chat', 'Test Session', '[]', $2)
 	`, sessionID, owner.ID)
@@ -229,21 +235,22 @@ func TestGetSession_Forbidden(t *testing.T) {
 	req = withAccount(req, otherUser)
 
 	rr := httptest.NewRecorder()
-	handlers.GetSession(rr, req)
+	api.GetSession(rr, req)
 
 	// Should return 404 (not 403) to avoid leaking existence
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 func TestUpdateSession(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	// Create a session
 	sessionID := uuid.New()
-	_, err := config.PgPool.Exec(ctx, `
+	_, err := api.PgPool.Exec(ctx, `
 		INSERT INTO sessions (id, type, name, content, account_id)
 		VALUES ($1, 'chat', 'Original Name', '[]', $2)
 	`, sessionID, account.ID)
@@ -262,7 +269,7 @@ func TestUpdateSession(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.UpdateSession(rr, req)
+	api.UpdateSession(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -273,14 +280,15 @@ func TestUpdateSession(t *testing.T) {
 }
 
 func TestDeleteSession(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	// Create a session
 	sessionID := uuid.New()
-	_, err := config.PgPool.Exec(ctx, `
+	_, err := api.PgPool.Exec(ctx, `
 		INSERT INTO sessions (id, type, name, content, account_id)
 		VALUES ($1, 'chat', 'Test Session', '[]', $2)
 	`, sessionID, account.ID)
@@ -291,26 +299,27 @@ func TestDeleteSession(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.DeleteSession(rr, req)
+	api.DeleteSession(rr, req)
 
 	assert.Equal(t, http.StatusNoContent, rr.Code)
 
 	// Verify session is deleted
 	var count int
-	err = config.PgPool.QueryRow(ctx, "SELECT COUNT(*) FROM sessions WHERE id = $1", sessionID).Scan(&count)
+	err = api.PgPool.QueryRow(ctx, "SELECT COUNT(*) FROM sessions WHERE id = $1", sessionID).Scan(&count)
 	require.NoError(t, err)
 	assert.Equal(t, 0, count)
 }
 
 func TestListSessions_Pagination(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	// Create 5 sessions
 	for i := 0; i < 5; i++ {
-		_, err := config.PgPool.Exec(ctx, `
+		_, err := api.PgPool.Exec(ctx, `
 			INSERT INTO sessions (id, type, name, content, account_id)
 			VALUES ($1, 'chat', $2, '[]', $3)
 		`, uuid.New(), "Session "+string(rune('A'+i)), account.ID)
@@ -322,7 +331,7 @@ func TestListSessions_Pagination(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.ListSessions(rr, req)
+	api.ListSessions(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -338,7 +347,7 @@ func TestListSessions_Pagination(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr = httptest.NewRecorder()
-	handlers.ListSessions(rr, req)
+	api.ListSessions(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -349,19 +358,20 @@ func TestListSessions_Pagination(t *testing.T) {
 }
 
 func TestListSessions_TypeFilter(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	// Create chat and query sessions
-	_, err := config.PgPool.Exec(ctx, `
+	_, err := api.PgPool.Exec(ctx, `
 		INSERT INTO sessions (id, type, content, account_id)
 		VALUES ($1, 'chat', '[]', $2)
 	`, uuid.New(), account.ID)
 	require.NoError(t, err)
 
-	_, err = config.PgPool.Exec(ctx, `
+	_, err = api.PgPool.Exec(ctx, `
 		INSERT INTO sessions (id, type, content, account_id)
 		VALUES ($1, 'query', '[]', $2)
 	`, uuid.New(), account.ID)
@@ -372,7 +382,7 @@ func TestListSessions_TypeFilter(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.ListSessions(rr, req)
+	api.ListSessions(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -386,7 +396,7 @@ func TestListSessions_TypeFilter(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr = httptest.NewRecorder()
-	handlers.ListSessions(rr, req)
+	api.ListSessions(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -396,16 +406,17 @@ func TestListSessions_TypeFilter(t *testing.T) {
 }
 
 func TestBatchGetSessions(t *testing.T) {
-	apitesting.SetupTestDB(t, testPgDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIPg(t, testPgDB)
 	ctx := t.Context()
 
-	account := createTestAccount(t, ctx)
+	account := createTestAccount(t, ctx, api)
 
 	// Create 3 sessions
 	ids := make([]uuid.UUID, 3)
 	for i := 0; i < 3; i++ {
 		ids[i] = uuid.New()
-		_, err := config.PgPool.Exec(ctx, `
+		_, err := api.PgPool.Exec(ctx, `
 			INSERT INTO sessions (id, type, content, account_id)
 			VALUES ($1, 'chat', '[]', $2)
 		`, ids[i], account.ID)
@@ -423,7 +434,7 @@ func TestBatchGetSessions(t *testing.T) {
 	req = withAccount(req, account)
 
 	rr := httptest.NewRecorder()
-	handlers.BatchGetSessions(rr, req)
+	api.BatchGetSessions(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 

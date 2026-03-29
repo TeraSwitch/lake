@@ -9,7 +9,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers"
 	apitesting "github.com/malbeclabs/lake/api/testing"
 	"github.com/malbeclabs/lake/indexer/pkg/neo4j"
@@ -51,7 +50,9 @@ func parseSSEResponse(body string) (map[string]any, error) {
 }
 
 func TestMCPHandler_Initialize(t *testing.T) {
-	handler := handlers.InitMCP()
+	t.Parallel()
+	api := &handlers.API{}
+	handler := api.InitMCP()
 	require.NotNil(t, handler)
 
 	// MCP initialize request (JSON-RPC 2.0)
@@ -98,7 +99,9 @@ func TestMCPHandler_Initialize(t *testing.T) {
 }
 
 func TestMCPHandler_ListTools(t *testing.T) {
-	handler := handlers.InitMCP()
+	t.Parallel()
+	api := &handlers.API{}
+	handler := api.InitMCP()
 	require.NotNil(t, handler)
 
 	// First initialize
@@ -166,7 +169,9 @@ func TestMCPHandler_ListTools(t *testing.T) {
 }
 
 func TestMCPHandler_ListResources(t *testing.T) {
-	handler := handlers.InitMCP()
+	t.Parallel()
+	api := &handlers.API{}
+	handler := api.InitMCP()
 	require.NotNil(t, handler)
 
 	// First initialize
@@ -231,7 +236,9 @@ func TestMCPHandler_ListResources(t *testing.T) {
 }
 
 func TestMCPHandler_ListPrompts(t *testing.T) {
-	handler := handlers.InitMCP()
+	t.Parallel()
+	api := &handlers.API{}
+	handler := api.InitMCP()
 	require.NotNil(t, handler)
 
 	// First initialize
@@ -294,8 +301,8 @@ func TestMCPHandler_ListPrompts(t *testing.T) {
 }
 
 // mcpSession initializes an MCP session and returns the handler and session ID.
-func mcpSession(t *testing.T) (http.Handler, string) {
-	handler := handlers.InitMCP()
+func mcpSession(t *testing.T, api *handlers.API) (http.Handler, string) {
+	handler := api.InitMCP()
 	require.NotNil(t, handler)
 
 	initRequest := map[string]any{
@@ -348,15 +355,15 @@ func callTool(t *testing.T, handler http.Handler, sessionID string, toolName str
 }
 
 func TestMCPHandler_ExecuteSQL_EmptyResults(t *testing.T) {
-	apitesting.SetupTestClickHouse(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	// Create a simple test table
 	ctx := t.Context()
-	err := config.DB.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_mcp_table (id Int32, name String) ENGINE = Memory`)
+	err := api.DB.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_mcp_table (id Int32, name String) ENGINE = Memory`)
 	require.NoError(t, err)
 
-	handler, sessionID := mcpSession(t)
+	handler, sessionID := mcpSession(t, api)
 
 	// Query empty table - this should return empty arrays, not null
 	response := callTool(t, handler, sessionID, "execute_sql", map[string]any{
@@ -394,16 +401,16 @@ func TestMCPHandler_ExecuteSQL_EmptyResults(t *testing.T) {
 }
 
 func TestMCPHandler_ExecuteSQL_WithData(t *testing.T) {
-	apitesting.SetupTestClickHouse(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	ctx := t.Context()
-	err := config.DB.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_mcp_data (id Int32, name String) ENGINE = Memory`)
+	err := api.DB.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_mcp_data (id Int32, name String) ENGINE = Memory`)
 	require.NoError(t, err)
-	err = config.DB.Exec(ctx, `INSERT INTO test_mcp_data VALUES (1, 'alice'), (2, 'bob')`)
+	err = api.DB.Exec(ctx, `INSERT INTO test_mcp_data VALUES (1, 'alice'), (2, 'bob')`)
 	require.NoError(t, err)
 
-	handler, sessionID := mcpSession(t)
+	handler, sessionID := mcpSession(t, api)
 
 	response := callTool(t, handler, sessionID, "execute_sql", map[string]any{
 		"query":       "SELECT id, name FROM test_mcp_data ORDER BY id",
@@ -430,10 +437,10 @@ func TestMCPHandler_ExecuteSQL_WithData(t *testing.T) {
 }
 
 func TestMCPHandler_ExecuteSQL_InvalidQuery(t *testing.T) {
-	apitesting.SetupTestClickHouse(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
-	handler, sessionID := mcpSession(t)
+	handler, sessionID := mcpSession(t, api)
 
 	response := callTool(t, handler, sessionID, "execute_sql", map[string]any{
 		"query":       "SELECT * FROM nonexistent_table_xyz",
@@ -451,9 +458,10 @@ func TestMCPHandler_ExecuteSQL_InvalidQuery(t *testing.T) {
 }
 
 func TestMCPHandler_ExecuteCypher_EmptyResults(t *testing.T) {
-	apitesting.SetupTestNeo4j(t, testNeo4jDB)
+	t.Parallel()
+	api := apitesting.NewTestAPIAll(t, testChDB, nil, testNeo4jDB, nil)
 
-	handler, sessionID := mcpSession(t)
+	handler, sessionID := mcpSession(t, api)
 
 	// Query for non-existent nodes - this should return empty arrays, not null
 	response := callTool(t, handler, sessionID, "execute_cypher", map[string]any{
@@ -490,6 +498,8 @@ func TestMCPHandler_ExecuteCypher_EmptyResults(t *testing.T) {
 }
 
 func TestMCPHandler_ExecuteCypher_WithData(t *testing.T) {
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 	seedFunc := func(ctx context.Context, session neo4j.Session) error {
 		_, err := session.Run(ctx, `
 			CREATE (a:MCPTestNode {name: 'node1', value: 100})
@@ -497,9 +507,9 @@ func TestMCPHandler_ExecuteCypher_WithData(t *testing.T) {
 		`, nil)
 		return err
 	}
-	apitesting.SetupTestNeo4jWithData(t, testNeo4jDB, seedFunc)
+	api.Neo4jClient = apitesting.SetupNeo4jWithDataForTest(t, testNeo4jDB, seedFunc)
 
-	handler, sessionID := mcpSession(t)
+	handler, sessionID := mcpSession(t, api)
 
 	response := callTool(t, handler, sessionID, "execute_cypher", map[string]any{
 		"query":       "MATCH (n:MCPTestNode) RETURN n.name as name, n.value as value ORDER BY n.name",
@@ -531,15 +541,15 @@ func TestMCPHandler_ExecuteCypher_WithData(t *testing.T) {
 }
 
 func TestMCPHandler_GetSchema(t *testing.T) {
-	apitesting.SetupTestClickHouse(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	// Create a test table so schema has something to return
 	ctx := t.Context()
-	err := config.DB.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_schema_table (id Int32) ENGINE = Memory`)
+	err := api.DB.Exec(ctx, `CREATE TABLE IF NOT EXISTS test_schema_table (id Int32) ENGINE = Memory`)
 	require.NoError(t, err)
 
-	handler, sessionID := mcpSession(t)
+	handler, sessionID := mcpSession(t, api)
 
 	response := callTool(t, handler, sessionID, "get_schema", map[string]any{})
 
@@ -560,7 +570,9 @@ func TestMCPHandler_GetSchema(t *testing.T) {
 }
 
 func TestMCPHandler_ReadDocs(t *testing.T) {
-	handler, sessionID := mcpSession(t)
+	t.Parallel()
+	api := &handlers.API{}
+	handler, sessionID := mcpSession(t, api)
 
 	response := callTool(t, handler, sessionID, "read_docs", map[string]any{
 		"page": "index",
@@ -584,7 +596,9 @@ func TestMCPHandler_ReadDocs(t *testing.T) {
 }
 
 func TestMCPHandler_ReadDocs_InvalidPage(t *testing.T) {
-	handler, sessionID := mcpSession(t)
+	t.Parallel()
+	api := &handlers.API{}
+	handler, sessionID := mcpSession(t, api)
 
 	// Use a page name with path traversal attempt - should be rejected by format validation
 	response := callTool(t, handler, sessionID, "read_docs", map[string]any{

@@ -8,17 +8,16 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers"
 	apitesting "github.com/malbeclabs/lake/api/testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func insertUserTestData(t *testing.T) {
+func insertUserTestData(t *testing.T, api *handlers.API) {
 	ctx := t.Context()
 
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_metros_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, name)
 		VALUES
@@ -26,7 +25,7 @@ func insertUserTestData(t *testing.T) {
 	`)
 	require.NoError(t, err)
 
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_contributors_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, name)
 		VALUES
@@ -34,7 +33,7 @@ func insertUserTestData(t *testing.T) {
 	`)
 	require.NoError(t, err)
 
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_devices_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash,
 			 pk, status, device_type, code, public_ip, contributor_pk, metro_pk, max_users)
@@ -43,7 +42,7 @@ func insertUserTestData(t *testing.T) {
 	`)
 	require.NoError(t, err)
 
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_users_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash,
 			 pk, owner_pubkey, status, kind, client_ip, dz_ip, device_pk, tunnel_id)
@@ -55,8 +54,8 @@ func insertUserTestData(t *testing.T) {
 
 func TestGetUser_ReturnsDetail(t *testing.T) {
 	t.Parallel()
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	insertUserTestData(t)
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertUserTestData(t, api)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/users/user-1", nil)
 	rctx := chi.NewRouteContext()
@@ -64,7 +63,7 @@ func TestGetUser_ReturnsDetail(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetUser(rr, req)
+	api.GetUser(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -89,8 +88,8 @@ func TestGetUser_ReturnsDetail(t *testing.T) {
 
 func TestGetUser_IsValidatorFalseWhenNoGossipMatch(t *testing.T) {
 	t.Parallel()
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	insertUserTestData(t)
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertUserTestData(t, api)
 
 	// No gossip or vote account data inserted — is_validator should be false
 
@@ -100,7 +99,7 @@ func TestGetUser_IsValidatorFalseWhenNoGossipMatch(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetUser(rr, req)
+	api.GetUser(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -115,13 +114,13 @@ func TestGetUser_IsValidatorFalseWhenNoGossipMatch(t *testing.T) {
 
 func TestGetUser_IsValidatorTrueWhenMatched(t *testing.T) {
 	t.Parallel()
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	insertUserTestData(t)
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertUserTestData(t, api)
 
 	ctx := t.Context()
 
 	// Insert gossip node matching user's client_ip
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_gossip_nodes_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pubkey, epoch, gossip_ip, gossip_port, tpuquic_ip, tpuquic_port, version)
 		VALUES
@@ -130,7 +129,7 @@ func TestGetUser_IsValidatorTrueWhenMatched(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert vote account matching the gossip node
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_vote_accounts_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash,
 			 vote_pubkey, epoch, node_pubkey, activated_stake_lamports, epoch_vote_account, commission_percentage)
@@ -146,7 +145,7 @@ func TestGetUser_IsValidatorTrueWhenMatched(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetUser(rr, req)
+	api.GetUser(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -161,7 +160,7 @@ func TestGetUser_IsValidatorTrueWhenMatched(t *testing.T) {
 
 func TestGetUser_NotFound(t *testing.T) {
 	t.Parallel()
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/users/nonexistent", nil)
 	rctx := chi.NewRouteContext()
@@ -169,20 +168,20 @@ func TestGetUser_NotFound(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetUser(rr, req)
+	api.GetUser(rr, req)
 
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 func TestGetUserTraffic_ReturnsData(t *testing.T) {
 	t.Parallel()
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	insertUserTestData(t)
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertUserTestData(t, api)
 
 	ctx := t.Context()
 
 	// Insert traffic counters for tunnel 501
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO fact_dz_device_interface_counters
 			(event_ts, device_pk, user_tunnel_id, in_octets_delta, out_octets_delta, in_pkts_delta, out_pkts_delta, delta_duration)
 		VALUES
@@ -197,7 +196,7 @@ func TestGetUserTraffic_ReturnsData(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetUserTraffic(rr, req)
+	api.GetUserTraffic(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -216,8 +215,8 @@ func TestGetUserTraffic_ReturnsData(t *testing.T) {
 
 func TestGetUserTraffic_Empty(t *testing.T) {
 	t.Parallel()
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	insertUserTestData(t)
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertUserTestData(t, api)
 
 	// No traffic counters inserted
 
@@ -227,7 +226,7 @@ func TestGetUserTraffic_Empty(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetUserTraffic(rr, req)
+	api.GetUserTraffic(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -239,14 +238,14 @@ func TestGetUserTraffic_Empty(t *testing.T) {
 
 func TestGetUserTraffic_MissingPK(t *testing.T) {
 	t.Parallel()
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/users//traffic", nil)
 	rctx := chi.NewRouteContext()
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetUserTraffic(rr, req)
+	api.GetUserTraffic(rr, req)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }

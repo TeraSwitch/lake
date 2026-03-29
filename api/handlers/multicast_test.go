@@ -8,18 +8,17 @@ import (
 	"testing"
 
 	"github.com/go-chi/chi/v5"
-	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers"
 	apitesting "github.com/malbeclabs/lake/api/testing"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func insertMulticastTestData(t *testing.T) {
+func insertMulticastTestData(t *testing.T, api *handlers.API) {
 	ctx := t.Context()
 
 	// Insert metros
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_metros_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pk, code, name)
 		VALUES
@@ -29,7 +28,7 @@ func insertMulticastTestData(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert devices
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_devices_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash,
 			 pk, status, device_type, code, public_ip, contributor_pk, metro_pk, max_users)
@@ -40,7 +39,7 @@ func insertMulticastTestData(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert multicast group
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_multicast_groups_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash,
 			 pk, owner_pubkey, code, multicast_ip, max_bandwidth, status, publisher_count, subscriber_count)
@@ -50,7 +49,7 @@ func insertMulticastTestData(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert multicast users: one publisher, one subscriber
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_dz_users_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash,
 			 pk, owner_pubkey, status, kind, client_ip, dz_ip, device_pk, tunnel_id, publishers, subscribers)
@@ -62,12 +61,12 @@ func insertMulticastTestData(t *testing.T) {
 }
 
 func TestGetMulticastGroups_Empty(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups", nil)
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroups(rr, req)
+	api.GetMulticastGroups(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -78,13 +77,13 @@ func TestGetMulticastGroups_Empty(t *testing.T) {
 }
 
 func TestGetMulticastGroups_ReturnsRealCounts(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups", nil)
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroups(rr, req)
+	api.GetMulticastGroups(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -101,8 +100,8 @@ func TestGetMulticastGroups_ReturnsRealCounts(t *testing.T) {
 }
 
 func TestGetMulticastGroup_NotFound(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups/nonexistent", nil)
 	rctx := chi.NewRouteContext()
@@ -110,15 +109,15 @@ func TestGetMulticastGroup_NotFound(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroup(rr, req)
+	api.GetMulticastGroup(rr, req)
 
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 func TestGetMulticastGroup_ReturnsMetadataOnly(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups/test-group", nil)
 	rctx := chi.NewRouteContext()
@@ -126,7 +125,7 @@ func TestGetMulticastGroup_ReturnsMetadataOnly(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroup(rr, req)
+	api.GetMulticastGroup(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -139,9 +138,9 @@ func TestGetMulticastGroup_ReturnsMetadataOnly(t *testing.T) {
 }
 
 func TestGetMulticastGroupMembers_ReturnsMembers(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	// Fetch publishers tab
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups/test-group/members?tab=publishers", nil)
@@ -150,7 +149,7 @@ func TestGetMulticastGroupMembers_ReturnsMembers(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -176,7 +175,7 @@ func TestGetMulticastGroupMembers_ReturnsMembers(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr = httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -193,14 +192,14 @@ func TestGetMulticastGroupMembers_ReturnsMembers(t *testing.T) {
 }
 
 func TestGetMulticastGroupMembers_TrafficBps(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	ctx := t.Context()
 
 	// Insert rollup data for both tunnels (recent, within 15 min)
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO device_interface_rollup_5m
 			(bucket_ts, device_pk, intf, user_tunnel_id, ingested_at, avg_in_bps, avg_out_bps, avg_in_pps, avg_out_pps)
 		VALUES
@@ -216,7 +215,7 @@ func TestGetMulticastGroupMembers_TrafficBps(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -233,7 +232,7 @@ func TestGetMulticastGroupMembers_TrafficBps(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr = httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -244,9 +243,9 @@ func TestGetMulticastGroupMembers_TrafficBps(t *testing.T) {
 }
 
 func TestGetMulticastGroupMembers_TrafficBps_NoCounters(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	// Don't insert any traffic counters — traffic_bps should be 0
 
@@ -256,7 +255,7 @@ func TestGetMulticastGroupMembers_TrafficBps_NoCounters(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -268,29 +267,29 @@ func TestGetMulticastGroupMembers_TrafficBps_NoCounters(t *testing.T) {
 }
 
 func TestGetMulticastGroup_MissingCode(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups/", nil)
 	rctx := chi.NewRouteContext()
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroup(rr, req)
+	api.GetMulticastGroup(rr, req)
 
 	assert.Equal(t, http.StatusBadRequest, rr.Code)
 }
 
 func TestGetMulticastGroupMembers_LeaderEnrichment(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	ctx := t.Context()
 
 	// The publisher user has client_ip='10.0.0.1'
 	// Insert gossip node mapping: node pubkey -> gossip_ip = client_ip
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_gossip_nodes_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pubkey, epoch, gossip_ip, gossip_port, tpuquic_ip, tpuquic_port, version)
 		VALUES
@@ -299,7 +298,7 @@ func TestGetMulticastGroupMembers_LeaderEnrichment(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert leader schedule: slots include 100 (current), 90 (past), 110 (future)
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_leader_schedule_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, node_pubkey, epoch, slots, slot_count)
 		VALUES
@@ -308,7 +307,7 @@ func TestGetMulticastGroupMembers_LeaderEnrichment(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert vote activity with cluster_slot=100 (matches a leader slot)
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO fact_solana_vote_account_activity (event_ts, cluster_slot) VALUES
 		(now(), 100)
 	`)
@@ -320,7 +319,7 @@ func TestGetMulticastGroupMembers_LeaderEnrichment(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -345,7 +344,7 @@ func TestGetMulticastGroupMembers_LeaderEnrichment(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr = httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -359,14 +358,14 @@ func TestGetMulticastGroupMembers_LeaderEnrichment(t *testing.T) {
 }
 
 func TestGetMulticastGroupTraffic_ReturnsTimeSeries(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	ctx := t.Context()
 
 	// Insert traffic counter data for both tunnels (recent, within 1 hour)
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO fact_dz_device_interface_counters
 			(event_ts, device_pk, user_tunnel_id, in_octets_delta, out_octets_delta, delta_duration)
 		VALUES
@@ -382,7 +381,7 @@ func TestGetMulticastGroupTraffic_ReturnsTimeSeries(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupTraffic(rr, req)
+	api.GetMulticastGroupTraffic(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -403,8 +402,8 @@ func TestGetMulticastGroupTraffic_ReturnsTimeSeries(t *testing.T) {
 }
 
 func TestGetMulticastGroupTraffic_NotFound(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups/nonexistent/traffic", nil)
 	rctx := chi.NewRouteContext()
@@ -412,15 +411,15 @@ func TestGetMulticastGroupTraffic_NotFound(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupTraffic(rr, req)
+	api.GetMulticastGroupTraffic(rr, req)
 
 	assert.Equal(t, http.StatusNotFound, rr.Code)
 }
 
 func TestGetMulticastGroupTraffic_NoCounters(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	req := httptest.NewRequest(http.MethodGet, "/api/dz/multicast-groups/test-group/traffic?time_range=1h", nil)
 	rctx := chi.NewRouteContext()
@@ -428,7 +427,7 @@ func TestGetMulticastGroupTraffic_NoCounters(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupTraffic(rr, req)
+	api.GetMulticastGroupTraffic(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -439,14 +438,14 @@ func TestGetMulticastGroupTraffic_NoCounters(t *testing.T) {
 }
 
 func TestGetMulticastGroupMembers_NoLeader(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	ctx := t.Context()
 
 	// Insert gossip node mapping
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_gossip_nodes_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pubkey, epoch, gossip_ip, gossip_port, tpuquic_ip, tpuquic_port, version)
 		VALUES
@@ -455,7 +454,7 @@ func TestGetMulticastGroupMembers_NoLeader(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert leader schedule: slots 80, 90, 110 — current slot 100 is NOT in the list
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_leader_schedule_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, node_pubkey, epoch, slots, slot_count)
 		VALUES
@@ -464,7 +463,7 @@ func TestGetMulticastGroupMembers_NoLeader(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert vote activity with cluster_slot=100
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO fact_solana_vote_account_activity (event_ts, cluster_slot) VALUES
 		(now(), 100)
 	`)
@@ -476,7 +475,7 @@ func TestGetMulticastGroupMembers_NoLeader(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
@@ -496,14 +495,14 @@ func TestGetMulticastGroupMembers_NoLeader(t *testing.T) {
 }
 
 func TestGetMulticastGroupMembers_ValidatorEnrichment(t *testing.T) {
-	apitesting.SetupTestClickHouseWithMigrations(t, testChDB)
-	apitesting.SetSequentialFallback(t)
-	insertMulticastTestData(t)
+	t.Parallel()
+	api := apitesting.NewTestAPI(t, testChDB)
+	insertMulticastTestData(t, api)
 
 	ctx := t.Context()
 
 	// Insert gossip node for publisher
-	err := config.DB.Exec(ctx, `
+	err := api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_gossip_nodes_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash, pubkey, epoch, gossip_ip, gossip_port, tpuquic_ip, tpuquic_port, version)
 		VALUES
@@ -512,7 +511,7 @@ func TestGetMulticastGroupMembers_ValidatorEnrichment(t *testing.T) {
 	require.NoError(t, err)
 
 	// Insert vote account for the gossip node
-	err = config.DB.Exec(ctx, `
+	err = api.DB.Exec(ctx, `
 		INSERT INTO dim_solana_vote_accounts_history
 			(entity_id, snapshot_ts, ingested_at, op_id, is_deleted, attrs_hash,
 			 vote_pubkey, epoch, node_pubkey, activated_stake_lamports, epoch_vote_account, commission_percentage)
@@ -528,7 +527,7 @@ func TestGetMulticastGroupMembers_ValidatorEnrichment(t *testing.T) {
 	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, rctx))
 
 	rr := httptest.NewRecorder()
-	handlers.GetMulticastGroupMembers(rr, req)
+	api.GetMulticastGroupMembers(rr, req)
 
 	assert.Equal(t, http.StatusOK, rr.Code)
 
