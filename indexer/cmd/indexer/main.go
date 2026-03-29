@@ -32,6 +32,7 @@ import (
 	"github.com/malbeclabs/lake/indexer/pkg/clickhouse"
 	dztelemusage "github.com/malbeclabs/lake/indexer/pkg/dz/telemetry/usage"
 	"github.com/malbeclabs/lake/indexer/pkg/dzingest"
+	"github.com/malbeclabs/lake/indexer/pkg/incidents"
 	"github.com/malbeclabs/lake/indexer/pkg/indexer"
 	"github.com/malbeclabs/lake/indexer/pkg/ingestionlog"
 	"github.com/malbeclabs/lake/indexer/pkg/metrics"
@@ -127,6 +128,11 @@ func run() error {
 	noTestnetFlag := flag.Bool("no-testnet", false, "Disable the testnet secondary network indexer")
 	noInfluxDevnetFlag := flag.Bool("no-influx-devnet", false, "Disable InfluxDB ingestion for devnet (or set NO_INFLUX_DEVNET=true env var)")
 	noInfluxTestnetFlag := flag.Bool("no-influx-testnet", false, "Disable InfluxDB ingestion for testnet (or set NO_INFLUX_TESTNET=true env var)")
+
+	// Incidents worker configuration
+	noIncidentsFlag := flag.Bool("no-incidents", false, "Disable the embedded incidents detection worker")
+	incidentsCoalesceGapFlag := flag.Duration("incidents-coalesce-gap", 30*time.Minute, "How long all symptoms must clear before an incident is resolved")
+	incidentsEscalationThresholdFlag := flag.Duration("incidents-escalation-threshold", 30*time.Minute, "How long a symptom must persist to escalate severity")
 
 	// Remote tables configuration
 	setupRemoteTablesFlag := flag.Bool("setup-remote-tables", false, "Set up remote proxy tables on startup (or set SETUP_REMOTE_TABLES=true env var)")
@@ -765,6 +771,29 @@ func run() error {
 		log.Info("rollup worker disabled (--no-rollup)")
 	}
 
+	// Start the embedded incidents detection worker.
+	var incidentsErrCh chan error
+	if !*noIncidentsFlag {
+		incidentsErrCh = make(chan error, 1)
+		go func() {
+			err := incidents.Start(ctx, incidents.Config{
+				Log:                 log.With("component", "incidents"),
+				ClickHouseAddr:      *clickhouseAddrFlag,
+				ClickHouseDatabase:  *clickhouseDatabaseFlag,
+				ClickHouseUsername:  *clickhouseUsernameFlag,
+				ClickHousePassword:  *clickhousePasswordFlag,
+				ClickHouseSecure:    *clickhouseSecureFlag,
+				CoalesceGap:         *incidentsCoalesceGapFlag,
+				EscalationThreshold: *incidentsEscalationThresholdFlag,
+			})
+			if err != nil {
+				incidentsErrCh <- err
+			}
+		}()
+	} else {
+		log.Info("incidents worker disabled (--no-incidents)")
+	}
+
 	select {
 	case <-ctx.Done():
 		log.Info("server: shutting down", "reason", ctx.Err())
@@ -783,6 +812,9 @@ func run() error {
 		return err
 	case err := <-rollupErrCh:
 		log.Error("server: rollup worker error causing shutdown", "error", err)
+		return err
+	case err := <-incidentsErrCh:
+		log.Error("server: incidents worker error causing shutdown", "error", err)
 		return err
 	}
 }

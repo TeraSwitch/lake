@@ -525,6 +525,12 @@ func main() {
 		r.Get("/api/incidents/devices", api.GetDeviceIncidents)
 		r.Get("/api/incidents/devices/csv", api.GetDeviceIncidentsCSV)
 
+		// Incident routes v2 (event-based)
+		r.Get("/api/v2/incidents/links", api.GetLinkIncidentsV2)
+		r.Get("/api/v2/incidents/links/{id}", api.GetLinkIncidentDetail)
+		r.Get("/api/v2/incidents/devices", api.GetDeviceIncidentsV2)
+		r.Get("/api/v2/incidents/devices/{id}", api.GetDeviceIncidentDetail)
+
 		// Search routes
 		r.Get("/api/search", api.Search)
 		r.Get("/api/search/autocomplete", api.SearchAutocomplete)

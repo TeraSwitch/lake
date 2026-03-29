@@ -106,6 +106,9 @@ func run() error {
 	backfillRollupFlag := flag.Bool("start-backfill-rollup", false, "Trigger Temporal rollup backfill workflow (requires --start-time-ago or --start-time)")
 	backfillEscrowEventsFlag := flag.Bool("backfill-escrow-events", false, "Re-fetch all escrow events from on-chain transaction history via Temporal workflow")
 	backfillEscrowEventsTruncateFlag := flag.Bool("backfill-escrow-events-truncate", false, "Truncate the escrow events table before backfilling (use with --backfill-escrow-events)")
+	backfillIncidentsFlag := flag.Bool("start-backfill-incidents", false, "Trigger Temporal incidents backfill workflow (requires --start-time-ago or --start-time)")
+	backfillIncidentsOverwriteFlag := flag.Bool("backfill-incidents-overwrite", false, "Overwrite existing incident events per chunk")
+	backfillIncidentsCleanFlag := flag.Bool("backfill-incidents-clean", false, "Delete all incident events in the time range before backfilling")
 
 	// Backfill options (latency - epoch-based)
 	dzEnvFlag := flag.String("dz-env", config.EnvMainnetBeta, "DZ ledger environment (devnet, testnet, mainnet-beta)")
@@ -462,6 +465,26 @@ func run() error {
 		return admin.BackfillEscrowEvents(log, admin.BackfillEscrowEventsConfig{
 			Network:  *dzEnvFlag,
 			Truncate: *backfillEscrowEventsTruncateFlag,
+		})
+	}
+
+	if *backfillIncidentsFlag {
+		if startTime.IsZero() {
+			return fmt.Errorf("--start-time or --start-time-ago is required for --start-backfill-incidents")
+		}
+		// Use the full time range as a single chunk unless --chunk-interval was
+		// explicitly set. The incidents backfill handles the entire range in one
+		// SQL query which avoids cross-chunk coalescing issues.
+		chunkInterval := endTime.Sub(startTime)
+		if flag.Lookup("chunk-interval").Changed {
+			chunkInterval = *chunkIntervalFlag
+		}
+		return admin.BackfillIncidents(log, admin.BackfillIncidentsConfig{
+			StartTime:     startTime,
+			EndTime:       endTime,
+			ChunkInterval: chunkInterval,
+			Overwrite:     *backfillIncidentsOverwriteFlag,
+			Clean:         *backfillIncidentsCleanFlag,
 		})
 	}
 

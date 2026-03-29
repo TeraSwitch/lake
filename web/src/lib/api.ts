@@ -4472,6 +4472,422 @@ export async function fetchDeviceIncidents(params: FetchDeviceIncidentsParams = 
   return res.json()
 }
 
+// --- Incidents v2 types and functions ---
+
+export type LinkSymptomType = 'packet_loss' | 'isis_down' | 'no_latency_data' | 'no_traffic_data' | 'errors' | 'fcs' | 'discards' | 'carrier'
+export type DeviceSymptomType = 'isis_overload' | 'isis_unreachable' | 'no_latency_data' | 'no_traffic_data' | 'errors' | 'fcs' | 'discards' | 'carrier'
+export type IncidentSeverity = 'critical' | 'warning'
+export type IncidentStatus = 'ongoing' | 'pending_resolution' | 'resolved'
+
+export interface LinkIncidentV2 {
+  incident_id: string
+  link_pk: string
+  severity: IncidentSeverity
+  status: IncidentStatus
+  started_at: string
+  ended_at?: string
+  duration_seconds: number
+  active_symptoms: string[]
+  symptoms: string[]
+  peak_values: Record<string, number>
+  last_event_ts: string
+  link_code: string
+  link_type: string
+  side_a_metro: string
+  side_z_metro: string
+  contributor_code: string
+  entity_status: string
+  provisioning: boolean
+  is_drained: boolean
+}
+
+export interface DrainedLinkInfoV2 {
+  link_pk: string
+  link_code: string
+  link_type: string
+  side_a_metro: string
+  side_z_metro: string
+  contributor_code: string
+  drain_status: string
+  drained_since: string
+  active_incidents: LinkIncidentV2[]
+  recent_incidents: LinkIncidentV2[]
+  last_incident_end?: string
+  clear_for_seconds?: number
+  readiness: 'red' | 'yellow' | 'green' | 'gray'
+}
+
+export interface DeviceIncidentV2 {
+  incident_id: string
+  device_pk: string
+  severity: IncidentSeverity
+  status: IncidentStatus
+  started_at: string
+  ended_at?: string
+  duration_seconds: number
+  active_symptoms: string[]
+  symptoms: string[]
+  peak_values: Record<string, number>
+  last_event_ts: string
+  device_code: string
+  device_type: string
+  metro: string
+  contributor_code: string
+  entity_status: string
+  is_drained: boolean
+}
+
+export interface DrainedDeviceInfoV2 {
+  device_pk: string
+  device_code: string
+  device_type: string
+  metro: string
+  contributor_code: string
+  drain_status: string
+  drained_since: string
+  active_incidents: DeviceIncidentV2[]
+  recent_incidents: DeviceIncidentV2[]
+  last_incident_end?: string
+  clear_for_seconds?: number
+  readiness: 'red' | 'yellow' | 'green' | 'gray'
+}
+
+export interface IncidentsV2Summary {
+  total: number
+  ongoing: number
+  critical: number
+  warning: number
+  by_symptom: Record<string, number>
+}
+
+export interface LinkIncidentsV2Response {
+  incidents: LinkIncidentV2[]
+  summary: IncidentsV2Summary
+  drained: DrainedLinkInfoV2[]
+  drained_summary: DrainedSummary
+}
+
+export interface DeviceIncidentsV2Response {
+  incidents: DeviceIncidentV2[]
+  summary: IncidentsV2Summary
+  drained: DrainedDeviceInfoV2[]
+  drained_summary: DrainedSummary
+}
+
+export interface FetchIncidentsV2Params {
+  range?: IncidentTimeRange
+  severity?: 'all' | IncidentSeverity
+  symptom?: string
+  status?: 'all' | IncidentStatus
+  filter?: string
+}
+
+export async function fetchLinkIncidentsV2(params: FetchIncidentsV2Params = {}): Promise<LinkIncidentsV2Response> {
+  const searchParams = new URLSearchParams()
+  if (params.range) searchParams.set('range', params.range)
+  if (params.severity && params.severity !== 'all') searchParams.set('severity', params.severity)
+  if (params.symptom) searchParams.set('symptom', params.symptom)
+  if (params.status && params.status !== 'all') searchParams.set('status', params.status)
+  if (params.filter) searchParams.set('filter', params.filter)
+
+  const queryString = searchParams.toString()
+  const url = `/api/v2/incidents/links${queryString ? `?${queryString}` : ''}`
+
+  const res = await fetchWithRetry(url)
+  if (!res.ok) {
+    throw new Error('Failed to fetch link incidents')
+  }
+  return res.json()
+}
+
+export async function fetchDeviceIncidentsV2(params: FetchIncidentsV2Params = {}): Promise<DeviceIncidentsV2Response> {
+  const searchParams = new URLSearchParams()
+  if (params.range) searchParams.set('range', params.range)
+  if (params.severity && params.severity !== 'all') searchParams.set('severity', params.severity)
+  if (params.symptom) searchParams.set('symptom', params.symptom)
+  if (params.status && params.status !== 'all') searchParams.set('status', params.status)
+  if (params.filter) searchParams.set('filter', params.filter)
+
+  const queryString = searchParams.toString()
+  const url = `/api/v2/incidents/devices${queryString ? `?${queryString}` : ''}`
+
+  const res = await fetchWithRetry(url)
+  if (!res.ok) {
+    throw new Error('Failed to fetch device incidents')
+  }
+  return res.json()
+}
+
+// --- Incident detail types and functions ---
+
+export interface IncidentEventV2 {
+  event_type: string
+  event_ts: string
+  active_symptoms: string[]
+  symptoms: string[]
+  severity: IncidentSeverity
+  peak_values: Record<string, number>
+}
+
+export interface EntityStatusChange {
+  previous_status: string
+  new_status: string
+  changed_ts: string
+}
+
+export interface LinkIncidentDetailResponse {
+  incident_id: string
+  link_pk: string
+  severity: IncidentSeverity
+  status: IncidentStatus
+  started_at: string
+  ended_at?: string
+  duration_seconds: number
+  active_symptoms: string[]
+  symptoms: string[]
+  peak_values: Record<string, number>
+  link_code: string
+  link_type: string
+  side_a_metro: string
+  side_z_metro: string
+  contributor_code: string
+  entity_status: string
+  provisioning: boolean
+  events: IncidentEventV2[]
+  status_changes: EntityStatusChange[]
+}
+
+export interface DeviceIncidentDetailResponse {
+  incident_id: string
+  device_pk: string
+  severity: IncidentSeverity
+  status: IncidentStatus
+  started_at: string
+  ended_at?: string
+  duration_seconds: number
+  active_symptoms: string[]
+  symptoms: string[]
+  peak_values: Record<string, number>
+  device_code: string
+  device_type: string
+  metro: string
+  contributor_code: string
+  entity_status: string
+  events: IncidentEventV2[]
+  status_changes: EntityStatusChange[]
+}
+
+// --- Unified Link Metrics API ---
+
+export interface LinkMetricsStatus {
+  health: string
+  drain_status: string
+  provisioning: boolean
+  isis_down: boolean
+  collecting: boolean
+}
+
+export interface LinkMetricsLatency {
+  a_avg_rtt_us: number
+  a_min_rtt_us: number
+  a_p50_rtt_us: number
+  a_p90_rtt_us: number
+  a_p95_rtt_us: number
+  a_p99_rtt_us: number
+  a_max_rtt_us: number
+  a_loss_pct: number
+  a_samples: number
+  z_avg_rtt_us: number
+  z_min_rtt_us: number
+  z_p50_rtt_us: number
+  z_p90_rtt_us: number
+  z_p95_rtt_us: number
+  z_p99_rtt_us: number
+  z_max_rtt_us: number
+  z_loss_pct: number
+  z_samples: number
+  a_avg_jitter_us: number
+  a_min_jitter_us: number
+  a_p50_jitter_us: number
+  a_p90_jitter_us: number
+  a_p95_jitter_us: number
+  a_p99_jitter_us: number
+  a_max_jitter_us: number
+  z_avg_jitter_us: number
+  z_min_jitter_us: number
+  z_p50_jitter_us: number
+  z_p90_jitter_us: number
+  z_p95_jitter_us: number
+  z_p99_jitter_us: number
+  z_max_jitter_us: number
+  [key: string]: number // allow dynamic field access for agg mode selection
+}
+
+export interface LinkMetricsTraffic {
+  side_a_in_bps: number
+  side_a_out_bps: number
+  side_z_in_bps: number
+  side_z_out_bps: number
+  side_a_max_in_bps: number
+  side_a_max_out_bps: number
+  side_z_max_in_bps: number
+  side_z_max_out_bps: number
+  side_a_in_pps: number
+  side_a_out_pps: number
+  side_z_in_pps: number
+  side_z_out_pps: number
+  side_a_max_in_pps: number
+  side_a_max_out_pps: number
+  side_z_max_in_pps: number
+  side_z_max_out_pps: number
+  side_a_in_errors: number
+  side_a_out_errors: number
+  side_a_in_fcs_errors: number
+  side_a_in_discards: number
+  side_a_out_discards: number
+  side_a_carrier_transitions: number
+  side_z_in_errors: number
+  side_z_out_errors: number
+  side_z_in_fcs_errors: number
+  side_z_in_discards: number
+  side_z_out_discards: number
+  side_z_carrier_transitions: number
+  utilization_in_pct: number
+  utilization_out_pct: number
+}
+
+export interface LinkMetricsBucket {
+  ts: string
+  status?: LinkMetricsStatus
+  latency?: LinkMetricsLatency
+  traffic?: LinkMetricsTraffic
+}
+
+export interface LinkMetricsResponse {
+  link_pk: string
+  link_code: string
+  link_type: string
+  contributor_code: string
+  side_a_metro: string
+  side_z_metro: string
+  committed_rtt_us: number
+  committed_jitter_us: number
+  bandwidth_bps: number
+  time_range: string
+  bucket_seconds: number
+  bucket_count: number
+  buckets: LinkMetricsBucket[]
+  status_changes?: EntityStatusChange[]
+}
+
+export type LinkMetricsInclude = 'all' | 'status' | 'latency' | 'traffic' | 'status_changes'
+
+export interface FetchLinkMetricsParams {
+  range?: string
+  startTime?: number
+  endTime?: number
+  bucket?: string
+  include?: LinkMetricsInclude[]
+}
+
+export async function fetchLinkMetrics(pk: string, params: FetchLinkMetricsParams = {}): Promise<LinkMetricsResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.range) searchParams.set('range', params.range)
+  if (params.startTime) searchParams.set('start_time', params.startTime.toString())
+  if (params.endTime) searchParams.set('end_time', params.endTime.toString())
+  if (params.bucket) searchParams.set('bucket', params.bucket)
+  if (params.include && params.include.length > 0) searchParams.set('include', params.include.join(','))
+  const qs = searchParams.toString()
+  const res = await fetchWithRetry(`/api/link-metrics/${encodeURIComponent(pk)}${qs ? `?${qs}` : ''}`)
+  if (!res.ok) throw new Error('Failed to fetch link metrics')
+  return res.json()
+}
+
+// --- Device Metrics types ---
+
+export interface DeviceMetricsStatus {
+  health: string
+  drain_status: string
+  collecting: boolean
+  isis_overload: boolean
+  isis_unreachable: boolean
+  no_probes: boolean
+}
+
+export interface DeviceMetricsTraffic {
+  in_bps: number
+  out_bps: number
+  max_in_bps: number
+  max_out_bps: number
+  in_pps: number
+  out_pps: number
+  max_in_pps: number
+  max_out_pps: number
+  in_errors: number
+  out_errors: number
+  in_fcs_errors: number
+  in_discards: number
+  out_discards: number
+  carrier_transitions: number
+}
+
+export interface DeviceMetricsBucket {
+  ts: string
+  status?: DeviceMetricsStatus
+  traffic?: DeviceMetricsTraffic
+}
+
+export interface DeviceMetricsResponse {
+  device_pk: string
+  device_code: string
+  device_type: string
+  contributor_code: string
+  metro: string
+  max_users: number
+  time_range: string
+  bucket_seconds: number
+  bucket_count: number
+  buckets: DeviceMetricsBucket[]
+  status_changes?: EntityStatusChange[]
+}
+
+export type DeviceMetricsInclude = 'all' | 'status' | 'traffic' | 'status_changes'
+
+export interface FetchDeviceMetricsParams {
+  range?: string
+  startTime?: number
+  endTime?: number
+  bucket?: string
+  include?: DeviceMetricsInclude[]
+}
+
+export async function fetchDeviceMetrics(pk: string, params: FetchDeviceMetricsParams = {}): Promise<DeviceMetricsResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.range) searchParams.set('range', params.range)
+  if (params.startTime) searchParams.set('start_time', params.startTime.toString())
+  if (params.endTime) searchParams.set('end_time', params.endTime.toString())
+  if (params.bucket) searchParams.set('bucket', params.bucket)
+  if (params.include && params.include.length > 0) searchParams.set('include', params.include.join(','))
+  const qs = searchParams.toString()
+  const res = await fetchWithRetry(`/api/device-metrics/${encodeURIComponent(pk)}${qs ? `?${qs}` : ''}`)
+  if (!res.ok) throw new Error('Failed to fetch device metrics')
+  return res.json()
+}
+
+export async function fetchLinkIncidentDetail(id: string): Promise<LinkIncidentDetailResponse> {
+  const res = await fetchWithRetry(`/api/v2/incidents/links/${encodeURIComponent(id)}`)
+  if (res.status === 404) throw new Error('Incident not found')
+  if (!res.ok) throw new Error('Failed to fetch incident detail')
+  return res.json()
+}
+
+export async function fetchDeviceIncidentDetail(id: string): Promise<DeviceIncidentDetailResponse> {
+  const res = await fetchWithRetry(`/api/v2/incidents/devices/${encodeURIComponent(id)}`)
+  if (res.status === 404) throw new Error('Incident not found')
+  if (!res.ok) throw new Error('Failed to fetch incident detail')
+  return res.json()
+}
+
 // Auth types and functions
 export type AccountType = 'domain' | 'wallet'
 

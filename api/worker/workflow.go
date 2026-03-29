@@ -103,6 +103,20 @@ func (a *Activities) entries() []cacheEntry {
 		{"bulk device metrics (issues)", "bulk_device_metrics_issues", func(ctx context.Context) (any, error) {
 			return api.FetchBulkDeviceMetricsIssuesData(ctx)
 		}},
+		{"link incidents v2", "link_incidents_v2", func(ctx context.Context) (any, error) {
+			resp := api.FetchDefaultLinkIncidentsV2Data(ctx)
+			if resp == nil {
+				return nil, &refreshError{"nil response"}
+			}
+			return resp, nil
+		}},
+		{"device incidents v2", "device_incidents_v2", func(ctx context.Context) (any, error) {
+			resp := api.FetchDefaultDeviceIncidentsV2Data(ctx)
+			if resp == nil {
+				return nil, &refreshError{"nil response"}
+			}
+			return resp, nil
+		}},
 	}
 }
 

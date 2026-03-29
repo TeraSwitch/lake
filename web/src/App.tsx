@@ -37,6 +37,8 @@ import { MaintenancePlannerPage } from '@/components/maintenance-planner-page'
 import { StatusPage } from '@/components/status-page'
 import { TimelinePage } from '@/components/timeline-page'
 import { IncidentsPage } from '@/components/incidents-page'
+import { LinkIncidentDetailPage } from '@/components/link-incident-detail-page'
+import { DeviceIncidentDetailPage } from '@/components/device-incident-detail-page'
 import { StatusAppendix } from '@/components/status-appendix'
 import { DevicesPage } from '@/components/devices-page'
 import { LinksPage } from '@/components/links-page'
@@ -671,7 +673,9 @@ function AppContent() {
             {/* Incidents routes */}
             <Route path="/incidents" element={<Navigate to="/incidents/links" replace />} />
             <Route path="/incidents/links" element={<IncidentsPage />} />
+            <Route path="/incidents/links/:id" element={<LinkIncidentDetailPage />} />
             <Route path="/incidents/devices" element={<IncidentsPage />} />
+            <Route path="/incidents/devices/:id" element={<DeviceIncidentDetailPage />} />
 
 
             {/* Settings */}
