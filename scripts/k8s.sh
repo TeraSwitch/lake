@@ -123,11 +123,11 @@ ensure_geoip() {
     info "Downloading GeoIP databases..."
     mkdir -p "$geoip_dir"
 
-    local s3_base="https://malbeclabs-lake-dev-geoip.s3.amazonaws.com"
+    local s3_base="https://malbeclabs-dev-public-artifacts.s3.us-east-1.amazonaws.com/geoip"
     for db in GeoLite2-City GeoLite2-ASN; do
         if [ ! -f "$geoip_dir/$db.mmdb" ]; then
             echo "  Downloading $db..."
-            curl -sL "$s3_base/$db.tar.gz" | tar -xz -C "$geoip_dir" --strip-components=1 "*/$db.mmdb" 2>/dev/null || {
+            curl -fsSL "$s3_base/$db.tar.gz" | tar -xzf - -C "$geoip_dir" || {
                 warn "Failed to download $db — indexer/api may not start correctly without it."
             }
         fi
@@ -225,14 +225,16 @@ cmd_up() {
     ensure_env
     ensure_geoip
 
-    # Detect port conflicts before creating the cluster, so we don't
-    # mistake our own Tilt port-forwards for external conflicts.
+    # Detect or restore the port offset. The offset is persisted so that
+    # restarting Tilt (without recreating the cluster) uses the same ports.
+    local offset_file="$KUBECONFIG_DIR/$CLUSTER_NAME.port-offset"
     local offset=0
-    if cluster_exists; then
-        # Cluster already running — Tilt will reclaim its existing port-forwards.
-        offset=0
+    if [ -f "$offset_file" ]; then
+        offset=$(cat "$offset_file")
     else
         offset=$(detect_port_offset)
+        mkdir -p "$KUBECONFIG_DIR"
+        echo "$offset" > "$offset_file"
     fi
 
     ensure_cluster
@@ -251,10 +253,23 @@ cmd_up() {
     echo "  temporal-ui: http://localhost:$((8233 + offset))"
     echo "  tilt:        http://localhost:$((10350 + offset))"
     echo ""
+    echo "  Run local tools against this cluster:"
+    echo "    eval \$($0 env${NAME_ARG:+ $NAME_ARG})"
+    echo ""
+    echo "  Sync .env secrets (after editing .env):"
+    echo "    $0 sync${NAME_ARG:+ $NAME_ARG}"
+    echo ""
+    echo "  kubectl (run 'eval' above first to set KUBECONFIG):"
+    echo "    kubectl -n lake-dev get pods"
+    echo ""
 
     export LAKE_CLUSTER_NAME="$CLUSTER_NAME"
 
     info "Starting Tilt (cluster: $CLUSTER_NAME)..."
+    echo "  Ctrl-C stops Tilt but the cluster keeps running."
+    echo "  Re-run '$0 up${NAME_ARG:+ $NAME_ARG}' to reconnect Tilt."
+    echo "  Run '$0 down${NAME_ARG:+ $NAME_ARG}' to stop the cluster."
+    echo ""
     cd "$LAKE_ROOT"
     exec tilt up --port "$((10350 + offset))"
 }
@@ -280,6 +295,7 @@ cmd_down() {
         info "Deleting cluster '$CLUSTER_NAME' (including all data)..."
         k3d cluster delete "$CLUSTER_NAME"
         rm -f "$KUBECONFIG_DIR/$CLUSTER_NAME.kubeconfig"
+        rm -f "$KUBECONFIG_DIR/$CLUSTER_NAME.port-offset"
         info "Cluster deleted."
     else
         if [ "${YES:-}" != "true" ]; then
@@ -294,6 +310,36 @@ cmd_down() {
         k3d cluster stop "$CLUSTER_NAME"
         info "Cluster stopped. Run 'up' to restart, or 'down --clean' to delete."
     fi
+}
+
+cmd_sync() {
+    if ! cluster_exists; then
+        warn "Cluster '$CLUSTER_NAME' is not running. Start it with: $0 up"
+        exit 1
+    fi
+    k3d kubeconfig get "$CLUSTER_NAME" > "$KUBECONFIG" 2>/dev/null
+    sync_secrets
+    info "Restarting deployments to pick up changes..."
+    kubectl -n lake-dev rollout restart deployment 2>/dev/null
+    info "Done. Pods will restart with updated secrets."
+}
+
+cmd_env() {
+    if ! cluster_exists; then
+        echo "# Cluster '$CLUSTER_NAME' is not running." >&2
+        exit 1
+    fi
+
+    local offset_file="$KUBECONFIG_DIR/$CLUSTER_NAME.port-offset"
+    local offset=0
+    if [ -f "$offset_file" ]; then
+        offset=$(cat "$offset_file")
+    fi
+
+    echo "export KUBECONFIG=\"$KUBECONFIG\""
+    echo "export CLICKHOUSE_ADDR_TCP=\"localhost:$((9100 + offset))\""
+    echo "export TEMPORAL_HOST_PORT=\"localhost:$((7233 + offset))\""
+    echo "# Usage: eval \$($0 env${NAME_ARG:+ $NAME_ARG})"
 }
 
 cmd_status() {
@@ -359,15 +405,19 @@ use_isolated_kubeconfig
 case "$ACTION" in
     up)     cmd_up ;;
     down)   cmd_down ;;
+    sync)   cmd_sync ;;
+    env)    cmd_env ;;
     status) cmd_status ;;
     list)   cmd_list ;;
     *)
-        echo "Usage: $0 {up|down|status|list} [name] [--clean] [-y|--yes]"
+        echo "Usage: $0 {up|down|sync|env|status|list} [name] [--clean] [-y|--yes]"
         echo ""
         echo "  up [name]           Create cluster and start Tilt"
         echo "  down [name]         Stop cluster (preserves data)"
         echo "  down --clean        Delete cluster and all data"
         echo "  down -y|--yes       Skip confirmation prompt"
+        echo "  sync [name]         Sync .env secrets and restart pods"
+        echo "  env [name]          Print shell exports for the cluster's ports"
         echo "  status [name]       Show cluster and pod status"
         echo "  list                List all lake clusters"
         echo ""
