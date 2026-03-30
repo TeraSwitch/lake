@@ -333,8 +333,9 @@ function EventTimeline({
 function DeviceIncidentDetailContent({ data }: { data: DeviceIncidentDetailResponse }) {
   const isOngoing = data.status === 'ongoing' || data.status === 'pending_resolution'
 
+  const [nowSeconds] = useState(() => Math.floor(Date.now() / 1000))
   const startTime = useMemo(() => Math.floor(new Date(data.started_at).getTime() / 1000), [data.started_at])
-  const endTime = useMemo(() => !isOngoing && data.ended_at ? Math.floor(new Date(data.ended_at).getTime() / 1000) : Math.floor(Date.now() / 1000), [isOngoing, data.ended_at])
+  const endTime = !isOngoing && data.ended_at ? Math.floor(new Date(data.ended_at).getTime() / 1000) : nowSeconds
 
   const { data: metrics } = useQuery({
     queryKey: ['deviceMetrics', data.device_pk, startTime, endTime],
@@ -388,7 +389,7 @@ function DeviceIncidentDetailContent({ data }: { data: DeviceIncidentDetailRespo
           <div className="text-muted-foreground text-xs mb-1">Duration</div>
           <div>
             {isOngoing
-              ? formatDuration(Math.floor((Date.now() - new Date(data.started_at).getTime()) / 1000))
+              ? formatDuration(nowSeconds - startTime)
               : formatDuration(data.duration_seconds)
             }
           </div>
