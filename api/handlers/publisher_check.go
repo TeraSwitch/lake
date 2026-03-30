@@ -71,10 +71,12 @@ type PublisherCheckItem struct {
 
 // PublisherCheckResponse is the response for the publisher check endpoint.
 type PublisherCheckResponse struct {
-	Epoch             uint64               `json:"epoch"`
-	MaxSlot           uint64               `json:"max_slot"`
-	TotalNetworkStake int64                `json:"total_network_stake"`
-	Publishers        []PublisherCheckItem `json:"publishers"`
+	Epoch               uint64               `json:"epoch"`
+	MaxSlot             uint64               `json:"max_slot"`
+	TotalNetworkStake   int64                `json:"total_network_stake"`
+	TotalPublishers     uint64               `json:"total_publishers"`
+	TotalPublisherStake int64                `json:"total_publisher_stake"`
+	Publishers          []PublisherCheckItem `json:"publishers"`
 }
 
 // GetPublisherCheck returns publisher status for all publishers in the current epoch,
@@ -227,7 +229,7 @@ func (a *API) FetchPublisherCheckData(ctx context.Context, q string, epochsParam
 		LEFT JOIN dz_metros_current m ON d.metro_pk = m.pk
 		LEFT JOIN solana_gossip_nodes_current g ON u.client_ip = g.gossip_ip AND u.client_ip != ''
 		LEFT JOIN solana_vote_accounts_current v ON g.pubkey = v.node_pubkey AND v.epoch_vote_account = 'true'
-		LEFT JOIN stats s ON u.pk = s.dz_user_pubkey
+		INNER JOIN stats s ON u.pk = s.dz_user_pubkey
 		LEFT JOIN validatorsapp_validators_current va ON v.vote_pubkey = va.vote_account
 		WHERE u.status = 'activated'
 			AND has(JSONExtract(u.publishers, 'Array(String)'), ?)
@@ -326,10 +328,27 @@ func (a *API) FetchPublisherCheckData(ctx context.Context, q string, epochsParam
 		slog.Warn("publisher check: total network stake query failed", "error", err)
 	}
 
+	var totalPublishers uint64
+	var totalPublisherStake int64
+	err = envDB(ctx).QueryRow(ctx,
+		`SELECT count(), COALESCE(sum(v.activated_stake_lamports), 0)
+		 FROM dz_users_current u
+		 LEFT JOIN solana_gossip_nodes_current g ON u.client_ip = g.gossip_ip AND u.client_ip != ''
+		 LEFT JOIN solana_vote_accounts_current v ON g.pubkey = v.node_pubkey AND v.epoch_vote_account = 'true'
+		 WHERE u.status = 'activated'
+		   AND JSONLength(u.publishers) > 0
+		   AND v.vote_pubkey != ''
+		   AND g.pubkey != ''`).Scan(&totalPublishers, &totalPublisherStake)
+	if err != nil {
+		slog.Warn("publisher check: total publishers query failed", "error", err)
+	}
+
 	return &PublisherCheckResponse{
-		Epoch:             epoch,
-		MaxSlot:           maxSlot,
-		TotalNetworkStake: totalNetworkStake,
-		Publishers:        publishers,
+		Epoch:               epoch,
+		MaxSlot:             maxSlot,
+		TotalNetworkStake:   totalNetworkStake,
+		TotalPublishers:     totalPublishers,
+		TotalPublisherStake: totalPublisherStake,
+		Publishers:          publishers,
 	}, nil
 }
