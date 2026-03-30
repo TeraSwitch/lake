@@ -224,15 +224,33 @@ export function MultiLinkLatencyCharts({
     { values: (_u: uPlot, vals: number[]) => vals.map(v => `${v.toFixed(1)}%`) },
   ], [])
 
+  // Compute fixed x-axis range from timeRange so the chart always spans the full period
+  const [nowSeconds, setNowSeconds] = useState(() => Math.floor(Date.now() / 1000))
+  useEffect(() => {
+    setNowSeconds(Math.floor(Date.now() / 1000))
+  }, [timeRange])
+  const xRange = useMemo((): [number, number] | null => {
+    if (filters?.start_time && filters?.end_time) {
+      return [Number(filters.start_time), Number(filters.end_time)]
+    }
+    const durations: Record<string, number> = {
+      '1h': 3600, '3h': 10800, '6h': 21600, '12h': 43200,
+      '24h': 86400, '3d': 259200, '7d': 604800, '14d': 1209600, '30d': 2592000,
+    }
+    const secs = durations[timeRange]
+    if (!secs) return null
+    return [nowSeconds - secs, nowSeconds]
+  }, [timeRange, filters?.start_time, filters?.end_time, nowSeconds])
+
   const chartScales = useMemo((): uPlot.Scales => ({
-    x: { time: true },
+    x: { time: true, ...(xRange ? { min: xRange[0], max: xRange[1] } : {}) },
     y: { auto: true },
-  }), [])
+  }), [xRange])
 
   const lossScales = useMemo((): uPlot.Scales => ({
-    x: { time: true },
+    x: { time: true, ...(xRange ? { min: xRange[0], max: xRange[1] } : {}) },
     y: { auto: true, range: (_u, min, max) => [Math.min(min, 0), Math.min(max, 100)] },
-  }), [])
+  }), [xRange])
 
   // Charts
   const { plotRef: rttPlotRef } = useUPlotChart({
