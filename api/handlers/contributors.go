@@ -2,8 +2,9 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"log/slog"
+	"errors"
 	"net/http"
 	"time"
 
@@ -32,7 +33,7 @@ func (a *API) GetContributors(w http.ResponseWriter, r *http.Request) {
 	countQuery := `SELECT count(*) FROM dz_contributors_current`
 	var total uint64
 	if err := a.envDB(ctx).QueryRow(ctx, countQuery).Scan(&total); err != nil {
-		slog.Error("contributors count query failed", "error", err)
+		logError("contributors count query failed", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -86,7 +87,7 @@ func (a *API) GetContributors(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordClickHouseQuery(duration, err)
 
 	if err != nil {
-		slog.Error("contributors query failed", "error", err)
+		logError("contributors query failed", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -104,7 +105,7 @@ func (a *API) GetContributors(w http.ResponseWriter, r *http.Request) {
 			&c.SideZDevices,
 			&c.LinkCount,
 		); err != nil {
-			slog.Error("contributors row scan failed", "error", err)
+			logError("contributors row scan failed", "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
@@ -112,7 +113,7 @@ func (a *API) GetContributors(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("contributors rows iteration failed", "error", err)
+		logError("contributors rows iteration failed", "error", err)
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -131,7 +132,7 @@ func (a *API) GetContributors(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("failed to encode response", "error", err)
+		logError("failed to encode response", "error", err)
 	}
 }
 
@@ -244,13 +245,17 @@ func (a *API) GetContributor(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordClickHouseQuery(duration, err)
 
 	if err != nil {
-		slog.Error("contributor query failed", "error", err, "pk", pk)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "contributor not found", http.StatusNotFound)
+			return
+		}
+		logError("contributor query failed", "error", err, "pk", pk)
 		http.Error(w, "contributor not found", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(contributor); err != nil {
-		slog.Error("failed to encode response", "error", err)
+		logError("failed to encode response", "error", err)
 	}
 }

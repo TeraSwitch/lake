@@ -2,8 +2,9 @@ package handlers
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
-	"log/slog"
+	"errors"
 	"net/http"
 	"time"
 
@@ -33,7 +34,7 @@ func (a *API) GetMetros(w http.ResponseWriter, r *http.Request) {
 	countQuery := `SELECT count(*) FROM dz_metros_current`
 	var total uint64
 	if err := a.envDB(ctx).QueryRow(ctx, countQuery).Scan(&total); err != nil {
-		slog.Error("metros count query failed", "error", err)
+		logError("metros count query failed", "error", err)
 		http.Error(w, dberror.UserMessage(err), http.StatusInternalServerError)
 		return
 	}
@@ -72,7 +73,7 @@ func (a *API) GetMetros(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordClickHouseQuery(duration, err)
 
 	if err != nil {
-		slog.Error("metros query failed", "error", err)
+		logError("metros query failed", "error", err)
 		http.Error(w, dberror.UserMessage(err), http.StatusInternalServerError)
 		return
 	}
@@ -90,7 +91,7 @@ func (a *API) GetMetros(w http.ResponseWriter, r *http.Request) {
 			&m.DeviceCount,
 			&m.UserCount,
 		); err != nil {
-			slog.Error("metros row scan failed", "error", err)
+			logError("metros row scan failed", "error", err)
 			http.Error(w, dberror.UserMessage(err), http.StatusInternalServerError)
 			return
 		}
@@ -98,7 +99,7 @@ func (a *API) GetMetros(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := rows.Err(); err != nil {
-		slog.Error("metros rows iteration failed", "error", err)
+		logError("metros rows iteration failed", "error", err)
 		http.Error(w, dberror.UserMessage(err), http.StatusInternalServerError)
 		return
 	}
@@ -117,7 +118,7 @@ func (a *API) GetMetros(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(response); err != nil {
-		slog.Error("failed to encode response", "error", err)
+		logError("failed to encode response", "error", err)
 	}
 }
 
@@ -223,13 +224,17 @@ func (a *API) GetMetro(w http.ResponseWriter, r *http.Request) {
 	metrics.RecordClickHouseQuery(duration, err)
 
 	if err != nil {
-		slog.Error("metro query failed", "error", err, "pk", pk)
+		if errors.Is(err, sql.ErrNoRows) {
+			http.Error(w, "metro not found", http.StatusNotFound)
+			return
+		}
+		logError("metro query failed", "error", err, "pk", pk)
 		http.Error(w, "metro not found", http.StatusNotFound)
 		return
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	if err := json.NewEncoder(w).Encode(metro); err != nil {
-		slog.Error("failed to encode response", "error", err)
+		logError("failed to encode response", "error", err)
 	}
 }
