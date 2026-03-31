@@ -1177,3 +1177,4 @@ func (a *API) FetchDefaultDeviceIncidentsV2Data(ctx context.Context) *DeviceInci
 	return resp
 }
 
+

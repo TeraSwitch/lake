@@ -4685,6 +4685,7 @@ export interface LinkMetricsStatus {
   provisioning: boolean
   isis_down: boolean
   collecting: boolean
+  reasons?: string[]
 }
 
 export interface LinkMetricsLatency {
@@ -4788,6 +4789,7 @@ export interface FetchLinkMetricsParams {
   endTime?: number
   bucket?: string
   include?: LinkMetricsInclude[]
+  hasIssues?: boolean
 }
 
 export async function fetchLinkMetrics(pk: string, params: FetchLinkMetricsParams = {}): Promise<LinkMetricsResponse> {
@@ -4800,6 +4802,27 @@ export async function fetchLinkMetrics(pk: string, params: FetchLinkMetricsParam
   const qs = searchParams.toString()
   const res = await fetchWithRetry(`/api/link-metrics/${encodeURIComponent(pk)}${qs ? `?${qs}` : ''}`)
   if (!res.ok) throw new Error('Failed to fetch link metrics')
+  return res.json()
+}
+
+export interface BulkLinkMetricsResponse {
+  time_range: string
+  bucket_seconds: number
+  bucket_count: number
+  links: Record<string, LinkMetricsResponse>
+}
+
+export async function fetchBulkLinkMetrics(params: FetchLinkMetricsParams = {}): Promise<BulkLinkMetricsResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.range) searchParams.set('range', params.range)
+  if (params.startTime) searchParams.set('start_time', params.startTime.toString())
+  if (params.endTime) searchParams.set('end_time', params.endTime.toString())
+  if (params.bucket) searchParams.set('bucket', params.bucket)
+  if (params.include && params.include.length > 0) searchParams.set('include', params.include.join(','))
+  if (params.hasIssues) searchParams.set('has_issues', 'true')
+  const qs = searchParams.toString()
+  const res = await fetchWithRetry(`/api/link-metrics${qs ? `?${qs}` : ''}`)
+  if (!res.ok) throw new Error('Failed to fetch bulk link metrics')
   return res.json()
 }
 
@@ -4831,10 +4854,24 @@ export interface DeviceMetricsTraffic {
   carrier_transitions: number
 }
 
+export interface DeviceInterfaceTraffic {
+  intf: string
+  link_pk?: string
+  link_code?: string
+  link_side?: string
+  user_pk?: string
+  in_bps: number
+  out_bps: number
+  max_in_bps: number
+  max_out_bps: number
+}
+
 export interface DeviceMetricsBucket {
   ts: string
   status?: DeviceMetricsStatus
+  latency?: LinkMetricsLatency
   traffic?: DeviceMetricsTraffic
+  interfaces?: DeviceInterfaceTraffic[]
 }
 
 export interface DeviceMetricsResponse {
@@ -4859,6 +4896,7 @@ export interface FetchDeviceMetricsParams {
   endTime?: number
   bucket?: string
   include?: DeviceMetricsInclude[]
+  hasIssues?: boolean
 }
 
 export async function fetchDeviceMetrics(pk: string, params: FetchDeviceMetricsParams = {}): Promise<DeviceMetricsResponse> {
@@ -4871,6 +4909,27 @@ export async function fetchDeviceMetrics(pk: string, params: FetchDeviceMetricsP
   const qs = searchParams.toString()
   const res = await fetchWithRetry(`/api/device-metrics/${encodeURIComponent(pk)}${qs ? `?${qs}` : ''}`)
   if (!res.ok) throw new Error('Failed to fetch device metrics')
+  return res.json()
+}
+
+export interface BulkDeviceMetricsResponse {
+  time_range: string
+  bucket_seconds: number
+  bucket_count: number
+  devices: Record<string, DeviceMetricsResponse>
+}
+
+export async function fetchBulkDeviceMetrics(params: FetchDeviceMetricsParams = {}): Promise<BulkDeviceMetricsResponse> {
+  const searchParams = new URLSearchParams()
+  if (params.range) searchParams.set('range', params.range)
+  if (params.startTime) searchParams.set('start_time', params.startTime.toString())
+  if (params.endTime) searchParams.set('end_time', params.endTime.toString())
+  if (params.bucket) searchParams.set('bucket', params.bucket)
+  if (params.include && params.include.length > 0) searchParams.set('include', params.include.join(','))
+  if (params.hasIssues) searchParams.set('has_issues', 'true')
+  const qs = searchParams.toString()
+  const res = await fetchWithRetry(`/api/device-metrics${qs ? `?${qs}` : ''}`)
+  if (!res.ok) throw new Error('Failed to fetch bulk device metrics')
   return res.json()
 }
 

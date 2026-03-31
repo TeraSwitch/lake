@@ -23,7 +23,6 @@ const (
 
 	// autoChunkSize is the chunk size for automatic gap recovery.
 	autoChunkSize = 1 * time.Hour
-
 )
 
 // RegisterWorkflows registers all incident workflows with the given worker.
