@@ -107,7 +107,7 @@ func Start(ctx context.Context, cfg Config) error {
 	run, err := tc.ExecuteWorkflow(ctx, temporalclient.StartWorkflowOptions{
 		ID:        WorkflowID,
 		TaskQueue: TaskQueue,
-	}, DetectIncidentsWorkflow, 0)
+	}, DetectIncidentsWorkflow, DetectionState{})
 	if err != nil {
 		return fmt.Errorf("incidents: failed to start workflow: %w", err)
 	}

@@ -36,24 +36,6 @@ const (
 
 // --- Link types ---
 
-// LinkSymptom represents a currently active symptom on a link, as detected
-// from rollup tables.
-type LinkSymptom struct {
-	LinkPK       string
-	IncidentType string
-	PeakValue    float64
-	StartedAt    time.Time
-
-	// Metadata snapshot
-	LinkCode        string
-	LinkType        string
-	SideAMetro      string
-	SideZMetro      string
-	ContributorCode string
-	Status          string
-	Provisioning    bool
-}
-
 // LinkIncidentEvent represents a single row in the link_incident_events table.
 type LinkIncidentEvent struct {
 	IncidentID      string
@@ -74,43 +56,7 @@ type LinkIncidentEvent struct {
 	Provisioning    bool
 }
 
-// OpenLinkIncident represents a non-resolved link incident reconstructed
-// from the latest event in the link_incident_events table.
-type OpenLinkIncident struct {
-	IncidentID     string
-	LinkPK         string
-	StartedAt      time.Time
-	ActiveSymptoms []string
-	Symptoms       []string
-	Severity       Severity
-	LastEventTS    time.Time
-
-	// Metadata from the latest event (carried forward for resolved/clearing events)
-	LinkCode        string
-	LinkType        string
-	SideAMetro      string
-	SideZMetro      string
-	ContributorCode string
-	Status          string
-	Provisioning    bool
-}
-
 // --- Device types ---
-
-// DeviceSymptom represents a currently active symptom on a device.
-type DeviceSymptom struct {
-	DevicePK     string
-	IncidentType string
-	PeakValue    float64
-	StartedAt    time.Time
-
-	// Metadata snapshot
-	DeviceCode      string
-	DeviceType      string
-	Metro           string
-	ContributorCode string
-	Status          string
-}
 
 // DeviceIncidentEvent represents a single row in the device_incident_events table.
 type DeviceIncidentEvent struct {
@@ -130,48 +76,21 @@ type DeviceIncidentEvent struct {
 	Status          string
 }
 
-// OpenDeviceIncident represents a non-resolved device incident.
-type OpenDeviceIncident struct {
-	IncidentID     string
-	DevicePK       string
-	StartedAt      time.Time
-	ActiveSymptoms []string
-	Symptoms       []string
-	Severity       Severity
-	LastEventTS    time.Time
+// --- Detection workflow state ---
 
-	// Metadata from the latest event
-	DeviceCode      string
-	DeviceType      string
-	Metro           string
-	ContributorCode string
-	Status          string
+// DetectionState is passed through Temporal ContinueAsNew to track the
+// detection loop's position. A zero Watermark means "cold start".
+type DetectionState struct {
+	Watermark time.Time // last successfully processed timestamp
+	Iteration int
 }
 
-// --- Internal diff types ---
-// These are used by the shared diff algorithm. Entity-specific code maps
-// to/from these before calling diff.
-
-// symptomInput is a single active symptom for the diff algorithm.
-type symptomInput struct {
-	EntityPK     string
-	IncidentType string
-	PeakValue    float64
-	StartedAt    time.Time
+// RollupFreshness reports the latest bucket timestamp across rollup tables.
+type RollupFreshness struct {
+	LatestBucket time.Time
 }
 
-// openState is the current state of an open incident for the diff algorithm.
-type openState struct {
-	IncidentID     string
-	EntityPK       string
-	StartedAt      time.Time
-	ActiveSymptoms []string
-	Symptoms       []string // every symptom ever seen
-	Severity       Severity
-	LastEventTS    time.Time
-}
-
-// eventDelta is a state transition produced by the diff algorithm.
+// eventDelta is a state transition produced by the backfill event generator.
 type eventDelta struct {
 	IncidentID     string
 	EntityPK       string

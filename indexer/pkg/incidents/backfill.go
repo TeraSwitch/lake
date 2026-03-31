@@ -197,11 +197,17 @@ func (a *Activities) generateTransitionEvents(
 			// incident end time, and the coalesce gap has elapsed before chunk end.
 			resolvedEnough := !incidentEnd.Add(time.Duration(backfillCoalesceGapMinutes) * time.Minute).After(chunkEnd)
 			if len(activeSorted) == 0 && ts.Equal(incidentEnd) && resolvedEnough {
+				// Cap the resolved timestamp to chunkEnd so it never
+				// exceeds the processing window.
+				resolvedTS := ts
+				if resolvedTS.After(chunkEnd) {
+					resolvedTS = chunkEnd
+				}
 				events = append(events, eventDelta{
 					IncidentID:     incidentID,
 					EntityPK:       entityPK,
 					EventType:      EventResolved,
-					EventTS:        ts,
+					EventTS:        resolvedTS,
 					StartedAt:      incidentStart,
 					ActiveSymptoms: activeSorted,
 					Symptoms:       allSorted,
@@ -317,7 +323,7 @@ func (a *Activities) BackfillLinkChunk(ctx context.Context, input BackfillChunkI
 	safeHeartbeat(ctx, fmt.Sprintf("generating events for %d link incidents", len(incidents)))
 
 	// Check which incidents already have events (idempotency).
-	existingIDs, err := a.existingIncidentIDs(ctx, "link_incident_events")
+	existingIDs, err := a.existingIncidentIDs(ctx, "link_incident_events", input.WindowStart)
 	if err != nil {
 		return fmt.Errorf("check existing link incidents: %w", err)
 	}
@@ -392,7 +398,7 @@ func (a *Activities) resolveStaleLinks(ctx context.Context, input BackfillChunkI
 		)
 		SELECT
 			ie.incident_id, ie.link_pk, 'resolved',
-			toDateTime($1) + INTERVAL $3 MINUTE, ie.started_at,
+			least(toDateTime($1) + INTERVAL $3 MINUTE, toDateTime($2)), ie.started_at,
 			arrayResize(emptyArrayString(), 0), ie.symptoms, ie.severity, ie.peak_values,
 			ie.link_code, ie.link_type, ie.side_a_metro, ie.side_z_metro,
 			ie.contributor_code, ie.status, ie.provisioning
@@ -487,7 +493,7 @@ func (a *Activities) BackfillDeviceChunk(ctx context.Context, input BackfillChun
 
 	safeHeartbeat(ctx, fmt.Sprintf("generating events for %d device incidents", len(incidents)))
 
-	existingIDs, err := a.existingIncidentIDs(ctx, "device_incident_events")
+	existingIDs, err := a.existingIncidentIDs(ctx, "device_incident_events", input.WindowStart)
 	if err != nil {
 		return fmt.Errorf("check existing device incidents: %w", err)
 	}
@@ -556,7 +562,7 @@ func (a *Activities) resolveStaleDevices(ctx context.Context, input BackfillChun
 		)
 		SELECT
 			ie.incident_id, ie.device_pk, 'resolved',
-			toDateTime($1) + INTERVAL $3 MINUTE, ie.started_at,
+			least(toDateTime($1) + INTERVAL $3 MINUTE, toDateTime($2)), ie.started_at,
 			arrayResize(emptyArrayString(), 0), ie.symptoms, ie.severity, ie.peak_values,
 			ie.device_code, ie.device_type, ie.metro, ie.contributor_code, ie.status
 		FROM device_incident_events ie
@@ -583,10 +589,12 @@ func (a *Activities) resolveStaleDevices(ctx context.Context, input BackfillChun
 
 // --- Shared helpers ---
 
-// existingIncidentIDs returns the set of incident_ids that already have events in the table.
-func (a *Activities) existingIncidentIDs(ctx context.Context, table string) (map[string]bool, error) {
-	query := fmt.Sprintf("SELECT DISTINCT incident_id FROM %s", table)
-	rows, err := a.ClickHouse.Query(ctx, query)
+// existingIncidentIDs returns the set of incident_ids that already have events
+// in the table. The query is scoped to incidents that could overlap the given
+// window to avoid scanning the full table on small detection windows.
+func (a *Activities) existingIncidentIDs(ctx context.Context, table string, windowStart time.Time) (map[string]bool, error) {
+	query := fmt.Sprintf("SELECT DISTINCT incident_id FROM %s WHERE started_at >= $1", table)
+	rows, err := a.ClickHouse.Query(ctx, query, windowStart.Add(-25*time.Hour))
 	if err != nil {
 		return nil, fmt.Errorf("query existing incidents: %w", err)
 	}
