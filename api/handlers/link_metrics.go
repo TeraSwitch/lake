@@ -244,6 +244,7 @@ func (a *API) GetLinkMetrics(w http.ResponseWriter, r *http.Request) {
 		startTime := now.Add(-duration)
 		params = parseBucketParamsCustom(startTime, now, 24)
 		params.TimeRange = timeRange
+		params.UseRaw = isRawSource(ctx)
 	}
 
 	// Override bucket size if explicitly requested
@@ -719,7 +720,6 @@ func buildLinkMetricsTraffic(
 
 	return t
 }
-
 // --- Bulk handler ---
 
 // isDefaultBulkLinkMetricsRequest returns true when the request uses default parameters,
