@@ -31,6 +31,7 @@ import (
 	dztelemusage "github.com/malbeclabs/lake/indexer/pkg/dz/telemetry/usage"
 	"github.com/malbeclabs/lake/indexer/pkg/dzingest"
 	"github.com/malbeclabs/lake/indexer/pkg/indexer"
+	"github.com/malbeclabs/lake/indexer/pkg/ingestionlog"
 	"github.com/malbeclabs/lake/indexer/pkg/metrics"
 	"github.com/malbeclabs/lake/indexer/pkg/neo4j"
 	"github.com/malbeclabs/lake/indexer/pkg/rollup"
@@ -363,6 +364,13 @@ func run() error {
 	}()
 	log.Info("clickhouse client initialized", "addr", *clickhouseAddrFlag, "database", *clickhouseDatabaseFlag)
 
+	// Create ingestion log writer for recording activity runs to ClickHouse.
+	chConn, err := clickhouseDB.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get ClickHouse connection for ingestion log: %w", err)
+	}
+	ingestionLogWriter := ingestionlog.NewWriter(chConn, log)
+
 	// Start background ClickHouse connection pool stats collector.
 	go func() {
 		ticker := time.NewTicker(5 * time.Second)
@@ -583,6 +591,7 @@ func run() error {
 		go func() {
 			err := dzingest.Start(ctx, dzingest.Config{
 				Log:            log.With("component", "dz-ingest"),
+				IngestionLog:   ingestionLogWriter,
 				Network:        *dzEnvFlag,
 				Serviceability: idx.Serviceability(),
 				TelemLatency:   idx.TelemLatency(),
@@ -606,6 +615,7 @@ func run() error {
 		go func() {
 			err := solingest.Start(ctx, solingest.Config{
 				Log:           log.With("component", "sol-ingest"),
+				IngestionLog:  ingestionLogWriter,
 				Network:       *dzEnvFlag,
 				Solana:        idx.Solana(),
 				GeoIP:         idx.GeoIP(),
@@ -819,6 +829,12 @@ func startSecondaryNetwork(ctx context.Context, log *slog.Logger, env string, cf
 	}
 	defer chClient.Close()
 
+	secondaryChConn, err := chClient.Conn(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to get ClickHouse connection for ingestion log (%s): %w", env, err)
+	}
+	secondaryIngestionLog := ingestionlog.NewWriter(secondaryChConn, log)
+
 	dzRPCClient := rpc.NewWithRetries(networkConfig.LedgerPublicRPCURL, nil)
 	defer dzRPCClient.Close()
 	serviceabilityClient := serviceability.New(dzRPCClient, networkConfig.ServiceabilityProgramID)
@@ -890,6 +906,7 @@ func startSecondaryNetwork(ctx context.Context, log *slog.Logger, env string, cf
 	// Start DZ ingest worker (blocks until ctx cancelled or error).
 	dzErr := dzingest.Start(ctx, dzingest.Config{
 		Log:            log.With("component", "dz-ingest"),
+		IngestionLog:   secondaryIngestionLog,
 		Network:        env,
 		Serviceability: idx.Serviceability(),
 		TelemLatency:   idx.TelemLatency(),
