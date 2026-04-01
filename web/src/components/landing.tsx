@@ -1,21 +1,84 @@
-import { useMemo, useState, useRef, useEffect } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
-import { ArrowUp } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import {
+  Activity,
+  Globe,
+  Network,
+  Gauge,
+  Route,
+  ShieldAlert,
+  MessageSquare,
+  Cable,
+  ArrowRight,
+  ArrowRightLeft,
+} from 'lucide-react'
 import { fetchStats } from '@/lib/api'
 import { StatCard } from '@/components/stat-card'
 import { useTheme } from '@/hooks/use-theme'
-import { useEnv } from '@/contexts/EnvContext'
-import { getExampleQuestions } from '@/lib/example-questions'
 import { useDocumentTitle } from '@/hooks/use-document-title'
+
+const pages = [
+  {
+    title: 'Status',
+    description: 'Network health and device status',
+    icon: Activity,
+    href: '/status',
+    color: 'text-emerald-600 dark:text-emerald-400',
+  },
+  {
+    title: 'Topology',
+    description: 'Interactive map of the network',
+    icon: Globe,
+    href: '/topology/map',
+    color: 'text-blue-600 dark:text-blue-400',
+  },
+  {
+    title: 'Traffic',
+    description: 'Bandwidth and interface utilization',
+    icon: Network,
+    href: '/traffic/overview',
+    color: 'text-teal-600 dark:text-teal-400',
+  },
+  {
+    title: 'Link Latency',
+    description: 'Latency across network links',
+    icon: Gauge,
+    href: '/performance/link-latency',
+    color: 'text-violet-600 dark:text-violet-400',
+  },
+  {
+    title: 'Path Latency',
+    description: 'End-to-end path performance',
+    icon: Route,
+    href: '/performance/path-latency',
+    color: 'text-amber-600 dark:text-amber-400',
+  },
+  {
+    title: 'Incidents',
+    description: 'Active link and device incidents',
+    icon: ShieldAlert,
+    href: '/incidents/links',
+    color: 'text-red-600 dark:text-red-400',
+  },
+  {
+    title: 'DZ vs Internet',
+    description: 'DZ vs public internet performance',
+    icon: ArrowRightLeft,
+    href: '/performance/dz-vs-internet',
+    color: 'text-orange-600 dark:text-orange-400',
+  },
+  {
+    title: 'Chat',
+    description: 'Ask questions about the network',
+    icon: MessageSquare,
+    href: '/chat',
+    color: 'text-sky-600 dark:text-sky-400',
+  },
+]
 
 export function Landing() {
   useDocumentTitle('Explore')
-  const navigate = useNavigate()
   const { resolvedTheme } = useTheme()
-  const { features } = useEnv()
-  const [input, setInput] = useState('')
-  const inputRef = useRef<HTMLTextAreaElement>(null)
 
   const { data: stats } = useQuery({
     queryKey: ['stats'],
@@ -24,39 +87,11 @@ export function Landing() {
     staleTime: 10_000,
   })
 
-  const exampleQuestions = useMemo(() => getExampleQuestions(features, 3), [features.solana, features.neo4j]) // eslint-disable-line react-hooks/exhaustive-deps
-
-  // Only auto-focus on desktop to avoid scroll-to-input on mobile
-  useEffect(() => {
-    const isDesktop = window.matchMedia('(hover: hover) and (pointer: fine)').matches
-    if (isDesktop && inputRef.current) {
-      inputRef.current.focus()
-    }
-  }, [])
-
-  const handleStartChat = (question?: string) => {
-    const q = question || input.trim()
-    if (q) {
-      navigate(`/chat?q=${encodeURIComponent(q)}`)
-    } else {
-      navigate('/chat')
-    }
-  }
-
-  const handleKeyDown = (e: React.KeyboardEvent) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault()
-      if (input.trim()) {
-        handleStartChat()
-      }
-    }
-  }
-
   return (
     <div className="flex-1 flex flex-col items-center justify-start px-8 pt-12 pb-4 overflow-auto">
-      <div className="flex-1 flex flex-col items-center justify-center w-full">
+      <div className="flex-1 flex flex-col items-center w-full">
       {/* Header */}
-      <div className="text-center mb-16">
+      <div className="text-center mb-8">
         <img
           src={resolvedTheme === 'dark' ? '/logoDark.svg' : '/logoLight.svg'}
           alt="DoubleZero"
@@ -68,7 +103,7 @@ export function Landing() {
       </div>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-10 gap-y-8 mb-16 max-w-5xl w-full">
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-x-10 gap-y-8 mb-8 max-w-5xl w-full">
         {/* Row 1: Network Infrastructure */}
         <StatCard
           label="Contributors"
@@ -130,57 +165,34 @@ export function Landing() {
         />
       </div>
 
-      {/* Prompt Input */}
-      <div className="w-full max-w-2xl">
-        <div className="relative rounded-[24px] border border-border bg-secondary overflow-hidden">
-          <textarea
-            ref={inputRef}
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={handleKeyDown}
-            placeholder="Ask about the network..."
-            rows={1}
-            className="w-full bg-transparent px-4 pt-3.5 pb-2.5 pr-12 text-sm placeholder:text-muted-foreground focus:outline-none resize-none min-h-[44px] max-h-[200px] overflow-y-auto"
-            style={{ height: 'auto' }}
-            onInput={(e) => {
-              const target = e.target as HTMLTextAreaElement
-              target.style.height = 'auto'
-              target.style.height = Math.min(target.scrollHeight, 200) + 'px'
-            }}
-          />
-          <button
-            onClick={() => handleStartChat()}
-            disabled={!input.trim()}
-            className="absolute right-2 bottom-3 p-1.5 rounded-full bg-accent text-white hover:bg-accent-orange-100 disabled:bg-muted-foreground/30 disabled:cursor-not-allowed transition-colors"
+      {/* Navigation Cards */}
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-4 max-w-5xl w-full">
+        {pages.map((page) => (
+          <Link
+            key={page.href}
+            to={page.href}
+            className="group rounded-xl border border-border bg-secondary/50 p-5 transition-colors hover:bg-secondary hover:border-muted-foreground/30"
           >
-            <ArrowUp className="h-4 w-4" />
-          </button>
-        </div>
-      </div>
-
-      {/* Example questions */}
-      <div className="mt-4 flex flex-wrap justify-center gap-2 max-w-xl">
-        {exampleQuestions.map((question) => (
-          <button
-            key={question}
-            onClick={(e) => {
-              if (e.metaKey || e.ctrlKey) {
-                window.open(`/chat?q=${encodeURIComponent(question)}`, '_blank')
-              } else {
-                handleStartChat(question)
-              }
-            }}
-            className="px-3 py-1.5 text-sm border border-border rounded-full hover:bg-secondary hover:border-muted-foreground/30 transition-colors text-muted-foreground hover:text-foreground"
-          >
-            {question}
-          </button>
+            <div className="flex items-center justify-between mb-3">
+              <page.icon className={`h-5 w-5 ${page.color}`} />
+              <ArrowRight className="h-4 w-4 text-muted-foreground/0 group-hover:text-muted-foreground transition-colors" />
+            </div>
+            <div className="font-medium text-sm mb-1">{page.title}</div>
+            <div className="text-xs text-muted-foreground">{page.description}</div>
+          </Link>
         ))}
+        <Link
+          to="/docs/mcp"
+          className="group rounded-xl border border-border bg-secondary/50 p-5 transition-colors hover:bg-secondary hover:border-muted-foreground/30"
+        >
+          <div className="flex items-center justify-between mb-3">
+            <Cable className="h-5 w-5 text-indigo-600 dark:text-indigo-400" />
+            <ArrowRight className="h-4 w-4 text-muted-foreground/0 group-hover:text-muted-foreground transition-colors" />
+          </div>
+          <div className="font-medium text-sm mb-1">Connect Your Own AI</div>
+          <div className="text-xs text-muted-foreground">Query DoubleZero data via MCP</div>
+        </Link>
       </div>
-      </div>
-
-      <div className="text-xs text-muted-foreground/60 text-center mt-auto pb-2 space-y-1">
-        <p>AI-generated responses may be incorrect. Do not share sensitive info. See <a href="/terms" className="underline hover:text-muted-foreground">Terms of Use</a>.</p>
-        <p><a href="/docs/mcp" className="underline hover:text-muted-foreground">Connect your own AI →</a></p>
       </div>
     </div>
   )
