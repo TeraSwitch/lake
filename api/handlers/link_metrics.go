@@ -720,6 +720,7 @@ func buildLinkMetricsTraffic(
 
 	return t
 }
+
 // --- Bulk handler ---
 
 // isDefaultBulkLinkMetricsRequest returns true when the request uses default parameters,
