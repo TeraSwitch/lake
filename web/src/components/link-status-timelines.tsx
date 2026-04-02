@@ -1,14 +1,12 @@
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
-import { useState, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
+import { useState, useMemo } from 'react'
 import { Link } from 'react-router-dom'
 import { CheckCircle2, AlertTriangle, History, Info, ChevronDown, ChevronUp, Loader2 } from 'lucide-react'
-import uPlot from 'uplot'
-import { useUPlotChart } from '@/hooks/use-uplot-chart'
-import { fetchLinkHistory } from '@/lib/api'
-import type { LinkHistory, LinkHourStatus } from '@/lib/api'
-import { StatusTimeline } from './status-timeline'
-import { getEffectiveStatus } from '@/lib/link-status'
-import { CriticalityBadge } from './criticality-badge'
+import { fetchBulkLinkMetrics, fetchLinkMetrics } from '@/lib/api'
+import type { LinkMetricsResponse, LinkMetricsBucket } from '@/lib/api'
+import { LinkPacketLossChart as LinkPacketLossDetailChart } from '@/components/link-charts/LinkPacketLossChart'
+import { LinkInterfaceIssuesChart } from '@/components/link-charts/LinkInterfaceIssuesChart'
+import { LinkHealthTimeline } from '@/components/link-charts/LinkHealthTimeline'
 import { useDelayedLoading } from '@/hooks/use-delayed-loading'
 
 function Skeleton({ className }: { className?: string }) {
@@ -79,7 +77,123 @@ function formatBandwidth(bps: number): string {
   return `${bps} bps`
 }
 
-function LinkInfoPopover({ link, criticality }: { link: LinkHistory; criticality?: 'critical' | 'important' | 'redundant' }) {
+interface DerivedLinkInfo {
+  pk: string
+  code: string
+  linkType: string
+  contributor: string
+  sideAMetro: string
+  sideZMetro: string
+  bandwidthBps: number
+  committedRttUs: number
+  issueReasons: string[]
+  isDown: boolean
+  drainStatus: string
+  provisioning: boolean
+  health: string  // worst health across buckets
+}
+
+function deriveLinkInfo(metrics: LinkMetricsResponse): DerivedLinkInfo {
+  const issueReasons = new Set<string>()
+  let worstHealth = 'healthy'
+  let isDown = false
+  let drainStatus = ''
+  let provisioning = false
+
+  const healthPriority: Record<string, number> = {
+    unhealthy: 4,
+    down: 3,
+    degraded: 2,
+    no_data: 1,
+    healthy: 0,
+  }
+
+  for (const b of metrics.buckets) {
+    // Status-derived info
+    if (b.status) {
+      const bHealth = b.status.health || 'no_data'
+      if ((healthPriority[bHealth] ?? 0) > (healthPriority[worstHealth] ?? 0)) {
+        worstHealth = bHealth
+      }
+      if (b.status.isis_down) {
+        issueReasons.add('missing_adjacency')
+      }
+      if (b.status.drain_status) {
+        drainStatus = b.status.drain_status
+      }
+      if (b.status.provisioning) {
+        provisioning = true
+      }
+    }
+
+    // Latency-derived issues
+    if (b.latency) {
+      if (b.latency.a_loss_pct > 0 || b.latency.z_loss_pct > 0) {
+        issueReasons.add('packet_loss')
+      }
+      if (metrics.committed_rtt_us > 0) {
+        const avgRtt = (b.latency.a_avg_rtt_us + b.latency.z_avg_rtt_us) / 2
+        if (avgRtt > metrics.committed_rtt_us * 1.2) {
+          issueReasons.add('high_latency')
+        }
+      }
+    }
+
+    // Traffic-derived issues
+    if (b.traffic) {
+      const t = b.traffic
+      if (t.side_a_in_errors + t.side_a_out_errors + t.side_z_in_errors + t.side_z_out_errors > 0) {
+        issueReasons.add('interface_errors')
+      }
+      if (t.side_a_in_fcs_errors + t.side_z_in_fcs_errors > 0) {
+        issueReasons.add('fcs_errors')
+      }
+      if (t.side_a_in_discards + t.side_a_out_discards + t.side_z_in_discards + t.side_z_out_discards > 0) {
+        issueReasons.add('discards')
+      }
+      if (t.side_a_carrier_transitions + t.side_z_carrier_transitions > 0) {
+        issueReasons.add('carrier_transitions')
+      }
+      if (t.utilization_in_pct > 80 || t.utilization_out_pct > 80) {
+        issueReasons.add('high_utilization')
+      }
+    }
+
+    // No data detection: non-collecting bucket with no_data health
+    if (b.status && !b.status.collecting && b.status.health === 'no_data') {
+      issueReasons.add('no_data')
+    }
+  }
+
+  // Check if the link is down: look at the latest non-collecting bucket
+  for (let i = metrics.buckets.length - 1; i >= 0; i--) {
+    const b = metrics.buckets[i]
+    if (b.status && !b.status.collecting) {
+      if (b.status.health === 'down' || b.status.isis_down) {
+        isDown = true
+      }
+      break
+    }
+  }
+
+  return {
+    pk: metrics.link_pk,
+    code: metrics.link_code,
+    linkType: metrics.link_type,
+    contributor: metrics.contributor_code,
+    sideAMetro: metrics.side_a_metro,
+    sideZMetro: metrics.side_z_metro,
+    bandwidthBps: metrics.bandwidth_bps,
+    committedRttUs: metrics.committed_rtt_us,
+    issueReasons: Array.from(issueReasons),
+    isDown,
+    drainStatus,
+    provisioning,
+    health: worstHealth,
+  }
+}
+
+function LinkInfoPopover({ linkMetrics, criticality }: { linkMetrics: LinkMetricsResponse; criticality?: 'critical' | 'important' | 'redundant' }) {
   const [isOpen, setIsOpen] = useState(false)
 
   const criticalityInfo = {
@@ -119,31 +233,24 @@ function LinkInfoPopover({ link, criticality }: { link: LinkHistory; criticality
           <div className="space-y-2 text-xs">
             <div>
               <div className="text-muted-foreground">Route</div>
-              <div className="font-medium">{link.side_a_metro} — {link.side_z_metro}</div>
-            </div>
-            <div>
-              <div className="text-muted-foreground">Devices</div>
-              <div className="font-mono text-[11px]">
-                <div>{link.side_a_device}</div>
-                <div>{link.side_z_device}</div>
-              </div>
+              <div className="font-medium">{linkMetrics.side_a_metro} — {linkMetrics.side_z_metro}</div>
             </div>
             <div className="flex gap-4">
               <div>
                 <div className="text-muted-foreground">Type</div>
-                <div className="font-medium">{link.link_type}</div>
+                <div className="font-medium">{linkMetrics.link_type}</div>
               </div>
-              {link.bandwidth_bps > 0 && (
+              {linkMetrics.bandwidth_bps > 0 && (
                 <div>
                   <div className="text-muted-foreground">Bandwidth</div>
-                  <div className="font-medium">{formatBandwidth(link.bandwidth_bps)}</div>
+                  <div className="font-medium">{formatBandwidth(linkMetrics.bandwidth_bps)}</div>
                 </div>
               )}
             </div>
-            {link.committed_rtt_us > 0 && (
+            {linkMetrics.committed_rtt_us > 0 && (
               <div>
                 <div className="text-muted-foreground">Committed RTT</div>
-                <div className="font-medium">{(link.committed_rtt_us / 1000).toFixed(2)} ms</div>
+                <div className="font-medium">{(linkMetrics.committed_rtt_us / 1000).toFixed(2)} ms</div>
               </div>
             )}
             {criticality && (
@@ -164,485 +271,123 @@ function LinkInfoPopover({ link, criticality }: { link: LinkHistory; criticality
   )
 }
 
-function useBucketCount() {
-  const [buckets, setBuckets] = useState(72)
-
-  useEffect(() => {
-    const updateBuckets = () => {
-      const width = window.innerWidth
-      if (width < 640) {
-        setBuckets(24) // mobile
-      } else if (width < 1024) {
-        setBuckets(48) // tablet
-      } else {
-        setBuckets(72) // desktop
-      }
+// Map server-provided reasons and traffic data to badge issue keys.
+function addBucketIssues(b: LinkMetricsBucket, issues: Set<string>) {
+  // Use server reasons (covers latency-based issues even without latency data)
+  if (b.status?.reasons) {
+    for (const r of b.status.reasons) {
+      if (r.includes('packet loss')) issues.add('packet_loss')
+      if (r.includes('latency')) issues.add('high_latency')
+      if (r.includes('interface error')) issues.add('interface_errors')
+      if (r.includes('discard')) issues.add('discards')
+      if (r.includes('carrier')) issues.add('carrier_transitions')
+      if (r.includes('One-sided')) issues.add('no_data')
     }
-
-    updateBuckets()
-    window.addEventListener('resize', updateBuckets)
-    return () => window.removeEventListener('resize', updateBuckets)
-  }, [])
-
-  return buckets
-}
-
-// Check if link has interface issues in any bucket
-function hasInterfaceIssues(hours: LinkHourStatus[]): boolean {
-  return hours.some(h =>
-    (h.side_a_in_errors ?? 0) > 0 || (h.side_a_out_errors ?? 0) > 0 ||
-    (h.side_z_in_errors ?? 0) > 0 || (h.side_z_out_errors ?? 0) > 0 ||
-    (h.side_a_in_discards ?? 0) > 0 || (h.side_a_out_discards ?? 0) > 0 ||
-    (h.side_z_in_discards ?? 0) > 0 || (h.side_z_out_discards ?? 0) > 0 ||
-    (h.side_a_carrier_transitions ?? 0) > 0 || (h.side_z_carrier_transitions ?? 0) > 0
-  )
-}
-
-// Check if link has packet loss in any bucket
-function hasPacketLoss(hours: LinkHourStatus[]): boolean {
-  return hours.some(h => h.avg_loss_pct > 0)
-}
-
-type MetricType = 'errors' | 'fcs_errors' | 'discards' | 'carrier'
-
-const METRIC_CONFIG: Record<MetricType, { label: string; dashArray?: string }> = {
-  errors: { label: 'Errors', dashArray: undefined },
-  fcs_errors: { label: 'FCS Errors', dashArray: '8 3' },
-  discards: { label: 'Discards', dashArray: '5 5' },
-  carrier: { label: 'Carrier Transitions', dashArray: '2 2' },
-}
-
-// Colors for side A and side Z
-const SIDE_COLORS = {
-  A: '#3b82f6', // blue
-  Z: '#10b981', // emerald
-}
-
-interface LinkInterfaceChartProps {
-  hours: LinkHourStatus[]
-  bucketMinutes: number
-  controlsWidth?: string
-}
-
-function LinkInterfaceChart({ hours, controlsWidth = 'w-32' }: LinkInterfaceChartProps) {
-  const chartRef = useRef<HTMLDivElement>(null)
-  const [enabledMetrics, setEnabledMetrics] = useState<Set<MetricType>>(new Set(['errors', 'fcs_errors', 'discards', 'carrier']))
-  const [enabledSides, setEnabledSides] = useState<Set<'A' | 'Z'>>(new Set(['A', 'Z']))
-  const [hoveredMetric, setHoveredMetric] = useState<MetricType | null>(null)
-  const [hoveredSide, setHoveredSide] = useState<'A' | 'Z' | null>(null)
-
-  // Determine which metrics have data
-  const availableMetrics = useMemo(() => {
-    const metrics: Set<MetricType> = new Set()
-    for (const h of hours) {
-      if ((h.side_a_in_errors ?? 0) > 0 || (h.side_a_out_errors ?? 0) > 0 ||
-          (h.side_z_in_errors ?? 0) > 0 || (h.side_z_out_errors ?? 0) > 0) {
-        metrics.add('errors')
-      }
-      if ((h.side_a_in_fcs_errors ?? 0) > 0 || (h.side_z_in_fcs_errors ?? 0) > 0) {
-        metrics.add('fcs_errors')
-      }
-      if ((h.side_a_in_discards ?? 0) > 0 || (h.side_a_out_discards ?? 0) > 0 ||
-          (h.side_z_in_discards ?? 0) > 0 || (h.side_z_out_discards ?? 0) > 0) {
-        metrics.add('discards')
-      }
-      if ((h.side_a_carrier_transitions ?? 0) > 0 || (h.side_z_carrier_transitions ?? 0) > 0) {
-        metrics.add('carrier')
-      }
-    }
-    return metrics
-  }, [hours])
-
-  // Determine which sides have data
-  const availableSides = useMemo(() => {
-    const sides: Set<'A' | 'Z'> = new Set()
-    for (const h of hours) {
-      if ((h.side_a_in_errors ?? 0) > 0 || (h.side_a_out_errors ?? 0) > 0 ||
-          (h.side_a_in_fcs_errors ?? 0) > 0 ||
-          (h.side_a_in_discards ?? 0) > 0 || (h.side_a_out_discards ?? 0) > 0 ||
-          (h.side_a_carrier_transitions ?? 0) > 0) {
-        sides.add('A')
-      }
-      if ((h.side_z_in_errors ?? 0) > 0 || (h.side_z_out_errors ?? 0) > 0 ||
-          (h.side_z_in_fcs_errors ?? 0) > 0 ||
-          (h.side_z_in_discards ?? 0) > 0 || (h.side_z_out_discards ?? 0) > 0 ||
-          (h.side_z_carrier_transitions ?? 0) > 0) {
-        sides.add('Z')
-      }
-    }
-    return sides
-  }, [hours])
-
-  const toggleMetric = (metric: MetricType) => {
-    setEnabledMetrics(prev => {
-      const next = new Set(prev)
-      if (next.has(metric)) next.delete(metric)
-      else next.add(metric)
-      return next
-    })
   }
-
-  const toggleSide = (side: 'A' | 'Z') => {
-    setEnabledSides(prev => {
-      const next = new Set(prev)
-      if (next.has(side)) next.delete(side)
-      else next.add(side)
-      return next
-    })
+  // Also check traffic data directly (for FCS errors and utilization not in reasons)
+  if (b.traffic) {
+    const t = b.traffic
+    if (t.side_a_in_errors + t.side_a_out_errors + t.side_z_in_errors + t.side_z_out_errors > 0) issues.add('interface_errors')
+    if (t.side_a_in_fcs_errors + t.side_z_in_fcs_errors > 0) issues.add('fcs_errors')
+    if (t.side_a_in_discards + t.side_a_out_discards + t.side_z_in_discards + t.side_z_out_discards > 0) issues.add('discards')
+    if (t.side_a_carrier_transitions + t.side_z_carrier_transitions > 0) issues.add('carrier_transitions')
+    if (t.utilization_in_pct > 80 || t.utilization_out_pct > 80) issues.add('high_utilization')
   }
-
-  type LineInfo = { metric: MetricType; side: 'A' | 'Z' }
-
-  // Build columnar data for ALL possible lines (all sides x metrics x directions)
-  const { uplotData, uplotSeries, seriesMap } = useMemo(() => {
-    const timestamps = hours.map(h => new Date(h.hour).getTime() / 1000)
-    const lineInfos: LineInfo[] = []
-    const columns: (number | null)[][] = []
-
-    for (const side of ['A', 'Z'] as const) {
-      // errors in/out
-      lineInfos.push({ metric: 'errors', side })
-      columns.push(hours.map(h => side === 'A' ? (h.side_a_in_errors ?? 0) : (h.side_z_in_errors ?? 0)))
-      lineInfos.push({ metric: 'errors', side })
-      columns.push(hours.map(h => -(side === 'A' ? (h.side_a_out_errors ?? 0) : (h.side_z_out_errors ?? 0))))
-      // fcs_errors (in only)
-      lineInfos.push({ metric: 'fcs_errors', side })
-      columns.push(hours.map(h => side === 'A' ? (h.side_a_in_fcs_errors ?? 0) : (h.side_z_in_fcs_errors ?? 0)))
-      // discards in/out
-      lineInfos.push({ metric: 'discards', side })
-      columns.push(hours.map(h => side === 'A' ? (h.side_a_in_discards ?? 0) : (h.side_z_in_discards ?? 0)))
-      lineInfos.push({ metric: 'discards', side })
-      columns.push(hours.map(h => -(side === 'A' ? (h.side_a_out_discards ?? 0) : (h.side_z_out_discards ?? 0))))
-      // carrier
-      lineInfos.push({ metric: 'carrier', side })
-      columns.push(hours.map(h => side === 'A' ? (h.side_a_carrier_transitions ?? 0) : (h.side_z_carrier_transitions ?? 0)))
-    }
-
-    const series: uPlot.Series[] = [
-      {}, // x-axis
-      ...lineInfos.map((info, i) => {
-        // Determine which side block we're in to get color
-        const color = SIDE_COLORS[info.side]
-        // Determine dash pattern from metric
-        let dash: number[] | undefined
-        if (info.metric === 'fcs_errors') dash = [8, 3]
-        else if (info.metric === 'discards') dash = [5, 5]
-        else if (info.metric === 'carrier') dash = [2, 2]
-        return {
-          label: `line_${i}`,
-          stroke: color,
-          width: 1.5,
-          dash,
-          points: { show: false },
-          show: true,
-        } as uPlot.Series
-      }),
-    ]
-
-    const map = new Map<number, LineInfo>()
-    lineInfos.forEach((info, i) => map.set(i + 1, info))
-
-    return {
-      uplotData: [timestamps, ...columns] as uPlot.AlignedData,
-      uplotSeries: series,
-      seriesMap: map,
-    }
-  }, [hours])
-
-  const axes = useMemo((): uPlot.Axis[] => [
-    {},
-    {
-      values: (_u: uPlot, vals: number[]) => vals.map(v => {
-        const abs = Math.abs(v)
-        if (abs === 0) return '0'
-        return abs >= 1000 ? `${(abs / 1000).toFixed(0)}k` : abs.toString()
-      }),
-    },
-  ], [])
-
-  const { plotRef } = useUPlotChart({
-    containerRef: chartRef,
-    data: uplotData,
-    series: uplotSeries,
-    height: 128,
-    axes,
-  })
-
-  // Sync toggle state to series visibility
-  useEffect(() => {
-    const u = plotRef.current
-    if (!u) return
-    for (const [idx, info] of seriesMap) {
-      const shouldShow = enabledMetrics.has(info.metric) && enabledSides.has(info.side) && availableMetrics.has(info.metric)
-      if (u.series[idx]?.show !== shouldShow) {
-        u.setSeries(idx, { show: shouldShow })
-      }
-    }
-  })
-
-  // Sync hover opacity
-  useLayoutEffect(() => {
-    const u = plotRef.current
-    if (!u) return
-    let changed = false
-    for (const [idx, info] of seriesMap) {
-      let alpha = 1
-      if (hoveredMetric || hoveredSide) {
-        const metricMatch = !hoveredMetric || hoveredMetric === info.metric
-        const sideMatch = !hoveredSide || hoveredSide === info.side
-        alpha = (metricMatch && sideMatch) ? 1 : 0.15
-      }
-      const s = u.series[idx]
-      if (s && (s as uPlot.Series & { alpha?: number }).alpha !== alpha) {
-        ;(s as uPlot.Series & { alpha?: number }).alpha = alpha
-        changed = true
-      }
-    }
-    if (changed) u.redraw()
-  })
-
-  return (
-    <>
-      {/* Controls */}
-      <div className={`flex-shrink-0 ${controlsWidth} space-y-3`}>
-        <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground">Metrics</span>
-          <div className="flex flex-wrap gap-1">
-            {(['errors', 'fcs_errors', 'discards', 'carrier'] as MetricType[]).map(metric => {
-              if (!availableMetrics.has(metric)) return null
-              const config = METRIC_CONFIG[metric]
-              const isEnabled = enabledMetrics.has(metric)
-              return (
-                <button
-                  key={metric}
-                  onClick={() => toggleMetric(metric)}
-                  onMouseEnter={() => setHoveredMetric(metric)}
-                  onMouseLeave={() => setHoveredMetric(null)}
-                  className={`px-2 py-1 text-xs rounded border transition-colors flex items-center gap-1.5 ${
-                    isEnabled
-                      ? 'bg-background border-foreground/20 text-foreground shadow-sm'
-                      : 'bg-muted/50 border-transparent text-muted-foreground hover:bg-muted'
-                  }`}
-                >
-                  <svg width="12" height="2" style={{ opacity: isEnabled ? 1 : 0.3 }}>
-                    <line x1="0" y1="1" x2="12" y2="1" stroke="currentColor" strokeWidth="2" strokeDasharray={config.dashArray} />
-                  </svg>
-                  {config.label}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-        <div className="space-y-1.5">
-          <span className="text-xs text-muted-foreground">Sides</span>
-          <div className="flex flex-wrap gap-1">
-            {(['A', 'Z'] as const).map(side => {
-              if (!availableSides.has(side)) return null
-              const isEnabled = enabledSides.has(side)
-              return (
-                <button
-                  key={side}
-                  onClick={() => toggleSide(side)}
-                  onMouseEnter={() => setHoveredSide(side)}
-                  onMouseLeave={() => setHoveredSide(null)}
-                  className={`px-2 py-1 text-xs rounded border transition-colors flex items-center gap-1.5 ${
-                    isEnabled
-                      ? 'bg-background border-current shadow-sm'
-                      : 'bg-muted/50 border-transparent text-muted-foreground hover:bg-muted'
-                  }`}
-                  style={isEnabled ? { borderColor: SIDE_COLORS[side], color: SIDE_COLORS[side] } : undefined}
-                >
-                  <span className="w-2 h-2 rounded-full" style={{ backgroundColor: isEnabled ? SIDE_COLORS[side] : 'currentColor', opacity: isEnabled ? 1 : 0.3 }} />
-                  Side {side}
-                </button>
-              )
-            })}
-          </div>
-        </div>
-      </div>
-
-      {/* Chart */}
-      <div className="flex-1 min-w-0 h-32">
-        <div ref={chartRef} className="w-full h-full" />
-      </div>
-    </>
-  )
+  if (b.status && !b.status.collecting && b.status.health === 'no_data') issues.add('no_data')
+  if (b.status?.isis_down) issues.add('missing_adjacency')
 }
 
-interface LinkPacketLossChartProps {
-  hours: LinkHourStatus[]
-  bucketMinutes: number
-  controlsWidth?: string
-}
-
-function LinkPacketLossChart({ hours, controlsWidth = 'w-32' }: LinkPacketLossChartProps) {
-  const chartRef = useRef<HTMLDivElement>(null)
-  const [enabledSeries, setEnabledSeries] = useState<Set<'total' | 'A' | 'Z'>>(new Set(['total', 'A', 'Z']))
-  const [hoveredSeries, setHoveredSeries] = useState<'total' | 'A' | 'Z' | null>(null)
-
-  // Check which series have data
-  const availableSeries = useMemo(() => {
-    const series: Set<'total' | 'A' | 'Z'> = new Set()
-    for (const h of hours) {
-      if (h.avg_loss_pct > 0) series.add('total')
-      if ((h.side_a_loss_pct ?? 0) > 0) series.add('A')
-      if ((h.side_z_loss_pct ?? 0) > 0) series.add('Z')
-    }
-    return series
-  }, [hours])
-
-  const toggleSeries = (series: 'total' | 'A' | 'Z') => {
-    setEnabledSeries(prev => {
-      const next = new Set(prev)
-      if (next.has(series)) next.delete(series)
-      else next.add(series)
-      return next
-    })
-  }
-
-  const SERIES_CONFIG = {
-    total: { color: '#a855f7', label: 'Average' }, // purple
-    A: { color: SIDE_COLORS.A, label: 'Side A' },
-    Z: { color: SIDE_COLORS.Z, label: 'Side Z' },
-  }
-
-  type LossSeriesKey = 'total' | 'A' | 'Z'
-  const seriesKeys: LossSeriesKey[] = ['total', 'A', 'Z']
-
-  // Build columnar uPlot data
-  const { uplotData, uplotSeries } = useMemo(() => {
-    const timestamps = hours.map(h => new Date(h.hour).getTime() / 1000)
-    const total = hours.map(h => h.status === 'no_data' ? null : h.avg_loss_pct)
-    const sideA = hours.map(h => h.status === 'no_data' ? null : (h.side_a_loss_pct ?? 0))
-    const sideZ = hours.map(h => h.status === 'no_data' ? null : (h.side_z_loss_pct ?? 0))
-
-    const series: uPlot.Series[] = [
-      {}, // x-axis
-      { label: 'total', stroke: SERIES_CONFIG.total.color, width: 2, points: { show: false }, show: true },
-      { label: 'sideA', stroke: SERIES_CONFIG.A.color, width: 1.5, dash: [5, 5], points: { show: false }, show: true },
-      { label: 'sideZ', stroke: SERIES_CONFIG.Z.color, width: 1.5, dash: [5, 5], points: { show: false }, show: true },
-    ]
-
-    return {
-      uplotData: [timestamps, total, sideA, sideZ] as uPlot.AlignedData,
-      uplotSeries: series,
-    }
-  }, [hours, SERIES_CONFIG.total.color, SERIES_CONFIG.A.color, SERIES_CONFIG.Z.color])
-
-  const axes = useMemo((): uPlot.Axis[] => [
-    {},
-    { values: (_u: uPlot, vals: number[]) => vals.map(v => `${v.toFixed(1)}%`) },
-  ], [])
-
-  const scales = useMemo((): uPlot.Scales => ({
-    x: { time: true },
-    y: { auto: false, range: [0, 100] },
-  }), [])
-
-  const { plotRef } = useUPlotChart({
-    containerRef: chartRef,
-    data: uplotData,
-    series: uplotSeries,
-    height: 128,
-    axes,
-    scales,
-  })
-
-  // Sync toggle state to series visibility
-  useEffect(() => {
-    const u = plotRef.current
-    if (!u) return
-    for (let i = 0; i < seriesKeys.length; i++) {
-      const key = seriesKeys[i]
-      const seriesIdx = i + 1
-      const shouldShow = enabledSeries.has(key) && (key === 'total' || availableSeries.has(key))
-      if (u.series[seriesIdx]?.show !== shouldShow) {
-        u.setSeries(seriesIdx, { show: shouldShow })
-      }
-    }
-  })
-
-  // Sync hover opacity
-  useLayoutEffect(() => {
-    const u = plotRef.current
-    if (!u) return
-    let changed = false
-    for (let i = 0; i < seriesKeys.length; i++) {
-      const key = seriesKeys[i]
-      const seriesIdx = i + 1
-      let alpha = 1
-      if (hoveredSeries) {
-        alpha = hoveredSeries === key ? 1 : 0.15
-      }
-      const s = u.series[seriesIdx]
-      if (s && (s as uPlot.Series & { alpha?: number }).alpha !== alpha) {
-        ;(s as uPlot.Series & { alpha?: number }).alpha = alpha
-        changed = true
-      }
-    }
-    if (changed) u.redraw()
-  })
-
-  return (
-    <>
-      {/* Controls */}
-      <div className={`flex-shrink-0 ${controlsWidth} space-y-1.5`}>
-        <span className="text-xs text-muted-foreground">Series</span>
-        <div className="flex flex-wrap gap-1">
-          {(['total', 'A', 'Z'] as const).map(series => {
-            if (series !== 'total' && !availableSeries.has(series)) return null
-            const config = SERIES_CONFIG[series]
-            const isEnabled = enabledSeries.has(series)
-            return (
-              <button
-                key={series}
-                onClick={() => toggleSeries(series)}
-                onMouseEnter={() => setHoveredSeries(series)}
-                onMouseLeave={() => setHoveredSeries(null)}
-                className={`px-2 py-1 text-xs rounded border transition-colors flex items-center gap-1.5 ${
-                  isEnabled
-                    ? 'bg-background border-current shadow-sm'
-                    : 'bg-muted/50 border-transparent text-muted-foreground hover:bg-muted'
-                }`}
-                style={isEnabled ? { borderColor: config.color, color: config.color } : undefined}
-              >
-                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: isEnabled ? config.color : 'currentColor', opacity: isEnabled ? 1 : 0.3 }} />
-                {config.label}
-              </button>
-            )
-          })}
-        </div>
-      </div>
-
-      {/* Chart */}
-      <div className="flex-1 min-w-0 h-32">
-        <div ref={chartRef} className="w-full h-full" />
-      </div>
-    </>
-  )
-}
+const cardClass = "rounded-lg border border-border p-4"
 
 interface LinkRowProps {
-  link: LinkHistory
+  linkMetrics: LinkMetricsResponse
+  derivedInfo: DerivedLinkInfo
   linksWithIssues?: Map<string, string[]>
   criticalityMap?: Map<string, 'critical' | 'important' | 'redundant'>
-  bucketMinutes?: number
-  dataTimeRange?: string
+  metricsTimeRange: string
 }
 
-function LinkRow({ link, linksWithIssues, criticalityMap, bucketMinutes = 60, dataTimeRange }: LinkRowProps) {
+function LinkRow({ linkMetrics, derivedInfo, linksWithIssues, criticalityMap, metricsTimeRange }: LinkRowProps) {
   const [expanded, setExpanded] = useState(false)
+  const [hoveredTimeRange, setHoveredTimeRange] = useState<{ start: number; end: number } | null>(null)
+  const [chartHoveredTime, setChartHoveredTime] = useState<number | null>(null)
+
+  // Fetch full metrics (with latency) on expand for packet loss chart
+  const { data: fullMetrics, isFetching: metricsFetching } = useQuery({
+    queryKey: ['linkMetrics', derivedInfo.pk, { range: metricsTimeRange }],
+    queryFn: () => fetchLinkMetrics(derivedInfo.pk, { range: metricsTimeRange }),
+    enabled: expanded,
+  })
 
   const issueReasons = linksWithIssues
-    ? (linksWithIssues.get(link.code) ?? [])
-    : (link.issue_reasons ?? [])
+    ? (linksWithIssues.get(derivedInfo.code) ?? [])
+    : derivedInfo.issueReasons
 
-  const showInterfaceChart = hasInterfaceIssues(link.hours)
-  const showPacketLossChart = hasPacketLoss(link.hours)
-  const hasExpandableContent = showInterfaceChart || showPacketLossChart
+  const nowMinutes = Math.floor(Date.now() / 60000)
+  const recentIssues = useMemo(() => {
+    const recent = new Set<string>()
+    const cutoff = nowMinutes * 60 - 30 * 60
+    for (const b of linkMetrics.buckets) {
+      const ts = new Date(b.ts).getTime() / 1000
+      if (ts < cutoff) continue
+      addBucketIssues(b, recent)
+    }
+    return recent
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkMetrics, nowMinutes])
+
+  const hoveredIssues = useMemo(() => {
+    if (!hoveredTimeRange) return null
+    const issues = new Set<string>()
+    for (const b of linkMetrics.buckets) {
+      const ts = new Date(b.ts).getTime() / 1000
+      if (ts < hoveredTimeRange.start || ts >= hoveredTimeRange.end) continue
+      addBucketIssues(b, issues)
+    }
+    return issues
+  }, [hoveredTimeRange, linkMetrics])
+
+  const isBadgeActive = (issue: string) => {
+    if (hoveredIssues) return hoveredIssues.has(issue)
+    return recentIssues.has(issue)
+  }
+
+  const dimBadgeClass = 'bg-muted-foreground/10 text-muted-foreground/50'
+
+  // Worst health in recent window (last 30 min) for left border indicator
+  const recentHealth = useMemo(() => {
+    const cutoff = nowMinutes * 60 - 30 * 60
+    let worstHealth = 'healthy'
+    let isisDown = false
+    const priority: Record<string, number> = { unhealthy: 3, degraded: 2, no_data: 1, healthy: 0 }
+    for (const b of linkMetrics.buckets) {
+      const ts = new Date(b.ts).getTime() / 1000
+      if (ts < cutoff) continue
+      if (b.status) {
+        if (b.status.isis_down) isisDown = true
+        const h = b.status.health || 'healthy'
+        if ((priority[h] ?? 0) > (priority[worstHealth] ?? 0)) worstHealth = h
+      }
+    }
+    return { health: worstHealth, isisDown }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [linkMetrics, nowMinutes])
+
+  const leftBorderColor = recentHealth.isisDown
+    ? 'border-l-gray-500'
+    : recentHealth.health === 'unhealthy'
+      ? 'border-l-red-500'
+      : recentHealth.health === 'degraded'
+        ? 'border-l-amber-500'
+        : 'border-l-transparent'
+
+  // Has expandable content: packet loss or interface issues
+  const hasExpandableContent = issueReasons.some(r =>
+    r === 'packet_loss' || r === 'interface_errors' || r === 'fcs_errors' || r === 'discards' || r === 'carrier_transitions'
+  )
 
   return (
-    <div id={`link-row-${link.code}`} className="border-b border-border last:border-b-0">
+    <div id={`link-row-${derivedInfo.code}`} className={`border-b border-border last:border-b-0 border-l-2 ${leftBorderColor}`}>
       <div
         className={`px-4 py-3 transition-colors ${hasExpandableContent ? 'cursor-pointer hover:bg-muted/30' : ''}`}
         onClick={hasExpandableContent ? () => setExpanded(!expanded) : undefined}
@@ -660,54 +405,51 @@ function LinkRow({ link, linksWithIssues, criticalityMap, bucketMinutes = 60, da
           {/* Link info */}
           <div className="flex-shrink-0 w-52 sm:w-60 lg:w-68">
             <div className="flex items-center gap-1.5">
-              <Link to={`/dz/links/${link.pk}`} state={{ backLabel: 'status' }} className="font-mono text-sm truncate hover:underline" title={link.code} onClick={(e) => e.stopPropagation()}>
-                {link.code}
+              <Link to={`/dz/links/${derivedInfo.pk}`} state={{ backLabel: 'status' }} className="font-mono text-sm truncate hover:underline" title={derivedInfo.code} onClick={(e) => e.stopPropagation()}>
+                {derivedInfo.code}
               </Link>
-              <LinkInfoPopover link={link} criticality={criticalityMap?.get(link.code)} />
-              {criticalityMap?.get(link.code) && criticalityMap.get(link.code) !== 'redundant' && (
-                <CriticalityBadge criticality={criticalityMap.get(link.code)!} />
-              )}
+              <LinkInfoPopover linkMetrics={linkMetrics} criticality={criticalityMap?.get(derivedInfo.code)} />
             </div>
             <div className="text-xs text-muted-foreground">
-              {link.link_type}{link.contributor && ` · ${link.contributor}`} · {link.side_a_metro} ↔ {link.side_z_metro}
+              {derivedInfo.linkType}{derivedInfo.contributor && ` · ${derivedInfo.contributor}`} · {derivedInfo.sideAMetro} ↔ {derivedInfo.sideZMetro}
             </div>
-            {(link.is_down || link.drain_status || link.provisioning || issueReasons.length > 0) && (
+            {(derivedInfo.isDown || derivedInfo.drainStatus || derivedInfo.provisioning || issueReasons.length > 0) && (
               <div className="flex flex-wrap gap-1 mt-1">
-                {link.is_down && (
+                {derivedInfo.isDown && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-gray-900/15 text-gray-900 dark:bg-gray-400/20 dark:text-gray-300">Down</span>
                 )}
-                {link.drain_status && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-gray-900/15 text-gray-900 dark:bg-gray-400/20 dark:text-gray-300">{link.drain_status === 'hard-drained' ? 'Hard Drained' : 'Soft Drained'}</span>
+                {derivedInfo.drainStatus && (
+                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-gray-900/15 text-gray-900 dark:bg-gray-400/20 dark:text-gray-300">{derivedInfo.drainStatus === 'hard-drained' ? 'Hard Drained' : 'Soft Drained'}</span>
                 )}
-                {link.provisioning && (
+                {derivedInfo.provisioning && (
                   <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-blue-500/15 text-blue-700 dark:bg-blue-400/20 dark:text-blue-300">Provisioning</span>
                 )}
                 {issueReasons.includes('packet_loss') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(168, 85, 247, 0.15)', color: '#9333ea' }}>Loss</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('packet_loss') ? '' : dimBadgeClass}`} style={isBadgeActive('packet_loss') ? { backgroundColor: 'rgba(168, 85, 247, 0.15)', color: '#9333ea' } : undefined}>Loss</span>
                 )}
                 {issueReasons.includes('high_latency') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#2563eb' }}>High Latency</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('high_latency') ? '' : dimBadgeClass}`} style={isBadgeActive('high_latency') ? { backgroundColor: 'rgba(59, 130, 246, 0.15)', color: '#2563eb' } : undefined}>High Latency</span>
                 )}
                 {issueReasons.includes('high_utilization') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(99, 102, 241, 0.15)', color: '#4f46e5' }}>High Utilization</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('high_utilization') ? '' : dimBadgeClass}`} style={isBadgeActive('high_utilization') ? { backgroundColor: 'rgba(99, 102, 241, 0.15)', color: '#4f46e5' } : undefined}>High Utilization</span>
                 )}
                 {issueReasons.includes('no_data') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(236, 72, 153, 0.15)', color: '#db2777' }}>No Data</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('no_data') ? '' : dimBadgeClass}`} style={isBadgeActive('no_data') ? { backgroundColor: 'rgba(236, 72, 153, 0.15)', color: '#db2777' } : undefined}>No Data</span>
                 )}
                 {issueReasons.includes('interface_errors') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#dc2626' }}>Errors</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('interface_errors') ? '' : dimBadgeClass}`} style={isBadgeActive('interface_errors') ? { backgroundColor: 'rgba(239, 68, 68, 0.15)', color: '#dc2626' } : undefined}>Errors</span>
                 )}
                 {issueReasons.includes('fcs_errors') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(249, 115, 22, 0.15)', color: '#ea580c' }}>FCS Errors</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('fcs_errors') ? '' : dimBadgeClass}`} style={isBadgeActive('fcs_errors') ? { backgroundColor: 'rgba(249, 115, 22, 0.15)', color: '#ea580c' } : undefined}>FCS Errors</span>
                 )}
                 {issueReasons.includes('discards') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(20, 184, 166, 0.15)', color: '#0d9488' }}>Discards</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('discards') ? '' : dimBadgeClass}`} style={isBadgeActive('discards') ? { backgroundColor: 'rgba(20, 184, 166, 0.15)', color: '#0d9488' } : undefined}>Discards</span>
                 )}
                 {issueReasons.includes('carrier_transitions') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium" style={{ backgroundColor: 'rgba(234, 179, 8, 0.15)', color: '#ca8a04' }}>Carrier Transitions</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('carrier_transitions') ? '' : dimBadgeClass}`} style={isBadgeActive('carrier_transitions') ? { backgroundColor: 'rgba(234, 179, 8, 0.15)', color: '#ca8a04' } : undefined}>Carrier Transitions</span>
                 )}
                 {issueReasons.includes('missing_adjacency') && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded font-medium bg-rose-600/15 text-rose-700 dark:text-rose-400">ISIS Down</span>
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium transition-all ${isBadgeActive('missing_adjacency') ? 'bg-rose-600/15 text-rose-700 dark:text-rose-400' : dimBadgeClass}`}>ISIS Down</span>
                 )}
               </div>
             )}
@@ -715,41 +457,32 @@ function LinkRow({ link, linksWithIssues, criticalityMap, bucketMinutes = 60, da
 
           {/* Timeline */}
           <div className="flex-1 min-w-0">
-            <StatusTimeline
-              hours={link.hours}
-              committedRttUs={link.committed_rtt_us}
-              bucketMinutes={bucketMinutes}
-              timeRange={dataTimeRange}
-            />
+            <LinkHealthTimeline data={linkMetrics} hideBadges onBarHover={setHoveredTimeRange} highlightedTime={chartHoveredTime} />
           </div>
         </div>
       </div>
 
       {/* Expanded charts */}
-      {expanded && hasExpandableContent && (
-        <div className="px-4 pb-4 pt-0 space-y-4">
-          {showPacketLossChart && (
-            <div>
-              <div className="flex items-start gap-4 mb-2">
-                <div className="flex-shrink-0 w-5" />
-                <div className="text-xs font-medium text-muted-foreground">Packet Loss</div>
-              </div>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-5" />
-                <LinkPacketLossChart hours={link.hours} bucketMinutes={bucketMinutes} controlsWidth="w-52 sm:w-60 lg:w-68" />
-              </div>
-            </div>
-          )}
-          {showInterfaceChart && (
-            <div>
-              <div className="flex items-start gap-4 mb-2">
-                <div className="flex-shrink-0 w-5" />
-                <div className="text-xs font-medium text-muted-foreground">Interface Issues</div>
-              </div>
-              <div className="flex items-start gap-4">
-                <div className="flex-shrink-0 w-5" />
-                <LinkInterfaceChart hours={link.hours} bucketMinutes={bucketMinutes} controlsWidth="w-52 sm:w-60 lg:w-68" />
-              </div>
+      {expanded && (
+        <div className="px-4 pb-4 pt-2 space-y-4">
+          {/* Packet loss chart — needs latency data from per-link fetch */}
+          {fullMetrics && (() => {
+            const hasLoss = fullMetrics.buckets.some(b => b.latency && (b.latency.a_loss_pct > 0 || b.latency.z_loss_pct > 0))
+            return hasLoss ? <LinkPacketLossDetailChart data={fullMetrics} loading={metricsFetching} className={cardClass} highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} /> : null
+          })()}
+          {/* Interface issues chart — uses bulk data (has traffic) */}
+          {(() => {
+            const hasIssues = linkMetrics.buckets.some(b => b.traffic && (
+              b.traffic.side_a_in_errors + b.traffic.side_a_out_errors + b.traffic.side_z_in_errors + b.traffic.side_z_out_errors > 0 ||
+              b.traffic.side_a_in_fcs_errors + b.traffic.side_z_in_fcs_errors > 0 ||
+              b.traffic.side_a_in_discards + b.traffic.side_a_out_discards + b.traffic.side_z_in_discards + b.traffic.side_z_out_discards > 0 ||
+              b.traffic.side_a_carrier_transitions + b.traffic.side_z_carrier_transitions > 0
+            ))
+            return hasIssues ? <LinkInterfaceIssuesChart data={linkMetrics} loading={false} className={cardClass} highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} /> : null
+          })()}
+          {!fullMetrics && metricsFetching && (
+            <div className="flex justify-center py-4">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             </div>
           )}
         </div>
@@ -779,104 +512,97 @@ export function LinkStatusTimelines({
     { value: '3d', label: '3d' },
     { value: '7d', label: '7d' },
   ]
-  const buckets = useBucketCount()
 
   const { data, isLoading, isPlaceholderData, error } = useQuery({
-    queryKey: ['link-history', timeRange, buckets],
-    queryFn: () => fetchLinkHistory(timeRange, buckets),
-    refetchInterval: 60_000, // Refresh every minute
+    queryKey: ['bulk-link-metrics', timeRange],
+    queryFn: () => fetchBulkLinkMetrics({ range: timeRange, include: ['status', 'traffic'], hasIssues: true }),
+    refetchInterval: 60_000,
     staleTime: 30_000,
     placeholderData: keepPreviousData,
   })
 
+  // Convert the Record<string, LinkMetricsResponse> into an array with derived info
+  const linksArray = useMemo(() => {
+    if (!data?.links) return []
+    return Object.values(data.links).map(metrics => ({
+      metrics,
+      derived: deriveLinkInfo(metrics),
+    }))
+  }, [data?.links])
+
   // Helper to check if a link matches health filters
-  // Uses linksWithHealth (from filter time range) if provided, otherwise falls back to link's own hours
-  const linkMatchesHealthFilters = (link: LinkHistory): boolean => {
-    // If we have health data from the filter time range, use it
+  const linkMatchesHealthFilters = (derived: DerivedLinkInfo): boolean => {
     if (linksWithHealth && linksWithHealth.size > 0) {
-      const health = linksWithHealth.get(link.code)
+      const health = linksWithHealth.get(derived.code)
       if (health) {
-        // Map no_data and down to unhealthy for filter matching (not separate filter options)
         const filterHealth = (health === 'no_data' || health === 'down') ? 'unhealthy' : health
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         return healthFilters.includes(filterHealth as any)
       }
-      // Link not in filter data - check if it exists in history
       return false
     }
 
-    // Fallback: check link's own hours data
-    if (!link.hours || link.hours.length === 0) return false
-    return link.hours.some(hour => {
-      const status = hour.status
-      if (status === 'healthy' && healthFilters.includes('healthy')) return true
-      if (status === 'degraded' && healthFilters.includes('degraded')) return true
-      if (status === 'unhealthy' && healthFilters.includes('unhealthy')) return true
-      if (status === 'no_data' && healthFilters.includes('unhealthy')) return true // no_data maps to unhealthy
-      return false
-    })
+    // Fallback: use worst health derived from buckets
+    const h = derived.health
+    if (h === 'healthy' && healthFilters.includes('healthy')) return true
+    if (h === 'degraded' && healthFilters.includes('degraded')) return true
+    if ((h === 'unhealthy' || h === 'no_data' || h === 'down') && healthFilters.includes('unhealthy')) return true
+    return false
   }
 
-  // Check which issue filters are selected
   const issueTypesSelected = issueFilters.filter(f => f !== 'no_issues')
   const noIssuesSelected = issueFilters.includes('no_issues')
   const noDataSelected = issueFilters.includes('no_data')
 
-  // Filter and sort links by recency of issues
   const filteredLinks = useMemo(() => {
-    if (!data?.links) return []
+    if (linksArray.length === 0) return []
 
-    // Filter by issue reasons (from filter time range if provided) AND health status
-    const filtered = data.links.filter(link => {
-      // Use linksWithIssues if provided - if link not in map, it has no issues in the filter time range
-      // Only fall back to link.issue_reasons if linksWithIssues is not provided at all
+    const filtered = linksArray.filter(({ metrics, derived }) => {
       const issueReasons = linksWithIssues && linksWithIssues.size > 0
-        ? (linksWithIssues.get(link.code) ?? [])
-        : (link.issue_reasons ?? [])
+        ? (linksWithIssues.get(derived.code) ?? [])
+        : derived.issueReasons
       const hasIssues = issueReasons.length > 0
 
       // When no_data filter is off, exclude links whose only issue is no_data
-      // UNLESS the link has non-healthy buckets (unhealthy/degraded from missing data)
       if (!noDataSelected && issueReasons.length === 1 && issueReasons[0] === 'no_data') {
-        const hasNonHealthyBuckets = link.hours?.some(h =>
-          !h.collecting && (h.status === 'unhealthy' || h.status === 'degraded')
+        const hasNonHealthyBuckets = metrics.buckets.some(b =>
+          b.status && !b.status.collecting && (b.status.health === 'unhealthy' || b.status.health === 'degraded')
         )
         if (!hasNonHealthyBuckets) {
           return false
         }
       }
 
-      // Hide currently drained links unless showDrained is enabled
-      if (link.drain_status && !showDrained) {
+      if (derived.drainStatus && !showDrained) {
         return false
       }
 
-      // Hide provisioning links unless showProvisioning is enabled
-      if (link.provisioning && !showProvisioning) {
+      if (derived.provisioning && !showProvisioning) {
         return false
+      }
+
+      // Drained/provisioning links pass when their toggle is on, regardless of issue/health filters
+      if ((derived.drainStatus && showDrained) || (derived.provisioning && showProvisioning)) {
+        return true
       }
 
       const matchesIssue = hasIssues
         ? issueReasons.some(reason => issueTypesSelected.includes(reason)) ||
-          (issueReasons.length === 1 && issueReasons[0] === 'no_data' && link.hours?.some(h =>
-            !h.collecting && (h.status === 'unhealthy' || h.status === 'degraded')
+          (issueReasons.length === 1 && issueReasons[0] === 'no_data' && metrics.buckets.some(b =>
+            b.status && !b.status.collecting && (b.status.health === 'unhealthy' || b.status.health === 'degraded')
           ))
         : noIssuesSelected
 
-      // Must match at least one health filter
-      const matchesHealth = linkMatchesHealthFilters(link)
+      const matchesHealth = linkMatchesHealthFilters(derived)
 
       return matchesIssue && matchesHealth
     })
 
     // Sort by: 1) recent severity (worst in last 6 buckets), 2) overall worst severity,
     // 3) most recent issue timestamp, 4) total issue count, 5) alphabetical.
-    // Uses getEffectiveStatus to account for ISIS down, interface issues, and latency
-    // overages that aren't reflected in the raw status field.
-    // "Recent severity" ensures a link that's down right now sorts above one that had
-    // a brief issue 12 hours ago, even if both have the same worst-ever severity.
-    const statusSeverity = (status: string): number => {
-      switch (status) {
+    const statusSeverity = (health: string, isisDown: boolean): number => {
+      if (isisDown) return 3
+      switch (health) {
         case 'down':
         case 'unhealthy': return 3
         case 'degraded': return 2
@@ -888,20 +614,24 @@ export function LinkStatusTimelines({
     const RECENT_BUCKETS = 6
 
     return filtered.sort((a, b) => {
-      const getSortKey = (link: LinkHistory): { recent: number; worst: number; latestTs: string; count: number } => {
-        if (!link.hours) return { recent: 0, worst: 0, latestTs: '', count: 0 }
+      const getSortKey = (item: { metrics: LinkMetricsResponse }): { recent: number; worst: number; latestTs: string; count: number } => {
+        const buckets = item.metrics.buckets
+        if (!buckets || buckets.length === 0) return { recent: 0, worst: 0, latestTs: '', count: 0 }
         let worst = 0
         let recent = 0
         let latestTs = ''
         let count = 0
-        const recentStart = Math.max(0, link.hours.length - RECENT_BUCKETS)
-        for (let i = 0; i < link.hours.length; i++) {
-          const sev = statusSeverity(getEffectiveStatus(link.hours[i]))
+        const recentStart = Math.max(0, buckets.length - RECENT_BUCKETS)
+        for (let i = 0; i < buckets.length; i++) {
+          const bk = buckets[i]
+          const health = bk.status?.health ?? 'no_data'
+          const isisDown = bk.status?.isis_down ?? false
+          const sev = statusSeverity(health, isisDown)
           if (sev > 0) {
             count++
             if (sev > worst) worst = sev
             if (i >= recentStart && sev > recent) recent = sev
-            if (link.hours[i].hour > latestTs) latestTs = link.hours[i].hour
+            if (bk.ts > latestTs) latestTs = bk.ts
           }
         }
         return { recent, worst, latestTs, count }
@@ -910,29 +640,22 @@ export function LinkStatusTimelines({
       const aInfo = getSortKey(a)
       const bInfo = getSortKey(b)
 
-      // Recent severity first (what's happening now)
       if (aInfo.recent !== bInfo.recent) return bInfo.recent - aInfo.recent
-      // Overall worst severity
       if (aInfo.worst !== bInfo.worst) return bInfo.worst - aInfo.worst
-      // Most recent issue first (by timestamp, not index)
       if (aInfo.latestTs !== bInfo.latestTs) return aInfo.latestTs < bInfo.latestTs ? 1 : -1
-      // More total issues first
       if (aInfo.count !== bInfo.count) return bInfo.count - aInfo.count
-      // Alphabetical fallback
-      return a.code.localeCompare(b.code)
+      return a.derived.code.localeCompare(b.derived.code)
     })
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [data?.links, issueFilters, healthFilters, noIssuesSelected, issueTypesSelected, showDrained, showProvisioning, linksWithIssues, linksWithHealth])
+  }, [linksArray, issueFilters, healthFilters, noIssuesSelected, issueTypesSelected, showDrained, showProvisioning, linksWithIssues, linksWithHealth])
 
   const drainedCount = useMemo(() => {
-    if (!data?.links) return 0
-    return data.links.filter(link => link.drain_status).length
-  }, [data?.links])
+    return linksArray.filter(({ derived }) => derived.drainStatus).length
+  }, [linksArray])
 
   const provisioningCount = useMemo(() => {
-    if (!data?.links) return 0
-    return data.links.filter(link => link.provisioning).length
-  }, [data?.links])
+    return linksArray.filter(({ derived }) => derived.provisioning).length
+  }, [linksArray])
 
   const showSkeleton = useDelayedLoading(isLoading && !data)
 
@@ -954,7 +677,7 @@ export function LinkStatusTimelines({
       <div className="border border-border rounded-lg p-6 text-center">
         <CheckCircle2 className="h-8 w-8 text-green-500 mx-auto mb-2" />
         <div className="text-sm text-muted-foreground">
-          {data?.links.length === 0
+          {linksArray.length === 0
             ? 'No links available in the selected time range'
             : 'No links match the selected filters'}
         </div>
@@ -1051,14 +774,14 @@ export function LinkStatusTimelines({
       </div>
 
       <div>
-        {filteredLinks.map((link) => (
+        {filteredLinks.map(({ metrics, derived }) => (
           <LinkRow
-            key={link.code}
-            link={link}
+            key={derived.code}
+            linkMetrics={metrics}
+            derivedInfo={derived}
             linksWithIssues={linksWithIssues}
             criticalityMap={criticalityMap}
-            bucketMinutes={data?.bucket_minutes}
-            dataTimeRange={data?.time_range}
+            metricsTimeRange={timeRange}
           />
         ))}
       </div>
