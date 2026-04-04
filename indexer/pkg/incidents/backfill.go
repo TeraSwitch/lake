@@ -400,7 +400,84 @@ func (a *Activities) BackfillLinkChunk(ctx context.Context, input BackfillChunkI
 				ContributorCode: inc.meta.ContributorCode,
 				Status:          inc.meta.Status,
 				Provisioning:    inc.meta.Provisioning,
+				PreviousStatus:  d.PreviousStatus,
+				NewStatus:       d.NewStatus,
 			})
+		}
+	}
+
+	// Detect entity status changes during the chunk window for all incidents.
+	var entityPKs []string
+	for _, inc := range incidents {
+		if len(inc.windows) > 0 {
+			entityPKs = append(entityPKs, inc.windows[0].EntityPK)
+		}
+	}
+	statusChanges, err := a.detectLinkStatusChanges(ctx, input.WindowStart, input.WindowEnd, entityPKs)
+	if err != nil {
+		return fmt.Errorf("detect link status changes: %w", err)
+	}
+	for _, incID := range incidentOrder {
+		inc := incidents[incID]
+		if len(inc.windows) == 0 {
+			continue
+		}
+		if !input.Overwrite && existingIDs[incID] {
+			continue
+		}
+		w0 := inc.windows[0]
+		transitions := statusChanges[w0.EntityPK]
+		for _, st := range transitions {
+			// Find the latest symptom event before this status change for context.
+			var activeSymptoms, symptoms []string
+			var severity Severity
+			var peakValues string
+			for i := len(allEvents) - 1; i >= 0; i-- {
+				e := allEvents[i]
+				if e.IncidentID == incID && !e.EventTS.After(st.ChangedTS) && e.EventType != EventStatusChanged {
+					activeSymptoms = e.ActiveSymptoms
+					symptoms = e.Symptoms
+					severity = e.Severity
+					peakValues = e.PeakValues
+					break
+				}
+			}
+			allEvents = append(allEvents, LinkIncidentEvent{
+				IncidentID:      incID,
+				LinkPK:          w0.EntityPK,
+				EventType:       EventStatusChanged,
+				EventTS:         st.ChangedTS,
+				StartedAt:       w0.IncidentStart,
+				ActiveSymptoms:  activeSymptoms,
+				Symptoms:        symptoms,
+				Severity:        severity,
+				PeakValues:      peakValues,
+				LinkCode:        inc.meta.LinkCode,
+				LinkType:        inc.meta.LinkType,
+				SideAMetro:      inc.meta.SideAMetro,
+				SideZMetro:      inc.meta.SideZMetro,
+				ContributorCode: inc.meta.ContributorCode,
+				Status:          st.NewStatus,
+				Provisioning:    inc.meta.Provisioning,
+				PreviousStatus:  st.PreviousStatus,
+				NewStatus:       st.NewStatus,
+			})
+		}
+	}
+
+	// Resolve point-in-time entity status for all events (not just status_changed).
+	if len(allEvents) > 0 {
+		statusLookup, err := a.resolveLinkStatusAtTime(ctx, input.WindowEnd, entityPKs)
+		if err != nil {
+			return fmt.Errorf("resolve link status at time: %w", err)
+		}
+		for i := range allEvents {
+			if allEvents[i].EventType == EventStatusChanged {
+				continue // status_changed events already have correct Status
+			}
+			if resolved := statusLookup(allEvents[i].LinkPK, allEvents[i].EventTS); resolved != "" {
+				allEvents[i].Status = resolved
+			}
 		}
 	}
 
@@ -426,14 +503,16 @@ func (a *Activities) resolveStaleLinks(ctx context.Context, input BackfillChunkI
 			incident_id, link_pk, event_type, event_ts, started_at,
 			active_symptoms, symptoms, severity, peak_values,
 			link_code, link_type, side_a_metro, side_z_metro,
-			contributor_code, status, provisioning
+			contributor_code, status, provisioning,
+			previous_status, new_status
 		)
 		SELECT
 			ie.incident_id, ie.link_pk, 'resolved',
 			least(toDateTime($1) + INTERVAL $3 MINUTE, toDateTime($2)), ie.started_at,
 			arrayResize(emptyArrayString(), 0), ie.symptoms, ie.severity, ie.peak_values,
 			ie.link_code, ie.link_type, ie.side_a_metro, ie.side_z_metro,
-			ie.contributor_code, ie.status, ie.provisioning
+			ie.contributor_code, ie.status, ie.provisioning,
+			'', ''
 		FROM link_incident_events ie
 		INNER JOIN (
 			SELECT incident_id, max(event_ts) AS max_ts
@@ -571,7 +650,81 @@ func (a *Activities) BackfillDeviceChunk(ctx context.Context, input BackfillChun
 				Metro:           inc.meta.Metro,
 				ContributorCode: inc.meta.ContributorCode,
 				Status:          inc.meta.Status,
+				PreviousStatus:  d.PreviousStatus,
+				NewStatus:       d.NewStatus,
 			})
+		}
+	}
+
+	// Detect entity status changes during the chunk window for all incidents.
+	var devicePKs []string
+	for _, inc := range incidents {
+		if len(inc.windows) > 0 {
+			devicePKs = append(devicePKs, inc.windows[0].EntityPK)
+		}
+	}
+	deviceStatusChanges, err := a.detectDeviceStatusChanges(ctx, input.WindowStart, input.WindowEnd, devicePKs)
+	if err != nil {
+		return fmt.Errorf("detect device status changes: %w", err)
+	}
+	for _, incID := range incidentOrder {
+		inc := incidents[incID]
+		if len(inc.windows) == 0 {
+			continue
+		}
+		if !input.Overwrite && existingIDs[incID] {
+			continue
+		}
+		w0 := inc.windows[0]
+		transitions := deviceStatusChanges[w0.EntityPK]
+		for _, st := range transitions {
+			var activeSymptoms, symptoms []string
+			var severity Severity
+			var peakValues string
+			for i := len(allEvents) - 1; i >= 0; i-- {
+				e := allEvents[i]
+				if e.IncidentID == incID && !e.EventTS.After(st.ChangedTS) && e.EventType != EventStatusChanged {
+					activeSymptoms = e.ActiveSymptoms
+					symptoms = e.Symptoms
+					severity = e.Severity
+					peakValues = e.PeakValues
+					break
+				}
+			}
+			allEvents = append(allEvents, DeviceIncidentEvent{
+				IncidentID:      incID,
+				DevicePK:        w0.EntityPK,
+				EventType:       EventStatusChanged,
+				EventTS:         st.ChangedTS,
+				StartedAt:       w0.IncidentStart,
+				ActiveSymptoms:  activeSymptoms,
+				Symptoms:        symptoms,
+				Severity:        severity,
+				PeakValues:      peakValues,
+				DeviceCode:      inc.meta.DeviceCode,
+				DeviceType:      inc.meta.DeviceType,
+				Metro:           inc.meta.Metro,
+				ContributorCode: inc.meta.ContributorCode,
+				Status:          st.NewStatus,
+				PreviousStatus:  st.PreviousStatus,
+				NewStatus:       st.NewStatus,
+			})
+		}
+	}
+
+	// Resolve point-in-time entity status for all events.
+	if len(allEvents) > 0 {
+		statusLookup, err := a.resolveDeviceStatusAtTime(ctx, input.WindowEnd, devicePKs)
+		if err != nil {
+			return fmt.Errorf("resolve device status at time: %w", err)
+		}
+		for i := range allEvents {
+			if allEvents[i].EventType == EventStatusChanged {
+				continue
+			}
+			if resolved := statusLookup(allEvents[i].DevicePK, allEvents[i].EventTS); resolved != "" {
+				allEvents[i].Status = resolved
+			}
 		}
 	}
 
@@ -595,13 +748,15 @@ func (a *Activities) resolveStaleDevices(ctx context.Context, input BackfillChun
 		INSERT INTO device_incident_events (
 			incident_id, device_pk, event_type, event_ts, started_at,
 			active_symptoms, symptoms, severity, peak_values,
-			device_code, device_type, metro, contributor_code, status
+			device_code, device_type, metro, contributor_code, status,
+			previous_status, new_status
 		)
 		SELECT
 			ie.incident_id, ie.device_pk, 'resolved',
 			least(toDateTime($1) + INTERVAL $3 MINUTE, toDateTime($2)), ie.started_at,
 			arrayResize(emptyArrayString(), 0), ie.symptoms, ie.severity, ie.peak_values,
-			ie.device_code, ie.device_type, ie.metro, ie.contributor_code, ie.status
+			ie.device_code, ie.device_type, ie.metro, ie.contributor_code, ie.status,
+			'', ''
 		FROM device_incident_events ie
 		INNER JOIN (
 			SELECT incident_id, max(event_ts) AS max_ts
@@ -622,6 +777,190 @@ func (a *Activities) resolveStaleDevices(ctx context.Context, input BackfillChun
 		return fmt.Errorf("resolve stale device incidents: %w", err)
 	}
 	return nil
+}
+
+// --- Point-in-time status resolution ---
+
+// resolveLinkStatusAtTime queries dim_dz_links_history to build a timeline of
+// status changes per entity, then returns a lookup function that gives the
+// status at any point in time.
+func (a *Activities) resolveLinkStatusAtTime(ctx context.Context, windowEnd time.Time, entityPKs []string) (func(pk string, ts time.Time) string, error) {
+	if len(entityPKs) == 0 {
+		return func(string, time.Time) string { return "" }, nil
+	}
+
+	rows, err := a.ClickHouse.Query(ctx, `
+		SELECT pk, status, snapshot_ts
+		FROM dim_dz_links_history
+		WHERE pk IN ($1) AND is_deleted = 0 AND snapshot_ts <= $2
+		ORDER BY pk, snapshot_ts`,
+		entityPKs, windowEnd)
+	if err != nil {
+		return nil, fmt.Errorf("resolve link status history: %w", err)
+	}
+	defer rows.Close()
+
+	// Build sorted timeline per entity.
+	type entry struct {
+		ts     time.Time
+		status string
+	}
+	timeline := make(map[string][]entry)
+	for rows.Next() {
+		var pk, status string
+		var ts time.Time
+		if err := rows.Scan(&pk, &status, &ts); err != nil {
+			return nil, fmt.Errorf("scan link status history: %w", err)
+		}
+		timeline[pk] = append(timeline[pk], entry{ts: ts.UTC(), status: status})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate link status history: %w", err)
+	}
+
+	// Lookup: find latest entry with ts <= target.
+	return func(pk string, target time.Time) string {
+		entries := timeline[pk]
+		var result string
+		for _, e := range entries {
+			if e.ts.After(target) {
+				break
+			}
+			result = e.status
+		}
+		return result
+	}, nil
+}
+
+// resolveDeviceStatusAtTime is the device equivalent of resolveLinkStatusAtTime.
+func (a *Activities) resolveDeviceStatusAtTime(ctx context.Context, windowEnd time.Time, entityPKs []string) (func(pk string, ts time.Time) string, error) {
+	if len(entityPKs) == 0 {
+		return func(string, time.Time) string { return "" }, nil
+	}
+
+	rows, err := a.ClickHouse.Query(ctx, `
+		SELECT pk, status, snapshot_ts
+		FROM dim_dz_devices_history
+		WHERE pk IN ($1) AND is_deleted = 0 AND snapshot_ts <= $2
+		ORDER BY pk, snapshot_ts`,
+		entityPKs, windowEnd)
+	if err != nil {
+		return nil, fmt.Errorf("resolve device status history: %w", err)
+	}
+	defer rows.Close()
+
+	type entry struct {
+		ts     time.Time
+		status string
+	}
+	timeline := make(map[string][]entry)
+	for rows.Next() {
+		var pk, status string
+		var ts time.Time
+		if err := rows.Scan(&pk, &status, &ts); err != nil {
+			return nil, fmt.Errorf("scan device status history: %w", err)
+		}
+		timeline[pk] = append(timeline[pk], entry{ts: ts.UTC(), status: status})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate device status history: %w", err)
+	}
+
+	return func(pk string, target time.Time) string {
+		entries := timeline[pk]
+		var result string
+		for _, e := range entries {
+			if e.ts.After(target) {
+				break
+			}
+			result = e.status
+		}
+		return result
+	}, nil
+}
+
+// --- Status change detection ---
+
+// detectLinkStatusChanges queries dim_dz_links_history for status transitions
+// during the given window for the specified entity PKs.
+func (a *Activities) detectLinkStatusChanges(ctx context.Context, windowStart, windowEnd time.Time, entityPKs []string) (map[string][]statusTransition, error) {
+	if len(entityPKs) == 0 {
+		return nil, nil
+	}
+
+	query := `
+		WITH transitions AS (
+			SELECT pk, status AS new_status, snapshot_ts AS changed_ts,
+				lag(status) OVER (PARTITION BY pk ORDER BY snapshot_ts) AS previous_status
+			FROM dim_dz_links_history
+			WHERE pk IN ($1) AND is_deleted = 0
+		)
+		SELECT pk, previous_status, new_status, changed_ts
+		FROM transitions
+		WHERE previous_status IS NOT NULL
+		  AND previous_status != new_status
+		  AND changed_ts >= $2 AND changed_ts < $3
+		ORDER BY pk, changed_ts
+	`
+
+	rows, err := a.ClickHouse.Query(ctx, query, entityPKs, windowStart, windowEnd)
+	if err != nil {
+		return nil, fmt.Errorf("detect link status changes: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]statusTransition)
+	for rows.Next() {
+		var pk string
+		var st statusTransition
+		if err := rows.Scan(&pk, &st.PreviousStatus, &st.NewStatus, &st.ChangedTS); err != nil {
+			return nil, fmt.Errorf("scan link status change: %w", err)
+		}
+		st.ChangedTS = st.ChangedTS.UTC()
+		result[pk] = append(result[pk], st)
+	}
+	return result, rows.Err()
+}
+
+// detectDeviceStatusChanges queries dim_dz_devices_history for status transitions
+// during the given window for the specified entity PKs.
+func (a *Activities) detectDeviceStatusChanges(ctx context.Context, windowStart, windowEnd time.Time, entityPKs []string) (map[string][]statusTransition, error) {
+	if len(entityPKs) == 0 {
+		return nil, nil
+	}
+
+	query := `
+		WITH transitions AS (
+			SELECT pk, status AS new_status, snapshot_ts AS changed_ts,
+				lag(status) OVER (PARTITION BY pk ORDER BY snapshot_ts) AS previous_status
+			FROM dim_dz_devices_history
+			WHERE pk IN ($1) AND is_deleted = 0
+		)
+		SELECT pk, previous_status, new_status, changed_ts
+		FROM transitions
+		WHERE previous_status IS NOT NULL
+		  AND previous_status != new_status
+		  AND changed_ts >= $2 AND changed_ts < $3
+		ORDER BY pk, changed_ts
+	`
+
+	rows, err := a.ClickHouse.Query(ctx, query, entityPKs, windowStart, windowEnd)
+	if err != nil {
+		return nil, fmt.Errorf("detect device status changes: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string][]statusTransition)
+	for rows.Next() {
+		var pk string
+		var st statusTransition
+		if err := rows.Scan(&pk, &st.PreviousStatus, &st.NewStatus, &st.ChangedTS); err != nil {
+			return nil, fmt.Errorf("scan device status change: %w", err)
+		}
+		st.ChangedTS = st.ChangedTS.UTC()
+		result[pk] = append(result[pk], st)
+	}
+	return result, rows.Err()
 }
 
 // --- Shared helpers ---

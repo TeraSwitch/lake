@@ -15,8 +15,13 @@ type EntityStatusChange struct {
 	ChangedTS      string `json:"changed_ts"`
 }
 
+// statusChangeMargin is added after the incident end time to capture status
+// changes that happen shortly after resolution (e.g., link undrained).
+const statusChangeMargin = 1 * time.Hour
+
 // fetchLinkStatusChanges queries dz_link_status_changes for status transitions
-// during the given time range.
+// during the incident window. Includes the last change before the incident
+// started (to show initial state) and changes up to 1 hour after the end.
 func fetchLinkStatusChanges(ctx context.Context, conn driver.Conn, linkPK, startedAt string, endedAt *string) []EntityStatusChange {
 	startTS, err := time.Parse(time.RFC3339, startedAt)
 	if err != nil {
@@ -25,11 +30,21 @@ func fetchLinkStatusChanges(ctx context.Context, conn driver.Conn, linkPK, start
 	endTS := time.Now().UTC()
 	if endedAt != nil {
 		if t, err := time.Parse(time.RFC3339, *endedAt); err == nil {
-			endTS = t
+			endTS = t.Add(statusChangeMargin)
 		}
 	}
 
+	// Fetch the last status change before the incident plus all changes
+	// during the incident window (with margin after end).
 	query := `
+		SELECT previous_status, new_status, changed_ts FROM (
+			SELECT previous_status, new_status, changed_ts
+			FROM dz_link_status_changes
+			WHERE link_pk = $1 AND changed_ts < $2
+			ORDER BY changed_ts DESC
+			LIMIT 1
+		)
+		UNION ALL
 		SELECT previous_status, new_status, changed_ts
 		FROM dz_link_status_changes
 		WHERE link_pk = $1
@@ -59,7 +74,8 @@ func fetchLinkStatusChanges(ctx context.Context, conn driver.Conn, linkPK, start
 }
 
 // fetchDeviceStatusChanges queries device status transitions from the dimension
-// history table during the given time range.
+// history table during the incident window. Includes the last change before
+// the incident started and changes up to 1 hour after the end.
 func fetchDeviceStatusChanges(ctx context.Context, conn driver.Conn, devicePK, startedAt string, endedAt *string) []EntityStatusChange {
 	startTS, err := time.Parse(time.RFC3339, startedAt)
 	if err != nil {
@@ -68,7 +84,7 @@ func fetchDeviceStatusChanges(ctx context.Context, conn driver.Conn, devicePK, s
 	endTS := time.Now().UTC()
 	if endedAt != nil {
 		if t, err := time.Parse(time.RFC3339, *endedAt); err == nil {
-			endTS = t
+			endTS = t.Add(statusChangeMargin)
 		}
 	}
 
@@ -80,12 +96,24 @@ func fetchDeviceStatusChanges(ctx context.Context, conn driver.Conn, devicePK, s
 				lag(status) OVER (PARTITION BY pk ORDER BY snapshot_ts) AS previous_status
 			FROM dim_dz_devices_history
 			WHERE pk = $1 AND is_deleted = 0
+		),
+		filtered AS (
+			SELECT previous_status, new_status, changed_ts
+			FROM transitions
+			WHERE previous_status IS NOT NULL
+			  AND previous_status != new_status
 		)
+		SELECT previous_status, new_status, changed_ts FROM (
+			SELECT previous_status, new_status, changed_ts
+			FROM filtered
+			WHERE changed_ts < $2
+			ORDER BY changed_ts DESC
+			LIMIT 1
+		)
+		UNION ALL
 		SELECT previous_status, new_status, changed_ts
-		FROM transitions
-		WHERE previous_status IS NOT NULL
-		  AND previous_status != new_status
-		  AND changed_ts >= $2
+		FROM filtered
+		WHERE changed_ts >= $2
 		  AND changed_ts <= $3
 		ORDER BY changed_ts ASC
 	`

@@ -4627,6 +4627,8 @@ export interface IncidentEventV2 {
   symptoms: string[]
   severity: IncidentSeverity
   peak_values: Record<string, number>
+  previous_status?: string
+  new_status?: string
 }
 
 export interface EntityStatusChange {

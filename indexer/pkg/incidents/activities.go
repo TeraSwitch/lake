@@ -93,7 +93,8 @@ func (a *Activities) writeLinkEvents(ctx context.Context, events []LinkIncidentE
 			incident_id, link_pk, event_type, event_ts, started_at,
 			active_symptoms, symptoms, severity, peak_values,
 			link_code, link_type, side_a_metro, side_z_metro,
-			contributor_code, status, provisioning
+			contributor_code, status, provisioning,
+			previous_status, new_status
 		)`)
 	if err != nil {
 		return fmt.Errorf("prepare batch: %w", err)
@@ -105,6 +106,7 @@ func (a *Activities) writeLinkEvents(ctx context.Context, events []LinkIncidentE
 			e.ActiveSymptoms, e.Symptoms, string(e.Severity), e.PeakValues,
 			e.LinkCode, e.LinkType, e.SideAMetro, e.SideZMetro,
 			e.ContributorCode, e.Status, e.Provisioning,
+			e.PreviousStatus, e.NewStatus,
 		); err != nil {
 			return fmt.Errorf("append: %w", err)
 		}
@@ -118,7 +120,8 @@ func (a *Activities) writeDeviceEvents(ctx context.Context, events []DeviceIncid
 		INSERT INTO device_incident_events (
 			incident_id, device_pk, event_type, event_ts, started_at,
 			active_symptoms, symptoms, severity, peak_values,
-			device_code, device_type, metro, contributor_code, status
+			device_code, device_type, metro, contributor_code, status,
+			previous_status, new_status
 		)`)
 	if err != nil {
 		return fmt.Errorf("prepare batch: %w", err)
@@ -129,6 +132,7 @@ func (a *Activities) writeDeviceEvents(ctx context.Context, events []DeviceIncid
 			e.IncidentID, e.DevicePK, string(e.EventType), e.EventTS, e.StartedAt,
 			e.ActiveSymptoms, e.Symptoms, string(e.Severity), e.PeakValues,
 			e.DeviceCode, e.DeviceType, e.Metro, e.ContributorCode, e.Status,
+			e.PreviousStatus, e.NewStatus,
 		); err != nil {
 			return fmt.Errorf("append: %w", err)
 		}

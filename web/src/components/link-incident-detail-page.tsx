@@ -182,6 +182,7 @@ const eventTypeConfig: Record<string, { label: string; dotClass: string }> = {
   symptom_added: { label: 'Symptom Added', dotClass: 'bg-blue-500' },
   symptom_resolved: { label: 'Symptom Resolved', dotClass: 'bg-amber-500' },
   resolved: { label: 'Incident Resolved', dotClass: 'bg-gray-400' },
+  status_changed: { label: 'Status Changed', dotClass: 'bg-slate-400' },
 }
 
 function statusChangeDotClass(newStatus: string): string {
@@ -219,6 +220,36 @@ function TimelineEntryRow({ entry, isLast, startedAt }: { entry: TimelineEntry; 
   }
 
   const cfg = eventTypeConfig[entry.event.event_type] || { label: entry.event.event_type, dotClass: 'bg-gray-400' }
+
+  // Render status_changed events with diamond dot like read-time status changes.
+  if (entry.event.event_type === 'status_changed') {
+    const dotClass = statusChangeDotClass(entry.event.new_status || '')
+    return (
+      <div className="relative flex gap-4">
+        <div className="flex flex-col items-center">
+          <div className={`w-3 h-3 shrink-0 mt-1 rotate-45 ${dotClass}`} />
+          {!isLast && <div className="w-px flex-1 bg-border min-h-[24px]" />}
+        </div>
+        <div className="pb-5 min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <span className="font-medium text-sm text-muted-foreground">
+              Status: {entry.event.previous_status} → {entry.event.new_status}
+            </span>
+            <span className="text-xs font-mono text-muted-foreground/70">
+              {formatOffsetFromStart(startedAt, entry.ts)}
+            </span>
+            <span className="text-xs text-muted-foreground">
+              {formatTimeAgo(entry.ts)}
+            </span>
+            <span className="text-xs text-muted-foreground/50">
+              ({formatTimestamp(entry.ts)})
+            </span>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="relative flex gap-4">
       <div className="flex flex-col items-center">

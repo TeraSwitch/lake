@@ -902,6 +902,8 @@ type IncidentEventV2 struct {
 	Symptoms       []string           `json:"symptoms"`
 	Severity       string             `json:"severity"`
 	PeakValues     map[string]float64 `json:"peak_values"`
+	PreviousStatus string             `json:"previous_status,omitempty"`
+	NewStatus      string             `json:"new_status,omitempty"`
 }
 
 // LinkIncidentDetailResponse is the API response for a single link incident.
@@ -963,7 +965,8 @@ func (a *API) GetLinkIncidentDetail(w http.ResponseWriter, r *http.Request) {
 		SELECT event_type, event_ts, started_at,
 			active_symptoms, symptoms, severity, peak_values,
 			link_pk, link_code, link_type, side_a_metro, side_z_metro,
-			contributor_code, status, provisioning
+			contributor_code, status, provisioning,
+			previous_status, new_status
 		FROM link_incident_events
 		WHERE incident_id = $1
 		ORDER BY event_ts ASC
@@ -987,6 +990,7 @@ func (a *API) GetLinkIncidentDetail(w http.ResponseWriter, r *http.Request) {
 			eventTypeStr, severity, peakValuesJSON string
 			linkPK, linkCode, linkType, sideAMetro string
 			sideZMetro, contributorCode, status    string
+			previousStatus, newStatus              string
 			provisioning                           bool
 			eventTS, startedAt                     time.Time
 			activeSymptoms, symptoms               []string
@@ -997,6 +1001,7 @@ func (a *API) GetLinkIncidentDetail(w http.ResponseWriter, r *http.Request) {
 			&activeSymptoms, &symptoms, &severity, &peakValuesJSON,
 			&linkPK, &linkCode, &linkType, &sideAMetro, &sideZMetro,
 			&contributorCode, &status, &provisioning,
+			&previousStatus, &newStatus,
 		); err != nil {
 			http.Error(w, "Failed to scan event", http.StatusInternalServerError)
 			return
@@ -1016,6 +1021,8 @@ func (a *API) GetLinkIncidentDetail(w http.ResponseWriter, r *http.Request) {
 			Symptoms:       symptoms,
 			Severity:       severity,
 			PeakValues:     parsePeakValues(peakValuesJSON),
+			PreviousStatus: previousStatus,
+			NewStatus:      newStatus,
 		})
 
 		// Last row = latest state
@@ -1072,7 +1079,8 @@ func (a *API) GetDeviceIncidentDetail(w http.ResponseWriter, r *http.Request) {
 		SELECT event_type, event_ts, started_at,
 			active_symptoms, symptoms, severity, peak_values,
 			device_pk, device_code, device_type, metro,
-			contributor_code, status
+			contributor_code, status,
+			previous_status, new_status
 		FROM device_incident_events
 		WHERE incident_id = $1
 		ORDER BY event_ts ASC
@@ -1096,6 +1104,7 @@ func (a *API) GetDeviceIncidentDetail(w http.ResponseWriter, r *http.Request) {
 			eventTypeStr, severity, peakValuesJSON string
 			devicePK, deviceCode, deviceType       string
 			metro, contributorCode, status         string
+			previousStatus, newStatus              string
 			eventTS, startedAt                     time.Time
 			activeSymptoms, symptoms               []string
 		)
@@ -1105,6 +1114,7 @@ func (a *API) GetDeviceIncidentDetail(w http.ResponseWriter, r *http.Request) {
 			&activeSymptoms, &symptoms, &severity, &peakValuesJSON,
 			&devicePK, &deviceCode, &deviceType, &metro,
 			&contributorCode, &status,
+			&previousStatus, &newStatus,
 		); err != nil {
 			http.Error(w, "Failed to scan event", http.StatusInternalServerError)
 			return
@@ -1124,6 +1134,8 @@ func (a *API) GetDeviceIncidentDetail(w http.ResponseWriter, r *http.Request) {
 			Symptoms:       symptoms,
 			Severity:       severity,
 			PeakValues:     parsePeakValues(peakValuesJSON),
+			PreviousStatus: previousStatus,
+			NewStatus:      newStatus,
 		})
 
 		resp.DevicePK = devicePK

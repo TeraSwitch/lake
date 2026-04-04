@@ -24,6 +24,7 @@ const (
 	EventSymptomAdded    EventType = "symptom_added"
 	EventSymptomResolved EventType = "symptom_resolved"
 	EventResolved        EventType = "resolved"
+	EventStatusChanged   EventType = "status_changed"
 )
 
 // Severity levels for incidents.
@@ -54,6 +55,8 @@ type LinkIncidentEvent struct {
 	ContributorCode string
 	Status          string
 	Provisioning    bool
+	PreviousStatus  string // only for status_changed events
+	NewStatus       string // only for status_changed events
 }
 
 // --- Device types ---
@@ -74,6 +77,8 @@ type DeviceIncidentEvent struct {
 	Metro           string
 	ContributorCode string
 	Status          string
+	PreviousStatus  string // only for status_changed events
+	NewStatus       string // only for status_changed events
 }
 
 // --- Detection workflow state ---
@@ -104,6 +109,15 @@ type eventDelta struct {
 	Symptoms       []string // every symptom ever seen
 	Severity       Severity
 	PeakValues     string // JSON
+	PreviousStatus string // only for status_changed events
+	NewStatus      string // only for status_changed events
+}
+
+// statusTransition represents an entity status change detected from history tables.
+type statusTransition struct {
+	PreviousStatus string
+	NewStatus      string
+	ChangedTS      time.Time
 }
 
 // SymptomType constants match the incident_type values from the ClickHouse data.
