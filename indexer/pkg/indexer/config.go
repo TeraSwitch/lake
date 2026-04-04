@@ -12,6 +12,7 @@ import (
 	"github.com/malbeclabs/lake/indexer/pkg/clickhouse"
 	dzsvc "github.com/malbeclabs/lake/indexer/pkg/dz/serviceability"
 	dzshreds "github.com/malbeclabs/lake/indexer/pkg/dz/shreds"
+	"github.com/malbeclabs/lake/indexer/pkg/dz/shreds/escrowevents"
 	dztelemlatency "github.com/malbeclabs/lake/indexer/pkg/dz/telemetry/latency"
 	dztelemusage "github.com/malbeclabs/lake/indexer/pkg/dz/telemetry/usage"
 	"github.com/malbeclabs/lake/indexer/pkg/neo4j"
@@ -56,6 +57,7 @@ type Config struct {
 	ShredsRPC       dzshreds.ShredsRPC
 	ShredsRawRPC    dzshreds.ShredsRawRPC
 	ShredsProgramID solana.PublicKey
+	EscrowEventsRPC escrowevents.SolanaRPC // optional, for fetching escrow transaction history
 
 	// Solana configuration.
 	SolanaRPC sol.SolanaRPC
