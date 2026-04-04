@@ -681,6 +681,204 @@ func TestBackfillLinkChunk_NoLatencyDataUnaligned(t *testing.T) {
 	assert.True(t, hasNoLatency, "should have no_latency_data symptom")
 }
 
+func TestFilterStaleNoDataWindows(t *testing.T) {
+	t.Parallel()
+
+	cutoff := time.Date(2026, 3, 28, 1, 0, 0, 0, time.UTC)
+	before := cutoff.Add(-10 * time.Minute) // within freshness
+	after := cutoff.Add(10 * time.Minute)   // past freshness
+
+	makeWindow := func(symptom string, startedAt time.Time) backfillSymptomWindow {
+		return backfillSymptomWindow{
+			Symptom:   symptom,
+			StartedAt: startedAt,
+			EndedAt:   startedAt.Add(5 * time.Minute),
+		}
+	}
+
+	t.Run("zero cutoffs pass everything through", func(t *testing.T) {
+		windows := []backfillSymptomWindow{
+			makeWindow(SymptomNoLatencyData, after),
+			makeWindow(SymptomNoTrafficData, after),
+		}
+		result := filterStaleNoDataWindows(windows, time.Time{}, time.Time{})
+		assert.Len(t, result, 2)
+	})
+
+	t.Run("no_latency_data past cutoff is filtered", func(t *testing.T) {
+		windows := []backfillSymptomWindow{
+			makeWindow(SymptomNoLatencyData, before),
+			makeWindow(SymptomNoLatencyData, after),
+		}
+		result := filterStaleNoDataWindows(windows, cutoff, time.Time{})
+		require.Len(t, result, 1)
+		assert.Equal(t, before, result[0].StartedAt)
+	})
+
+	t.Run("no_traffic_data past cutoff is filtered", func(t *testing.T) {
+		windows := []backfillSymptomWindow{
+			makeWindow(SymptomNoTrafficData, before),
+			makeWindow(SymptomNoTrafficData, after),
+		}
+		result := filterStaleNoDataWindows(windows, time.Time{}, cutoff)
+		require.Len(t, result, 1)
+		assert.Equal(t, before, result[0].StartedAt)
+	})
+
+	t.Run("non-no_data symptoms are never filtered", func(t *testing.T) {
+		windows := []backfillSymptomWindow{
+			makeWindow(SymptomPacketLoss, after),
+			makeWindow(SymptomISISDown, after),
+			makeWindow(SymptomErrors, after),
+		}
+		result := filterStaleNoDataWindows(windows, cutoff, cutoff)
+		assert.Len(t, result, 3)
+	})
+
+	t.Run("exact cutoff time is filtered", func(t *testing.T) {
+		windows := []backfillSymptomWindow{
+			makeWindow(SymptomNoLatencyData, cutoff),
+		}
+		result := filterStaleNoDataWindows(windows, cutoff, time.Time{})
+		assert.Empty(t, result)
+	})
+
+	t.Run("mixed symptoms only filters no_data past cutoff", func(t *testing.T) {
+		windows := []backfillSymptomWindow{
+			makeWindow(SymptomPacketLoss, after),
+			makeWindow(SymptomNoLatencyData, after),
+			makeWindow(SymptomNoTrafficData, before),
+			makeWindow(SymptomISISDown, after),
+		}
+		result := filterStaleNoDataWindows(windows, cutoff, cutoff)
+		require.Len(t, result, 3)
+		for _, w := range result {
+			assert.NotEqual(t, SymptomNoLatencyData, w.Symptom)
+		}
+	})
+}
+
+func TestBackfillLinkChunk_NoLatencyDataSuppressedByFreshness(t *testing.T) {
+	t.Parallel()
+	conn := setupTestDB(t)
+	a := newTestBackfillActivities(conn)
+
+	base := time.Date(2026, 3, 28, 0, 0, 0, 0, time.UTC)
+	linkPK := "test-link-suppress-latency"
+	insertLinkDimension(t, conn, linkPK, "test-suppress-latency", "WAN")
+
+	// Link reported latency in the 24h before — so it's "expected" to have data.
+	for i := range 12 {
+		insertLinkRollup(t, conn, linkPK, base.Add(-24*time.Hour+time.Duration(i)*5*time.Minute), 0, 0, false)
+	}
+	// No data in the backfill window — would normally produce no_latency_data.
+
+	// Process with a latency freshness cutoff AT the window start,
+	// meaning the latency pipeline hasn't caught up to this window at all.
+	err := a.BackfillLinkChunk(context.Background(), BackfillChunkInput{
+		WindowStart:       base,
+		WindowEnd:         base.Add(2 * time.Hour),
+		LatencyFreshUntil: base, // pipeline only fresh up to window start
+	})
+	require.NoError(t, err)
+
+	events := queryLinkEvents(t, conn)
+	assert.Empty(t, events, "no_latency_data should be suppressed when latency pipeline is behind")
+}
+
+func TestBackfillLinkChunk_NoTrafficDataSuppressedByFreshness(t *testing.T) {
+	t.Parallel()
+	conn := setupTestDB(t)
+	a := newTestBackfillActivities(conn)
+
+	base := time.Date(2026, 3, 28, 0, 0, 0, 0, time.UTC)
+	linkPK := "test-link-suppress-traffic"
+	insertLinkDimension(t, conn, linkPK, "test-suppress-traffic", "WAN")
+
+	// Link had traffic data in the 24h before the window.
+	for i := range 12 {
+		err := conn.Exec(context.Background(), `
+			INSERT INTO device_interface_rollup_5m (
+				bucket_ts, device_pk, intf, ingested_at,
+				link_pk, link_side,
+				in_errors, out_errors, in_fcs_errors, in_discards, out_discards, carrier_transitions,
+				avg_in_bps, min_in_bps, p50_in_bps, p90_in_bps, p95_in_bps, p99_in_bps, max_in_bps,
+				avg_out_bps, min_out_bps, p50_out_bps, p90_out_bps, p95_out_bps, p99_out_bps, max_out_bps,
+				avg_in_pps, min_in_pps, p50_in_pps, p90_in_pps, p95_in_pps, p99_in_pps, max_in_pps,
+				avg_out_pps, min_out_pps, p50_out_pps, p90_out_pps, p95_out_pps, p99_out_pps, max_out_pps,
+				status, isis_overload, isis_unreachable, user_tunnel_id, user_pk
+			) VALUES (
+				$1, 'dev-suppress', 'eth0', now(),
+				$2, 'A',
+				0, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0, 0, 0,
+				0, 0, 0, 0, 0, 0, 0,
+				'activated', false, false, NULL, ''
+			)`,
+			base.Add(-24*time.Hour+time.Duration(i)*5*time.Minute),
+			linkPK,
+		)
+		require.NoError(t, err)
+	}
+	// No traffic data in the window — would normally produce no_traffic_data.
+
+	// Process with traffic freshness cutoff at window start.
+	err := a.BackfillLinkChunk(context.Background(), BackfillChunkInput{
+		WindowStart:       base,
+		WindowEnd:         base.Add(2 * time.Hour),
+		TrafficFreshUntil: base,
+	})
+	require.NoError(t, err)
+
+	events := queryLinkEvents(t, conn)
+	assert.Empty(t, events, "no_traffic_data should be suppressed when traffic pipeline is behind")
+}
+
+func TestBackfillLinkChunk_RealSymptomsNotSuppressedByFreshness(t *testing.T) {
+	t.Parallel()
+	conn := setupTestDB(t)
+	a := newTestBackfillActivities(conn)
+
+	base := time.Date(2026, 3, 28, 0, 0, 0, 0, time.UTC)
+	linkPK := "test-link-real-not-suppressed"
+	insertLinkDimension(t, conn, linkPK, "test-real-not-suppressed", "WAN")
+
+	// Fill with zero-loss data, then add real packet loss.
+	fillLinkRollup(t, conn, linkPK, base, base.Add(4*time.Hour))
+	for i := range 6 {
+		insertLinkRollup(t, conn, linkPK, bucket(base, 1, i), 10, 10, false)
+	}
+
+	// Even with both freshness cutoffs set to window start (maximally restrictive),
+	// real symptoms like packet_loss should still be detected.
+	runBackfillChunksWithFreshness(t, a, base, base.Add(4*time.Hour), base, base)
+
+	events := queryLinkEvents(t, conn)
+	require.NotEmpty(t, events, "real symptoms should not be suppressed by freshness cutoffs")
+	assert.Contains(t, events[0].Symptoms, "packet_loss")
+}
+
+// runBackfillChunksWithFreshness is like runBackfillChunks but passes freshness cutoffs.
+func runBackfillChunksWithFreshness(t *testing.T, a *Activities, start, end time.Time, latencyCutoff, trafficCutoff time.Time) {
+	t.Helper()
+	chunkSize := 1 * time.Hour
+	for cs := start; cs.Before(end); cs = cs.Add(chunkSize) {
+		ce := cs.Add(chunkSize)
+		if ce.After(end) {
+			ce = end
+		}
+		err := a.BackfillLinkChunk(context.Background(), BackfillChunkInput{
+			WindowStart:       cs,
+			WindowEnd:         ce,
+			LatencyFreshUntil: latencyCutoff,
+			TrafficFreshUntil: trafficCutoff,
+		})
+		require.NoError(t, err)
+	}
+}
+
 func TestBackfillLinkChunk_NoFalsePositiveNoData(t *testing.T) {
 	t.Parallel()
 	conn := setupTestDB(t)

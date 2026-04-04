@@ -815,6 +815,8 @@ func (a *Activities) RollupLinks(ctx context.Context, input BackfillChunkInput) 
 		}
 		count = len(buckets)
 		result.RowsAffected = int64(count)
+		result.SourceMinEventTS = &input.WindowStart
+		result.SourceMaxEventTS = &input.WindowEnd
 		return result, nil
 	})
 	return count, err
@@ -835,6 +837,8 @@ func (a *Activities) RollupDeviceInterfaces(ctx context.Context, input BackfillC
 		}
 		count = len(buckets)
 		result.RowsAffected = int64(count)
+		result.SourceMinEventTS = &input.WindowStart
+		result.SourceMaxEventTS = &input.WindowEnd
 		return result, nil
 	})
 	return count, err

@@ -39,29 +39,50 @@ func (a *Activities) DeriveWatermark(ctx context.Context) (time.Time, error) {
 	return linkMax, nil
 }
 
-// CheckRollupFreshness returns the latest bucket timestamp across rollup
-// tables. The query is bounded to the last 25 hours for performance.
+// CheckRollupFreshness queries log_ingestion_runs for per-pipeline freshness.
+// Returns the latest source_max_event_ts for each rollup activity so that
+// downstream detection can suppress no_*_data symptoms when a pipeline is behind.
 func (a *Activities) CheckRollupFreshness(ctx context.Context) (RollupFreshness, error) {
-	var latencyMax, trafficMax time.Time
+	rows, err := a.ClickHouse.Query(ctx, `
+		SELECT activity, max(source_max_event_ts) AS fresh_until
+		FROM log_ingestion_runs
+		WHERE workflow = 'rollup'
+		  AND activity IN ('RollupLinks', 'RollupDeviceInterfaces')
+		  AND status = 'success'
+		  AND started_at >= now() - INTERVAL 25 HOUR
+		  AND source_max_event_ts IS NOT NULL
+		GROUP BY activity`)
+	if err != nil {
+		return RollupFreshness{}, fmt.Errorf("query rollup freshness: %w", err)
+	}
+	defer rows.Close()
 
-	row := a.ClickHouse.QueryRow(ctx,
-		`SELECT max(bucket_ts) FROM link_rollup_5m WHERE bucket_ts >= now() - INTERVAL 25 HOUR`)
-	if err := row.Scan(&latencyMax); err != nil {
-		return RollupFreshness{}, fmt.Errorf("latency freshness: %w", err)
+	var result RollupFreshness
+	for rows.Next() {
+		var activity string
+		var freshUntil time.Time
+		if err := rows.Scan(&activity, &freshUntil); err != nil {
+			return RollupFreshness{}, fmt.Errorf("scan rollup freshness: %w", err)
+		}
+		switch activity {
+		case "RollupLinks":
+			result.LatencyFreshUntil = freshUntil
+		case "RollupDeviceInterfaces":
+			result.TrafficFreshUntil = freshUntil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return RollupFreshness{}, fmt.Errorf("iterate rollup freshness: %w", err)
 	}
 
-	row = a.ClickHouse.QueryRow(ctx,
-		`SELECT max(bucket_ts) FROM device_interface_rollup_5m WHERE bucket_ts >= now() - INTERVAL 25 HOUR`)
-	if err := row.Scan(&trafficMax); err != nil {
-		return RollupFreshness{}, fmt.Errorf("traffic freshness: %w", err)
+	// LatestBucket is the max of both so the watermark keeps advancing.
+	// A stalled pipeline doesn't block detection for other symptom types.
+	result.LatestBucket = result.LatencyFreshUntil
+	if result.TrafficFreshUntil.After(result.LatestBucket) {
+		result.LatestBucket = result.TrafficFreshUntil
 	}
 
-	latest := latencyMax
-	if trafficMax.After(latest) {
-		latest = trafficMax
-	}
-
-	return RollupFreshness{LatestBucket: latest}, nil
+	return result, nil
 }
 
 // --- Event writers ---

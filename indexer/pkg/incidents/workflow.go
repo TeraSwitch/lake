@@ -32,13 +32,14 @@ func RegisterWorkflows(w worker.Worker) {
 }
 
 // DetectIncidentsWorkflow is a long-running workflow that processes incident
-// events from rollup data using a watermark. Each iteration:
-//  1. Checks rollup freshness (latest bucket_ts)
-//  2. Processes from watermark → latest rollup data using backfill chunks
-//  3. Advances the watermark
+// events from rollup data using per-pipeline watermarks. Each iteration:
+//  1. Checks rollup freshness per pipeline (latency, traffic)
+//  2. Processes from min(watermarks) → max(freshness) in chunks
+//  3. Advances each watermark to its pipeline's freshness
 //
-// After a gap (e.g., indexer was down), the workflow automatically bacfkills
-// the gap in 1-hour chunks before resuming steady-state detection.
+// When one pipeline falls behind, the other continues detecting. When the
+// lagging pipeline catches up, its gap is reprocessed with Overwrite so that
+// incidents in the catch-up zone get the full symptom set.
 func DetectIncidentsWorkflow(ctx temporalworkflow.Context, state DetectionState) error {
 	logger := temporalworkflow.GetLogger(ctx)
 
@@ -51,23 +52,25 @@ func DetectIncidentsWorkflow(ctx temporalworkflow.Context, state DetectionState)
 		RetryPolicy:         &temporal.RetryPolicy{MaximumAttempts: 3},
 	}
 
-	// Cold start: derive watermark from existing events or default to now.
-	if state.Watermark.IsZero() {
+	// Cold start: derive watermarks from existing events or default to now.
+	if state.LatencyWatermark.IsZero() && state.TrafficWatermark.IsZero() {
 		var watermark time.Time
 		wCtx := temporalworkflow.WithActivityOptions(ctx, shortOpts)
 		if err := temporalworkflow.ExecuteActivity(wCtx, (*Activities).DeriveWatermark).Get(ctx, &watermark); err != nil {
 			logger.Error("failed to derive watermark, starting from now", "error", err)
 		}
 		if watermark.IsZero() {
-			// No existing events — start from now.
 			watermark = temporalworkflow.Now(ctx)
 		}
-		state.Watermark = watermark
-		logger.Info("incidents: initialized watermark", "watermark", state.Watermark)
+		state.LatencyWatermark = watermark
+		state.TrafficWatermark = watermark
+		logger.Info("incidents: initialized watermarks",
+			"latency_watermark", state.LatencyWatermark,
+			"traffic_watermark", state.TrafficWatermark)
 	}
 
 	for state.Iteration < continueAsNewThreshold {
-		// Check how fresh the rollup data is.
+		// Check per-pipeline freshness.
 		var freshness RollupFreshness
 		fCtx := temporalworkflow.WithActivityOptions(ctx, shortOpts)
 		if err := temporalworkflow.ExecuteActivity(fCtx, (*Activities).CheckRollupFreshness).Get(ctx, &freshness); err != nil {
@@ -81,13 +84,12 @@ func DetectIncidentsWorkflow(ctx temporalworkflow.Context, state DetectionState)
 			continue
 		}
 
-		// Use the latest bucket timestamp directly as the window end.
-		// The backfill SQL already adds 5 minutes to max(bucket_ts) for
-		// symptom ended_at, so no additional margin is needed.
+		// Determine processing range: from the earliest watermark to the
+		// latest fresh data across both pipelines.
+		windowStart := minTime(state.LatencyWatermark, state.TrafficWatermark)
 		windowEnd := freshness.LatestBucket
 
-		if !windowEnd.After(state.Watermark) {
-			// No new rollup data since last processing — skip.
+		if !windowEnd.After(windowStart) {
 			state.Iteration++
 			if state.Iteration < continueAsNewThreshold {
 				if err := temporalworkflow.Sleep(ctx, pollInterval); err != nil {
@@ -98,17 +100,30 @@ func DetectIncidentsWorkflow(ctx temporalworkflow.Context, state DetectionState)
 		}
 
 		// Cap the gap at maxAutoBackfill.
-		gap := windowEnd.Sub(state.Watermark)
+		gap := windowEnd.Sub(windowStart)
 		if gap > maxAutoBackfill {
 			logger.Warn("incidents: large gap detected, capping auto-backfill",
 				"gap", gap, "max", maxAutoBackfill,
-				"watermark", state.Watermark, "window_end", windowEnd)
-			state.Watermark = windowEnd.Add(-maxAutoBackfill)
+				"window_start", windowStart, "window_end", windowEnd)
+			windowStart = windowEnd.Add(-maxAutoBackfill)
+			// Bring both watermarks forward if they're behind the cap.
+			if state.LatencyWatermark.Before(windowStart) {
+				state.LatencyWatermark = windowStart
+			}
+			if state.TrafficWatermark.Before(windowStart) {
+				state.TrafficWatermark = windowStart
+			}
 		}
 
-		// Process from watermark → windowEnd in chunks.
+		// The catch-up boundary: chunks before max(watermarks) overlap with
+		// previously processed windows where one pipeline was behind. These
+		// need Overwrite to regenerate incidents with the full symptom set.
+		catchUpBoundary := maxTime(state.LatencyWatermark, state.TrafficWatermark)
+
+		// Process from windowStart → windowEnd in chunks.
 		chunkCtx := temporalworkflow.WithActivityOptions(ctx, chunkOpts)
-		chunkStart := state.Watermark
+		chunkStart := windowStart
+		failed := false
 		for chunkStart.Before(windowEnd) {
 			chunkEnd := chunkStart.Add(autoChunkSize)
 			if chunkEnd.After(windowEnd) {
@@ -116,24 +131,39 @@ func DetectIncidentsWorkflow(ctx temporalworkflow.Context, state DetectionState)
 			}
 
 			chunk := BackfillChunkInput{
-				WindowStart: chunkStart,
-				WindowEnd:   chunkEnd,
+				WindowStart:       chunkStart,
+				WindowEnd:         chunkEnd,
+				LatencyFreshUntil: freshness.LatencyFreshUntil,
+				TrafficFreshUntil: freshness.TrafficFreshUntil,
+				Overwrite:         chunkStart.Before(catchUpBoundary),
 			}
 
 			if err := temporalworkflow.ExecuteActivity(chunkCtx, (*Activities).BackfillLinkChunk, chunk).Get(ctx, nil); err != nil {
 				logger.Error("incidents: link chunk failed, will retry next cycle",
 					"error", err, "start", chunkStart, "end", chunkEnd)
-				break // stop chunking, watermark stays at last success
+				failed = true
+				break
 			}
 
 			if err := temporalworkflow.ExecuteActivity(chunkCtx, (*Activities).BackfillDeviceChunk, chunk).Get(ctx, nil); err != nil {
 				logger.Error("incidents: device chunk failed, will retry next cycle",
 					"error", err, "start", chunkStart, "end", chunkEnd)
+				failed = true
 				break
 			}
 
 			chunkStart = chunkEnd
-			state.Watermark = chunkEnd
+		}
+
+		// Advance each watermark independently to its pipeline's freshness,
+		// but only for the range we successfully processed.
+		if !failed {
+			if freshness.LatencyFreshUntil.After(state.LatencyWatermark) {
+				state.LatencyWatermark = freshness.LatencyFreshUntil
+			}
+			if freshness.TrafficFreshUntil.After(state.TrafficWatermark) {
+				state.TrafficWatermark = freshness.TrafficFreshUntil
+			}
 		}
 
 		state.Iteration++
@@ -150,7 +180,24 @@ func DetectIncidentsWorkflow(ctx temporalworkflow.Context, state DetectionState)
 // resetIteration returns a copy of the state with iteration reset to 0
 // for ContinueAsNew.
 func (s DetectionState) resetIteration() DetectionState {
-	return DetectionState{Watermark: s.Watermark}
+	return DetectionState{
+		LatencyWatermark: s.LatencyWatermark,
+		TrafficWatermark: s.TrafficWatermark,
+	}
+}
+
+func minTime(a, b time.Time) time.Time {
+	if a.Before(b) {
+		return a
+	}
+	return b
+}
+
+func maxTime(a, b time.Time) time.Time {
+	if a.After(b) {
+		return a
+	}
+	return b
 }
 
 // BackfillIncidentsWorkflow processes historical rollup data in time chunks

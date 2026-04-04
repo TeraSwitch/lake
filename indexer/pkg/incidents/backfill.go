@@ -26,9 +26,11 @@ type BackfillInput struct {
 
 // BackfillChunkInput configures a single backfill chunk.
 type BackfillChunkInput struct {
-	WindowStart time.Time
-	WindowEnd   time.Time
-	Overwrite   bool
+	WindowStart       time.Time
+	WindowEnd         time.Time
+	Overwrite         bool
+	LatencyFreshUntil time.Time // zero = no suppression
+	TrafficFreshUntil time.Time // zero = no suppression
 }
 
 const (
@@ -257,6 +259,31 @@ func sortedKeys(m map[string]struct{}) []string {
 	return keys
 }
 
+// filterStaleNoDataWindows removes no_latency_data and no_traffic_data symptom
+// windows whose start time is at or past the respective pipeline's freshness
+// cutoff. This prevents false missing-data incidents when a pipeline is behind.
+// Zero cutoff means no suppression for that symptom type.
+func filterStaleNoDataWindows(windows []backfillSymptomWindow, latencyCutoff, trafficCutoff time.Time) []backfillSymptomWindow {
+	if latencyCutoff.IsZero() && trafficCutoff.IsZero() {
+		return windows
+	}
+	filtered := make([]backfillSymptomWindow, 0, len(windows))
+	for _, w := range windows {
+		switch w.Symptom {
+		case SymptomNoLatencyData:
+			if !latencyCutoff.IsZero() && !w.StartedAt.Before(latencyCutoff) {
+				continue
+			}
+		case SymptomNoTrafficData:
+			if !trafficCutoff.IsZero() && !w.StartedAt.Before(trafficCutoff) {
+				continue
+			}
+		}
+		filtered = append(filtered, w)
+	}
+	return filtered
+}
+
 // --- Link backfill ---
 
 // BackfillLinkChunk reconstructs historical link incidents from rollup data,
@@ -318,6 +345,11 @@ func (a *Activities) BackfillLinkChunk(ctx context.Context, input BackfillChunkI
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate link symptom windows: %w", err)
+	}
+
+	// Filter out no_*_data symptoms for windows past the pipeline freshness cutoff.
+	for _, inc := range incidents {
+		inc.windows = filterStaleNoDataWindows(inc.windows, input.LatencyFreshUntil, input.TrafficFreshUntil)
 	}
 
 	safeHeartbeat(ctx, fmt.Sprintf("generating events for %d link incidents", len(incidents)))
@@ -489,6 +521,11 @@ func (a *Activities) BackfillDeviceChunk(ctx context.Context, input BackfillChun
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("iterate device symptom windows: %w", err)
+	}
+
+	// Filter out no_*_data symptoms for windows past the pipeline freshness cutoff.
+	for _, inc := range incidents {
+		inc.windows = filterStaleNoDataWindows(inc.windows, input.LatencyFreshUntil, input.TrafficFreshUntil)
 	}
 
 	safeHeartbeat(ctx, fmt.Sprintf("generating events for %d device incidents", len(incidents)))

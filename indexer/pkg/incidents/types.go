@@ -79,15 +79,18 @@ type DeviceIncidentEvent struct {
 // --- Detection workflow state ---
 
 // DetectionState is passed through Temporal ContinueAsNew to track the
-// detection loop's position. A zero Watermark means "cold start".
+// detection loop's position. Zero watermarks mean "cold start".
 type DetectionState struct {
-	Watermark time.Time // last successfully processed timestamp
-	Iteration int
+	LatencyWatermark time.Time // how far latency-based detection has been processed
+	TrafficWatermark time.Time // how far traffic-based detection has been processed
+	Iteration        int
 }
 
-// RollupFreshness reports the latest bucket timestamp across rollup tables.
+// RollupFreshness reports per-pipeline freshness from ingestion logs.
 type RollupFreshness struct {
-	LatestBucket time.Time
+	LatestBucket      time.Time // max of both, used for watermark advancement
+	LatencyFreshUntil time.Time // latest source_max_event_ts for RollupLinks
+	TrafficFreshUntil time.Time // latest source_max_event_ts for RollupDeviceInterfaces
 }
 
 // eventDelta is a state transition produced by the backfill event generator.
