@@ -1144,20 +1144,22 @@ export function ShredsEscrowEventsPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 font-mono text-xs" title={e.client_seat_pk}>
-                      <span className="inline-flex items-center gap-1">
+                      <span className="inline-flex items-center gap-1.5">
                         <Link
                           to={`/dz/shreds/seats?search=seat:${e.client_seat_pk}`}
                           className="text-blue-600 dark:text-blue-400 hover:underline"
                         >
                           {truncatePK(e.client_seat_pk)}
                         </Link>
-                        <button
-                          onClick={() => addFilter(`seat:${e.client_seat_pk}`)}
-                          className="text-muted-foreground hover:text-foreground transition-colors"
-                          title="Filter by this seat"
-                        >
-                          <Filter className="h-3 w-3" />
-                        </button>
+                        {!searchFilters.some(f => f.startsWith('seat:')) && (
+                          <button
+                            onClick={() => addFilter(`seat:${e.client_seat_pk}`)}
+                            className="text-muted-foreground hover:text-foreground transition-colors p-0.5"
+                            title="Filter by this seat"
+                          >
+                            <Filter className="h-3 w-3" />
+                          </button>
+                        )}
                       </span>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs" title={e.signer}>
