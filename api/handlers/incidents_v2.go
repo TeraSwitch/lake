@@ -204,20 +204,26 @@ func fetchLinkIncidentsV2(ctx context.Context, conn driver.Conn, params incident
 		WITH latest AS (
 			SELECT *, row_number() OVER (PARTITION BY incident_id ORDER BY event_ts DESC) as rn
 			FROM link_incident_events
+		),
+		drained AS (
+			SELECT DISTINCT incident_id
+			FROM link_incident_events
+			WHERE event_type = 'status_changed'
+			  AND new_status IN ('soft-drained', 'hard-drained')
 		)
 		SELECT
-			incident_id, link_pk, event_type, event_ts, started_at,
-			active_symptoms, symptoms, severity, peak_values,
-			link_code, link_type, side_a_metro, side_z_metro,
-			contributor_code, status, provisioning
-		FROM latest
-		WHERE rn = 1
+			l.incident_id, l.link_pk, l.event_type, l.event_ts, l.started_at,
+			l.active_symptoms, l.symptoms, l.severity, l.peak_values,
+			l.link_code, l.link_type, l.side_a_metro, l.side_z_metro,
+			l.contributor_code, l.status, l.provisioning,
+			d.incident_id != '' AS was_drained
+		FROM latest l
+		LEFT JOIN drained d ON l.incident_id = d.incident_id
+		WHERE l.rn = 1
 		  AND (
-			-- Ongoing/pending: always show
-			event_type != 'resolved'
-			-- Resolved: only if the incident was active during the time range
-			OR event_ts >= now() - INTERVAL $1 SECOND
-			OR started_at >= now() - INTERVAL $1 SECOND
+			l.event_type != 'resolved'
+			OR l.event_ts >= now() - INTERVAL $1 SECOND
+			OR l.started_at >= now() - INTERVAL $1 SECOND
 		  )
 	`
 
@@ -237,6 +243,7 @@ func fetchLinkIncidentsV2(ctx context.Context, conn driver.Conn, params incident
 			contributorCode, status                      string
 			eventTypeStr                                 string
 			provisioning                                 bool
+			wasDrained                                   uint8
 			eventTS, startedAt                           time.Time
 			activeSymptoms, symptoms                     []string
 		)
@@ -246,6 +253,7 @@ func fetchLinkIncidentsV2(ctx context.Context, conn driver.Conn, params incident
 			&activeSymptoms, &symptoms, &severity, &peakValuesJSON,
 			&linkCode, &linkType, &sideAMetro, &sideZMetro,
 			&contributorCode, &status, &provisioning,
+			&wasDrained,
 		); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
@@ -292,12 +300,14 @@ func fetchLinkIncidentsV2(ctx context.Context, conn driver.Conn, params incident
 			ContributorCode: contributorCode,
 			EntityStatus:    status,
 			Provisioning:    provisioning,
-			IsDrained:       status == "soft-drained" || status == "hard-drained",
+			IsDrained:       wasDrained == 1 || status == "soft-drained" || status == "hard-drained",
 		}
 
 		allIncidents = append(allIncidents, inc)
 	}
-
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate link incidents: %w", err)
+	}
 	// Apply filters.
 	filtered := filterLinkIncidentsV2(allIncidents, params)
 
@@ -514,17 +524,25 @@ func fetchDeviceIncidentsV2(ctx context.Context, conn driver.Conn, params incide
 		WITH latest AS (
 			SELECT *, row_number() OVER (PARTITION BY incident_id ORDER BY event_ts DESC) as rn
 			FROM device_incident_events
+		),
+		drained AS (
+			SELECT DISTINCT incident_id
+			FROM device_incident_events
+			WHERE event_type = 'status_changed'
+			  AND new_status IN ('soft-drained', 'hard-drained')
 		)
 		SELECT
-			incident_id, device_pk, event_type, event_ts, started_at,
-			active_symptoms, symptoms, severity, peak_values,
-			device_code, device_type, metro, contributor_code, status
-		FROM latest
-		WHERE rn = 1
+			l.incident_id, l.device_pk, l.event_type, l.event_ts, l.started_at,
+			l.active_symptoms, l.symptoms, l.severity, l.peak_values,
+			l.device_code, l.device_type, l.metro, l.contributor_code, l.status,
+			d.incident_id != '' AS was_drained
+		FROM latest l
+		LEFT JOIN drained d ON l.incident_id = d.incident_id
+		WHERE l.rn = 1
 		  AND (
-			event_type != 'resolved'
-			OR event_ts >= now() - INTERVAL $1 SECOND
-			OR started_at >= now() - INTERVAL $1 SECOND
+			l.event_type != 'resolved'
+			OR l.event_ts >= now() - INTERVAL $1 SECOND
+			OR l.started_at >= now() - INTERVAL $1 SECOND
 		  )
 	`
 
@@ -542,6 +560,7 @@ func fetchDeviceIncidentsV2(ctx context.Context, conn driver.Conn, params incide
 			incidentID, devicePK, severity, peakValuesJSON string
 			deviceCode, deviceType, metro                  string
 			contributorCode, status, eventTypeStr          string
+			wasDrained                                     uint8
 			eventTS, startedAt                             time.Time
 			activeSymptoms, symptoms                       []string
 		)
@@ -550,6 +569,7 @@ func fetchDeviceIncidentsV2(ctx context.Context, conn driver.Conn, params incide
 			&incidentID, &devicePK, &eventTypeStr, &eventTS, &startedAt,
 			&activeSymptoms, &symptoms, &severity, &peakValuesJSON,
 			&deviceCode, &deviceType, &metro, &contributorCode, &status,
+			&wasDrained,
 		); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
@@ -592,10 +612,13 @@ func fetchDeviceIncidentsV2(ctx context.Context, conn driver.Conn, params incide
 			Metro:           metro,
 			ContributorCode: contributorCode,
 			EntityStatus:    status,
-			IsDrained:       isDeviceDrained(status),
+			IsDrained:       wasDrained == 1 || isDeviceDrained(status),
 		}
 
 		allIncidents = append(allIncidents, inc)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate device incidents: %w", err)
 	}
 
 	filtered := filterDeviceIncidentsV2(allIncidents, params)
