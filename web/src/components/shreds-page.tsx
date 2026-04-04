@@ -1,7 +1,7 @@
 import { useMemo, useCallback, useState, useRef, useEffect } from 'react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams, Link } from 'react-router-dom'
-import { Loader2, Coins, AlertCircle, ChevronDown, ChevronUp, X, ExternalLink } from 'lucide-react'
+import { Loader2, Coins, AlertCircle, ChevronDown, ChevronUp, X, ExternalLink, Filter } from 'lucide-react'
 import {
   fetchAllPaginated,
   fetchShredClientSeats,
@@ -1006,6 +1006,17 @@ export function ShredsEscrowEventsPage() {
     })
   }, [searchFilters, setSearchParams])
 
+  const addFilter = useCallback((filter: string) => {
+    if (searchFilters.includes(filter)) return
+    const newFilters = [...searchFilters, filter]
+    setSearchParams(prev => {
+      const p = new URLSearchParams(prev)
+      p.set('search', newFilters.join(','))
+      p.delete('page')
+      return p
+    })
+  }, [searchFilters, setSearchParams])
+
   const clearAllFilters = useCallback(() => {
     setSearchParams(prev => {
       const p = new URLSearchParams(prev)
@@ -1133,12 +1144,21 @@ export function ShredsEscrowEventsPage() {
                       )}
                     </td>
                     <td className="px-4 py-3 font-mono text-xs" title={e.client_seat_pk}>
-                      <Link
-                        to={`/dz/shreds/seats?search=seat:${e.client_seat_pk}`}
-                        className="text-blue-600 dark:text-blue-400 hover:underline"
-                      >
-                        {truncatePK(e.client_seat_pk)}
-                      </Link>
+                      <span className="inline-flex items-center gap-1">
+                        <Link
+                          to={`/dz/shreds/seats?search=seat:${e.client_seat_pk}`}
+                          className="text-blue-600 dark:text-blue-400 hover:underline"
+                        >
+                          {truncatePK(e.client_seat_pk)}
+                        </Link>
+                        <button
+                          onClick={() => addFilter(`seat:${e.client_seat_pk}`)}
+                          className="text-muted-foreground hover:text-foreground transition-colors"
+                          title="Filter by this seat"
+                        >
+                          <Filter className="h-3 w-3" />
+                        </button>
+                      </span>
                     </td>
                     <td className="px-4 py-3 font-mono text-xs" title={e.signer}>
                       {e.signer ? truncatePK(e.signer) : <span className="text-muted-foreground">{'\u2014'}</span>}
