@@ -130,10 +130,16 @@ export function NotificationSettingsPage() {
     return () => { abortRef.current?.abort() }
   }, [])
 
-  // Auto-scroll preview
+  // Scroll preview: jump to bottom when caught up, then smooth scroll for new events
+  const wasCaughtUp = useRef(false)
   useEffect(() => {
-    previewEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [previewItems])
+    if (!previewCaughtUp) {
+      wasCaughtUp.current = false
+      return
+    }
+    previewEndRef.current?.scrollIntoView({ behavior: wasCaughtUp.current ? 'smooth' : 'instant' })
+    wasCaughtUp.current = true
+  }, [previewItems, previewCaughtUp])
 
   // Restart preview when form source type or filters change
   useEffect(() => {
