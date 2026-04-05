@@ -3,18 +3,16 @@ import { Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
-import { ArrowLeft, Plus, Trash2, Bell, BellOff, Webhook, MessageSquare, X, Radio } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Bell, BellOff, X, Radio } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
   getNotificationConfigs,
   createNotificationConfig,
   updateNotificationConfig,
   deleteNotificationConfig,
-  getSlackInstallations,
   streamNotificationPreview,
   type NotificationConfig,
   type NotificationPreview,
-  type SlackInstallation,
 } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
 
@@ -39,11 +37,6 @@ const sourceTypes = [
   },
 ]
 
-const channelTypes = [
-  { value: 'slack', label: 'Slack', icon: MessageSquare },
-  { value: 'webhook', label: 'Webhook', icon: Webhook },
-]
-
 interface ConfigFormData {
   source_type: string
   channel_type: string
@@ -54,7 +47,7 @@ interface ConfigFormData {
 
 const emptyForm: ConfigFormData = {
   source_type: 'escrow_events',
-  channel_type: 'slack',
+  channel_type: 'webhook',
   destination: {},
   exclude_keys: [],
   enabled: true,
@@ -83,7 +76,6 @@ function deserializeFilters(sourceType: string, filters: Record<string, unknown>
 export function NotificationSettingsPage() {
   const { user } = useAuth()
   const [configs, setConfigs] = useState<NotificationConfig[]>([])
-  const [installations, setInstallations] = useState<SlackInstallation[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
@@ -159,12 +151,7 @@ export function NotificationSettingsPage() {
   async function loadData() {
     setLoading(true)
     try {
-      const [cfgs, installs] = await Promise.all([
-        getNotificationConfigs(),
-        getSlackInstallations().catch(() => [] as SlackInstallation[]),
-      ])
-      setConfigs(cfgs)
-      setInstallations(installs)
+      setConfigs(await getNotificationConfigs())
     } catch {
       setError('Failed to load notification settings')
     } finally {
@@ -269,11 +256,6 @@ export function NotificationSettingsPage() {
   }
 
   const channelLabel = (cfg: NotificationConfig) => {
-    if (cfg.channel_type === 'slack') {
-      const inst = installations.find(i => i.team_id === cfg.destination.team_id)
-      const workspace = inst?.team_name || cfg.destination.team_id || 'Unknown'
-      return `Slack: ${workspace} #${cfg.destination.channel_id || '?'}`
-    }
     if (cfg.channel_type === 'webhook') {
       const url = cfg.destination.url || ''
       return `Webhook: ${url.length > 40 ? url.slice(0, 40) + '...' : url}`
@@ -437,108 +419,22 @@ export function NotificationSettingsPage() {
                 </div>
               )}
 
-              {/* Channel type */}
+              {/* Webhook URL */}
               <div>
                 <label className="block text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                  Delivery Channel
+                  Webhook URL
                 </label>
-                <div className="flex gap-2">
-                  {channelTypes.map(ch => (
-                    <button
-                      key={ch.value}
-                      onClick={() => setForm(prev => ({ ...prev, channel_type: ch.value, destination: {} }))}
-                      className={`flex items-center gap-2 px-3 py-2 rounded-md text-sm transition-colors border ${
-                        form.channel_type === ch.value
-                          ? 'border-primary bg-primary/5 text-foreground'
-                          : 'border-border text-muted-foreground hover:border-muted-foreground'
-                      }`}
-                    >
-                      <ch.icon className="h-4 w-4" />
-                      {ch.label}
-                    </button>
-                  ))}
-                </div>
+                <input
+                  type="url"
+                  value={form.destination.url || ''}
+                  onChange={e => setForm(prev => ({
+                    ...prev,
+                    destination: { ...prev.destination, url: e.target.value },
+                  }))}
+                  placeholder="https://example.com/webhook"
+                  className="w-full px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
+                />
               </div>
-
-              {/* Slack destination */}
-              {form.channel_type === 'slack' && (
-                <div className="space-y-3">
-                  <div>
-                    <label className="block text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                      Slack Workspace
-                    </label>
-                    {installations.length === 0 ? (
-                      <p className="text-sm text-muted-foreground">
-                        No Slack workspaces connected.{' '}
-                        <Link to="/settings" className="text-primary hover:underline">
-                          Connect one first
-                        </Link>.
-                      </p>
-                    ) : (
-                      <div className="space-y-1">
-                        {installations.map(inst => (
-                          <button
-                            key={inst.team_id}
-                            onClick={() => setForm(prev => ({
-                              ...prev,
-                              destination: { ...prev.destination, team_id: inst.team_id },
-                            }))}
-                            className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors ${
-                              form.destination.team_id === inst.team_id
-                                ? 'bg-muted/50 text-foreground'
-                                : 'text-muted-foreground hover:bg-muted/30'
-                            }`}
-                          >
-                            {inst.team_name || inst.team_id}
-                          </button>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                  <div>
-                    <label className={`block text-xs font-medium uppercase tracking-wide mb-2 ${
-                      !form.destination.team_id ? 'text-muted-foreground/50' : 'text-muted-foreground'
-                    }`}>
-                      Channel ID
-                    </label>
-                    <input
-                      type="text"
-                      value={form.destination.channel_id || ''}
-                      onChange={e => setForm(prev => ({
-                        ...prev,
-                        destination: { ...prev.destination, channel_id: e.target.value },
-                      }))}
-                      disabled={!form.destination.team_id}
-                      placeholder="C0123ABC456"
-                      className="w-full px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary disabled:opacity-50 disabled:cursor-not-allowed"
-                    />
-                    <p className={`text-xs mt-1 ${!form.destination.team_id ? 'text-muted-foreground/50' : 'text-muted-foreground'}`}>
-                      {!form.destination.team_id
-                        ? 'Select a workspace first'
-                        : 'Right-click a channel in Slack and select "View channel details" to find the Channel ID at the bottom.'}
-                    </p>
-                  </div>
-                </div>
-              )}
-
-              {/* Webhook destination */}
-              {form.channel_type === 'webhook' && (
-                <div>
-                  <label className="block text-xs font-medium text-muted-foreground uppercase tracking-wide mb-2">
-                    Webhook URL
-                  </label>
-                  <input
-                    type="url"
-                    value={form.destination.url || ''}
-                    onChange={e => setForm(prev => ({
-                      ...prev,
-                      destination: { ...prev.destination, url: e.target.value },
-                    }))}
-                    placeholder="https://example.com/webhook"
-                    className="w-full px-3 py-2 rounded-md border border-border bg-background text-foreground text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-primary"
-                  />
-                </div>
-              )}
 
               {/* Exclude filter */}
               {(() => {

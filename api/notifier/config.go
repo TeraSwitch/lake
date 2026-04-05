@@ -13,7 +13,6 @@ import (
 const (
 	FormatMarkdown  = "markdown"
 	FormatPlaintext = "plaintext"
-	FormatBlocks    = "blocks" // Slack Block Kit (Slack-only)
 )
 
 // NotificationConfig is a stored notification configuration.
@@ -30,18 +29,12 @@ type NotificationConfig struct {
 	UpdatedAt    time.Time       `json:"updated_at"`
 }
 
-// EffectiveFormat returns the output format, falling back to a channel-specific
-// default if not set.
+// EffectiveFormat returns the output format, falling back to markdown if not set.
 func (c *NotificationConfig) EffectiveFormat() string {
 	if c.OutputFormat != "" {
 		return c.OutputFormat
 	}
-	switch c.ChannelType {
-	case "slack":
-		return FormatBlocks
-	default:
-		return FormatMarkdown
-	}
+	return FormatMarkdown
 }
 
 // ConfigStore provides CRUD operations for notification configs and checkpoints.
@@ -151,17 +144,6 @@ func (s *ConfigStore) Delete(ctx context.Context, id, accountID string) error {
 		return fmt.Errorf("notification config not found")
 	}
 	return nil
-}
-
-// TransferSlackConfigs transfers notification configs that use a Slack channel
-// with the given team_id to a new account. Called during installation takeover.
-func (s *ConfigStore) TransferSlackConfigs(ctx context.Context, teamID, newAccountID string) error {
-	_, err := s.Pool.Exec(ctx,
-		`UPDATE notification_configs
-		 SET account_id = $1, updated_at = NOW()
-		 WHERE channel_type = 'slack' AND destination->>'team_id' = $2`,
-		newAccountID, teamID)
-	return err
 }
 
 // GetCheckpoint returns the checkpoint for an account + source type.

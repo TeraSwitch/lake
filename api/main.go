@@ -398,9 +398,7 @@ func main() {
 				PgPool:  config.PgPool,
 				Sources: notifSources,
 				Channels: map[string]notifier.Channel{
-					channels.ChannelTypeSlack: &channels.SlackChannel{
-						PgPool: config.PgPool,
-					},
+					channels.ChannelTypeWebhook: &channels.WebhookChannel{},
 				},
 			}); err != nil && notifierCtx.Err() == nil {
 				slog.Error("notifier worker failed", "error", err)
@@ -790,14 +788,6 @@ func main() {
 		r.Delete("/api/notifications/configs/{id}", api.DeleteNotificationConfig)
 		r.Get("/api/notifications/preview", api.PreviewNotifications)
 	})
-
-	// Transfer notification configs on Slack installation takeover
-	notifStore := &notifier.ConfigStore{Pool: config.PgPool}
-	api.OnSlackInstallationTakeover = func(teamID, newAccountID string) {
-		if err := notifStore.TransferSlackConfigs(context.Background(), teamID, newAccountID); err != nil {
-			slog.Error("failed to transfer notification configs on takeover", "team_id", teamID, "error", err)
-		}
-	}
 
 	// Start Slack bot if configured
 	var slackEventHandler *slackbot.EventHandler

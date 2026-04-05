@@ -472,10 +472,6 @@ func (a *API) ConfirmSlackInstallation(w http.ResponseWriter, r *http.Request) {
 	if a.OnSlackInstallationChange != nil {
 		a.OnSlackInstallationChange(teamID)
 	}
-	if a.OnSlackInstallationTakeover != nil {
-		a.OnSlackInstallationTakeover(teamID, account.ID.String())
-	}
-
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(map[string]string{"status": "installed", "team_id": teamID, "team_name": teamName})
 }

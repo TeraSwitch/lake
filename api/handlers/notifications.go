@@ -197,28 +197,8 @@ func (a *API) DeleteNotificationConfig(w http.ResponseWriter, r *http.Request) {
 }
 
 // validateNotificationConfig validates channel-specific constraints.
-func (a *API) validateNotificationConfig(r *http.Request, channelType string, destination json.RawMessage) error {
+func (a *API) validateNotificationConfig(_ *http.Request, channelType string, destination json.RawMessage) error {
 	switch channelType {
-	case "slack":
-		var dest struct {
-			TeamID    string `json:"team_id"`
-			ChannelID string `json:"channel_id"`
-		}
-		if err := json.Unmarshal(destination, &dest); err != nil {
-			return &validationError{"invalid slack destination"}
-		}
-		if dest.TeamID == "" || dest.ChannelID == "" {
-			return &validationError{"slack destination requires team_id and channel_id"}
-		}
-		// Verify the caller owns the Slack installation.
-		account := GetAccountFromContext(r.Context())
-		inst, err := a.GetSlackInstallationByTeamID(r.Context(), dest.TeamID)
-		if err != nil {
-			return &validationError{"Slack installation not found for this workspace"}
-		}
-		if inst.InstalledBy == nil || *inst.InstalledBy != account.ID.String() {
-			return &validationError{"you must be the Slack installer for this workspace"}
-		}
 	case "webhook":
 		var dest struct {
 			URL string `json:"url"`
