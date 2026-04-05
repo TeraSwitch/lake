@@ -1,23 +1,26 @@
 -- +goose Up
 
--- Reusable webhook delivery endpoints.
-CREATE TABLE webhook_endpoints (
+-- Reusable notification delivery endpoints.
+-- type: delivery channel (webhook, slack, email, etc.)
+-- config: channel-specific settings (e.g. {"url":"..."} for webhook)
+CREATE TABLE notification_endpoints (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES accounts(id),
     name VARCHAR(100) NOT NULL DEFAULT '',
-    url TEXT NOT NULL,
+    type VARCHAR(20) NOT NULL,
+    config JSONB NOT NULL DEFAULT '{}',
     output_format VARCHAR(20) NOT NULL DEFAULT 'markdown',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE INDEX idx_webhook_endpoints_account ON webhook_endpoints(account_id);
+CREATE INDEX idx_notification_endpoints_account ON notification_endpoints(account_id);
 
 -- Notification configs: what to watch and which endpoint to deliver to.
 CREATE TABLE notification_configs (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     account_id UUID NOT NULL REFERENCES accounts(id),
-    endpoint_id UUID NOT NULL REFERENCES webhook_endpoints(id) ON DELETE CASCADE,
+    endpoint_id UUID NOT NULL REFERENCES notification_endpoints(id) ON DELETE CASCADE,
     source_type VARCHAR(50) NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT true,
     filters JSONB NOT NULL DEFAULT '{}',
@@ -42,4 +45,4 @@ CREATE TABLE notification_checkpoints (
 -- +goose Down
 DROP TABLE IF EXISTS notification_checkpoints;
 DROP TABLE IF EXISTS notification_configs;
-DROP TABLE IF EXISTS webhook_endpoints;
+DROP TABLE IF EXISTS notification_endpoints;

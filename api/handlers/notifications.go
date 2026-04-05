@@ -13,9 +13,9 @@ func (a *API) notificationStore() *notifier.ConfigStore {
 	return &notifier.ConfigStore{Pool: a.PgPool}
 }
 
-// --- Webhook Endpoints ---
+// --- Notification Endpoints ---
 
-func (a *API) ListWebhookEndpoints(w http.ResponseWriter, r *http.Request) {
+func (a *API) ListNotificationEndpoints(w http.ResponseWriter, r *http.Request) {
 	account := GetAccountFromContext(r.Context())
 	if account == nil {
 		http.Error(w, "Authentication required", http.StatusUnauthorized)
@@ -24,40 +24,46 @@ func (a *API) ListWebhookEndpoints(w http.ResponseWriter, r *http.Request) {
 
 	endpoints, err := a.notificationStore().ListEndpoints(r.Context(), account.ID.String())
 	if err != nil {
-		logError("failed to list webhook endpoints", "error", err)
+		logError("failed to list notification endpoints", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
 	if endpoints == nil {
-		endpoints = []notifier.WebhookEndpoint{}
+		endpoints = []notifier.NotificationEndpoint{}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(endpoints)
 }
 
-type createWebhookEndpointRequest struct {
-	Name         string `json:"name"`
-	URL          string `json:"url"`
-	OutputFormat string `json:"output_format"`
+type createEndpointRequest struct {
+	Name         string          `json:"name"`
+	Type         string          `json:"type"`
+	Config       json.RawMessage `json:"config"`
+	OutputFormat string          `json:"output_format"`
 }
 
-func (a *API) CreateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
+func (a *API) CreateNotificationEndpoint(w http.ResponseWriter, r *http.Request) {
 	account := GetAccountFromContext(r.Context())
 	if account == nil {
 		http.Error(w, "Authentication required", http.StatusUnauthorized)
 		return
 	}
 
-	var req createWebhookEndpointRequest
+	var req createEndpointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
 		return
 	}
 
-	if req.URL == "" {
-		http.Error(w, "url is required", http.StatusBadRequest)
+	if req.Type == "" {
+		http.Error(w, "type is required", http.StatusBadRequest)
+		return
+	}
+
+	if err := validateEndpointConfig(req.Type, req.Config); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
@@ -65,16 +71,21 @@ func (a *API) CreateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 	if outputFormat == "" {
 		outputFormat = notifier.FormatMarkdown
 	}
+	config := req.Config
+	if config == nil {
+		config = json.RawMessage("{}")
+	}
 
-	e := &notifier.WebhookEndpoint{
+	e := &notifier.NotificationEndpoint{
 		AccountID:    account.ID.String(),
 		Name:         req.Name,
-		URL:          req.URL,
+		Type:         req.Type,
+		Config:       config,
 		OutputFormat: outputFormat,
 	}
 
 	if err := a.notificationStore().CreateEndpoint(r.Context(), e); err != nil {
-		logError("failed to create webhook endpoint", "error", err)
+		logError("failed to create notification endpoint", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -84,13 +95,14 @@ func (a *API) CreateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 	_ = json.NewEncoder(w).Encode(e)
 }
 
-type updateWebhookEndpointRequest struct {
-	Name         string `json:"name"`
-	URL          string `json:"url"`
-	OutputFormat string `json:"output_format"`
+type updateEndpointRequest struct {
+	Name         string          `json:"name"`
+	Type         string          `json:"type"`
+	Config       json.RawMessage `json:"config"`
+	OutputFormat string          `json:"output_format"`
 }
 
-func (a *API) UpdateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
+func (a *API) UpdateNotificationEndpoint(w http.ResponseWriter, r *http.Request) {
 	account := GetAccountFromContext(r.Context())
 	if account == nil {
 		http.Error(w, "Authentication required", http.StatusUnauthorized)
@@ -103,20 +115,33 @@ func (a *API) UpdateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req updateWebhookEndpointRequest
+	var req updateEndpointRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "Invalid JSON body", http.StatusBadRequest)
 		return
 	}
 
-	e := &notifier.WebhookEndpoint{
+	if req.Type != "" {
+		if err := validateEndpointConfig(req.Type, req.Config); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+
+	config := req.Config
+	if config == nil {
+		config = json.RawMessage("{}")
+	}
+
+	e := &notifier.NotificationEndpoint{
 		Name:         req.Name,
-		URL:          req.URL,
+		Type:         req.Type,
+		Config:       config,
 		OutputFormat: req.OutputFormat,
 	}
 
 	if err := a.notificationStore().UpdateEndpoint(r.Context(), id, account.ID.String(), e); err != nil {
-		logError("failed to update webhook endpoint", "error", err)
+		logError("failed to update notification endpoint", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
@@ -124,7 +149,7 @@ func (a *API) UpdateWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) DeleteWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
+func (a *API) DeleteNotificationEndpoint(w http.ResponseWriter, r *http.Request) {
 	account := GetAccountFromContext(r.Context())
 	if account == nil {
 		http.Error(w, "Authentication required", http.StatusUnauthorized)
@@ -138,13 +163,32 @@ func (a *API) DeleteWebhookEndpoint(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := a.notificationStore().DeleteEndpoint(r.Context(), id, account.ID.String()); err != nil {
-		logError("failed to delete webhook endpoint", "error", err)
+		logError("failed to delete notification endpoint", "error", err)
 		http.Error(w, "Internal error", http.StatusInternalServerError)
 		return
 	}
 
 	w.WriteHeader(http.StatusNoContent)
 }
+
+func validateEndpointConfig(endpointType string, config json.RawMessage) error {
+	switch endpointType {
+	case notifier.EndpointTypeWebhook:
+		var c struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(config, &c); err != nil || c.URL == "" {
+			return &validationError{"webhook config requires a url"}
+		}
+	default:
+		return &validationError{"unsupported endpoint type: " + endpointType}
+	}
+	return nil
+}
+
+type validationError struct{ msg string }
+
+func (e *validationError) Error() string { return e.msg }
 
 // --- Notification Configs ---
 
@@ -195,10 +239,9 @@ func (a *API) CreateNotificationConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Verify the endpoint belongs to this account.
 	ep, err := a.notificationStore().GetEndpoint(r.Context(), req.EndpointID)
 	if err != nil || ep.AccountID != account.ID.String() {
-		http.Error(w, "webhook endpoint not found", http.StatusBadRequest)
+		http.Error(w, "endpoint not found", http.StatusBadRequest)
 		return
 	}
 
@@ -264,17 +307,16 @@ func (a *API) UpdateNotificationConfig(w http.ResponseWriter, r *http.Request) {
 		filters = json.RawMessage("{}")
 	}
 
-	endpointID := req.EndpointID
-	if endpointID != "" {
-		ep, err := a.notificationStore().GetEndpoint(r.Context(), endpointID)
+	if req.EndpointID != "" {
+		ep, err := a.notificationStore().GetEndpoint(r.Context(), req.EndpointID)
 		if err != nil || ep.AccountID != account.ID.String() {
-			http.Error(w, "webhook endpoint not found", http.StatusBadRequest)
+			http.Error(w, "endpoint not found", http.StatusBadRequest)
 			return
 		}
 	}
 
 	cfg := &notifier.NotificationConfig{
-		EndpointID: endpointID,
+		EndpointID: req.EndpointID,
 		Enabled:    enabled,
 		Filters:    filters,
 	}

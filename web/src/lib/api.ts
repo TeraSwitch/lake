@@ -5311,51 +5311,52 @@ export async function fetchShredDevices(params: {
   return res.json()
 }
 
-// Webhook endpoints
-export interface WebhookEndpoint {
+// Notification endpoints
+export interface NotificationEndpoint {
   id: string
   account_id: string
   name: string
-  url: string
+  type: string
+  config: Record<string, string>
   output_format: string
   created_at: string
   updated_at: string
 }
 
-export async function getWebhookEndpoints(): Promise<WebhookEndpoint[]> {
-  const res = await fetchWithRetry('/api/webhooks')
-  if (!res.ok) throw new Error('Failed to get webhook endpoints')
+export async function getNotificationEndpoints(): Promise<NotificationEndpoint[]> {
+  const res = await fetchWithRetry('/api/notifications/endpoints')
+  if (!res.ok) throw new Error('Failed to get notification endpoints')
   return res.json()
 }
 
-export async function createWebhookEndpoint(req: { name: string; url: string; output_format?: string }): Promise<WebhookEndpoint> {
-  const res = await fetchWithRetry('/api/webhooks', {
+export async function createNotificationEndpoint(req: { name: string; type: string; config: Record<string, string>; output_format?: string }): Promise<NotificationEndpoint> {
+  const res = await fetchWithRetry('/api/notifications/endpoints', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || 'Failed to create webhook endpoint')
+    throw new Error(text || 'Failed to create notification endpoint')
   }
   return res.json()
 }
 
-export async function updateWebhookEndpoint(id: string, req: { name?: string; url?: string; output_format?: string }): Promise<void> {
-  const res = await fetchWithRetry(`/api/webhooks/${encodeURIComponent(id)}`, {
+export async function updateNotificationEndpoint(id: string, req: { name?: string; type?: string; config?: Record<string, string>; output_format?: string }): Promise<void> {
+  const res = await fetchWithRetry(`/api/notifications/endpoints/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(req),
   })
   if (!res.ok) {
     const text = await res.text()
-    throw new Error(text || 'Failed to update webhook endpoint')
+    throw new Error(text || 'Failed to update notification endpoint')
   }
 }
 
-export async function deleteWebhookEndpoint(id: string): Promise<void> {
-  const res = await fetchWithRetry(`/api/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE' })
-  if (!res.ok) throw new Error('Failed to delete webhook endpoint')
+export async function deleteNotificationEndpoint(id: string): Promise<void> {
+  const res = await fetchWithRetry(`/api/notifications/endpoints/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete notification endpoint')
 }
 
 // Notification configs

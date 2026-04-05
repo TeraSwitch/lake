@@ -2,12 +2,27 @@ package notifier
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
 	temporalworkflow "go.temporal.io/sdk/workflow"
 )
+
+// extractEndpointURL resolves the delivery URL from the endpoint type and config.
+func extractEndpointURL(endpointType string, config json.RawMessage) string {
+	switch endpointType {
+	case EndpointTypeWebhook:
+		var c struct {
+			URL string `json:"url"`
+		}
+		if json.Unmarshal(config, &c) == nil {
+			return c.URL
+		}
+	}
+	return ""
+}
 
 const (
 	TaskQueue  = "api-notifier"
@@ -90,10 +105,15 @@ func (a *Activities) CheckAndDeliver(ctx context.Context) error {
 		if format == "" {
 			format = FormatMarkdown
 		}
-		if err := Deliver(ctx, d.config.EndpointURL, d.groups, format); err != nil {
-			a.Log.Error("webhook delivery failed",
+		url := extractEndpointURL(d.config.EndpointType, d.config.EndpointConfig)
+		if url == "" {
+			a.Log.Warn("endpoint has no delivery URL", "config_id", d.config.ID, "endpoint_type", d.config.EndpointType)
+			continue
+		}
+		if err := Deliver(ctx, url, d.groups, format); err != nil {
+			a.Log.Error("delivery failed",
 				"error", err,
-				"endpoint_url", d.config.EndpointURL,
+				"endpoint_type", d.config.EndpointType,
 				"config_id", d.config.ID,
 			)
 		}

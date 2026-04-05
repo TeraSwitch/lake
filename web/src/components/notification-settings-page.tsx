@@ -6,16 +6,16 @@ import remarkBreaks from 'remark-breaks'
 import { ArrowLeft, Plus, Trash2, Bell, BellOff, X, Radio, Globe, Pencil } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
-  getWebhookEndpoints,
-  createWebhookEndpoint,
-  updateWebhookEndpoint,
-  deleteWebhookEndpoint,
+  getNotificationEndpoints,
+  createNotificationEndpoint,
+  updateNotificationEndpoint,
+  deleteNotificationEndpoint,
   getNotificationConfigs,
   createNotificationConfig,
   updateNotificationConfig,
   deleteNotificationConfig,
   streamNotificationPreview,
-  type WebhookEndpoint,
+  type NotificationEndpoint,
   type NotificationConfig,
   type NotificationPreview,
 } from '@/lib/api'
@@ -61,7 +61,7 @@ function deserializeFilters(sourceType: string, filters: Record<string, unknown>
 
 export function NotificationSettingsPage() {
   const { user } = useAuth()
-  const [endpoints, setEndpoints] = useState<WebhookEndpoint[]>([])
+  const [endpoints, setEndpoints] = useState<NotificationEndpoint[]>([])
   const [configs, setConfigs] = useState<NotificationConfig[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -84,7 +84,7 @@ export function NotificationSettingsPage() {
   const [savingSub, setSavingSub] = useState(false)
 
   // Delete confirmation
-  const [deletingEndpoint, setDeletingEndpoint] = useState<WebhookEndpoint | null>(null)
+  const [deletingEndpoint, setDeletingEndpoint] = useState<NotificationEndpoint | null>(null)
   const [deletingConfig, setDeletingConfig] = useState<NotificationConfig | null>(null)
 
   // Preview
@@ -136,7 +136,7 @@ export function NotificationSettingsPage() {
   async function loadData() {
     setLoading(true)
     try {
-      const [eps, cfgs] = await Promise.all([getWebhookEndpoints(), getNotificationConfigs()])
+      const [eps, cfgs] = await Promise.all([getNotificationEndpoints(), getNotificationConfigs()])
       setEndpoints(eps)
       setConfigs(cfgs)
     } catch {
@@ -156,10 +156,10 @@ export function NotificationSettingsPage() {
     setShowEndpointForm(true)
   }
 
-  function openEditEndpoint(ep: WebhookEndpoint) {
+  function openEditEndpoint(ep: NotificationEndpoint) {
     setEditingEndpointId(ep.id)
     setEndpointName(ep.name)
-    setEndpointUrl(ep.url)
+    setEndpointUrl(ep.config?.url || '')
     setEndpointFormat(ep.output_format || 'markdown')
     setShowEndpointForm(true)
   }
@@ -169,9 +169,9 @@ export function NotificationSettingsPage() {
     setSavingEndpoint(true)
     try {
       if (editingEndpointId) {
-        await updateWebhookEndpoint(editingEndpointId, { name: endpointName, url: endpointUrl, output_format: endpointFormat })
+        await updateNotificationEndpoint(editingEndpointId, { name: endpointName, type: 'webhook', config: { url: endpointUrl }, output_format: endpointFormat })
       } else {
-        await createWebhookEndpoint({ name: endpointName, url: endpointUrl, output_format: endpointFormat })
+        await createNotificationEndpoint({ name: endpointName, type: 'webhook', config: { url: endpointUrl }, output_format: endpointFormat })
       }
       setShowEndpointForm(false)
       await loadData()
@@ -184,7 +184,7 @@ export function NotificationSettingsPage() {
 
   async function handleDeleteEndpoint(id: string) {
     try {
-      await deleteWebhookEndpoint(id)
+      await deleteNotificationEndpoint(id)
       setDeletingEndpoint(null)
       await loadData()
     } catch {
@@ -263,7 +263,7 @@ export function NotificationSettingsPage() {
   const sourceLabel = (type: string) => sourceTypes.find(s => s.value === type)?.label || type
   const endpointLabel = (id: string) => {
     const ep = endpoints.find(e => e.id === id)
-    return ep?.name || ep?.url || id
+    return ep?.name || ep?.config?.url || id
   }
 
   if (!user) {
@@ -292,10 +292,10 @@ export function NotificationSettingsPage() {
           </div>
         )}
 
-        {/* Webhook Endpoints */}
+        {/* Endpoints */}
         <section className="mb-10">
           <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide mb-4">
-            Webhook Endpoints
+            Endpoints
           </h2>
 
           {showEndpointForm ? (
@@ -356,7 +356,7 @@ export function NotificationSettingsPage() {
                     <div key={ep.id} className="bg-card border border-border rounded-lg px-4 py-3 flex items-center justify-between">
                       <div className="min-w-0">
                         <div className="text-sm font-medium text-foreground">{ep.name || 'Unnamed'}</div>
-                        <div className="text-xs text-muted-foreground truncate">{ep.url}</div>
+                        <div className="text-xs text-muted-foreground truncate">{ep.config?.url || ep.type}</div>
                         <div className="text-xs text-muted-foreground/60">{ep.output_format}</div>
                       </div>
                       <div className="flex items-center gap-1">
@@ -407,7 +407,7 @@ export function NotificationSettingsPage() {
                         <button key={ep.id} onClick={() => setSubEndpointId(ep.id)}
                           className={`w-full text-left px-3 py-2 rounded-md text-sm transition-colors border ${subEndpointId === ep.id ? 'border-primary bg-primary/5 text-foreground' : 'border-transparent text-muted-foreground hover:bg-muted/30'}`}>
                           <div className="font-medium">{ep.name || 'Unnamed'}</div>
-                          <div className="text-xs text-muted-foreground truncate">{ep.url}</div>
+                          <div className="text-xs text-muted-foreground truncate">{ep.config?.url || ep.type}</div>
                         </button>
                       ))}
                     </div>
@@ -557,7 +557,7 @@ export function NotificationSettingsPage() {
       </div>
 
       <ConfirmDialog isOpen={deletingEndpoint !== null} title="Delete webhook endpoint"
-        message={`This will delete the endpoint "${deletingEndpoint?.name || deletingEndpoint?.url}" and all its subscriptions.`}
+        message={`This will delete the endpoint "${deletingEndpoint?.name || deletingEndpoint?.config?.url || deletingEndpoint?.id}" and all its subscriptions.`}
         confirmLabel="Delete" onConfirm={() => deletingEndpoint && handleDeleteEndpoint(deletingEndpoint.id)} onCancel={() => setDeletingEndpoint(null)} />
 
       <ConfirmDialog isOpen={deletingConfig !== null} title="Delete subscription"
