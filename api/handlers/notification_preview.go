@@ -58,8 +58,13 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	sendGroups := func(groups []notifier.EventGroup) {
+	const maxInitialGroups = 10
+
+	sendGroups := func(groups []notifier.EventGroup, limit int) {
 		filtered := source.Filter(groups, filters)
+		if limit > 0 && len(filtered) > limit {
+			filtered = filtered[len(filtered)-limit:]
+		}
 		for _, g := range filtered {
 			sendEvent("notification", map[string]string{
 				"summary":  g.Summary,
@@ -68,9 +73,9 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Start with a lookback window to show recent events immediately.
+	// Start with a short lookback to show a few recent events.
 	cp := notifier.Checkpoint{
-		LastEventTS: time.Now().Add(-5 * time.Minute),
+		LastEventTS: time.Now().Add(-1 * time.Minute),
 	}
 
 	groups, newCP, err := source.Poll(r.Context(), cp)
@@ -82,7 +87,7 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 		cp = newCP
 	}
 
-	sendGroups(groups)
+	sendGroups(groups, maxInitialGroups)
 	sendEvent("caught_up", map[string]bool{"caught_up": true})
 
 	// Poll for new events while the connection is open.
@@ -107,7 +112,7 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 			if newCP.LastEventTS.After(cp.LastEventTS) || newCP.LastSlot > cp.LastSlot {
 				cp = newCP
 			}
-			sendGroups(groups)
+			sendGroups(groups, 0)
 		}
 	}
 }
