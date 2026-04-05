@@ -35,7 +35,6 @@ import { TrafficPage } from '@/pages/traffic-page'
 import { TrafficDashboardPage } from '@/pages/traffic-dashboard-page'
 import { MaintenancePlannerPage } from '@/components/maintenance-planner-page'
 import { StatusPage } from '@/components/status-page'
-import { TimelinePage } from '@/components/timeline-page'
 import { IncidentsPage } from '@/components/incidents-page'
 import { LinkIncidentDetailPage } from '@/components/link-incident-detail-page'
 import { DeviceIncidentDetailPage } from '@/components/device-incident-detail-page'
@@ -666,9 +665,6 @@ function AppContent() {
             <Route path="/status/devices" element={<StatusPage />} />
             <Route path="/status/metros" element={<StatusPage />} />
             <Route path="/status/methodology" element={<StatusAppendix />} />
-
-            {/* Timeline route */}
-            <Route path="/timeline" element={<TimelinePage />} />
 
             {/* Incidents routes */}
             <Route path="/incidents" element={<Navigate to="/incidents/links" replace />} />

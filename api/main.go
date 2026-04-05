@@ -516,16 +516,7 @@ func main() {
 		r.Get("/api/link-metrics/{pk}", api.GetLinkMetrics)
 		r.Get("/api/device-metrics", api.GetBulkDeviceMetrics)
 		r.Get("/api/device-metrics/{pk}", api.GetDeviceMetrics)
-		r.Get("/api/timeline", api.GetTimeline)
-		r.Get("/api/timeline/bounds", api.GetTimelineBounds)
-
 		// Incident routes
-		r.Get("/api/incidents/links", api.GetLinkIncidents)
-		r.Get("/api/incidents/links/csv", api.GetLinkIncidentsCSV)
-		r.Get("/api/incidents/devices", api.GetDeviceIncidents)
-		r.Get("/api/incidents/devices/csv", api.GetDeviceIncidentsCSV)
-
-		// Incident routes v2 (event-based)
 		r.Get("/api/v2/incidents/links", api.GetLinkIncidentsV2)
 		r.Get("/api/v2/incidents/links/{id}", api.GetLinkIncidentDetail)
 		r.Get("/api/v2/incidents/devices", api.GetDeviceIncidentsV2)

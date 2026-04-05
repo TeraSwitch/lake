@@ -47,20 +47,6 @@ func (a *Activities) entries() []cacheEntry {
 			}
 			return resp, nil
 		}},
-		{"incidents", "incidents", func(ctx context.Context) (any, error) {
-			resp := api.FetchDefaultIncidentsData(ctx)
-			if resp == nil {
-				return nil, &refreshError{"nil response"}
-			}
-			return resp, nil
-		}},
-		{"device incidents", "device_incidents", func(ctx context.Context) (any, error) {
-			resp := api.FetchDefaultDeviceIncidentsData(ctx)
-			if resp == nil {
-				return nil, &refreshError{"nil response"}
-			}
-			return resp, nil
-		}},
 		{"link history", "link_history:24h:72", func(ctx context.Context) (any, error) {
 			return api.FetchLinkHistoryData(ctx, "24h", 72)
 		}},
