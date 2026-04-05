@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import remarkBreaks from 'remark-breaks'
-import { ArrowLeft, Plus, Trash2, Bell, BellOff, Webhook, MessageSquare, X, Eye, EyeOff, Radio } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Bell, BellOff, Webhook, MessageSquare, X, Radio } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
   getNotificationConfigs,
@@ -94,18 +94,18 @@ export function NotificationSettingsPage() {
   const [deleting, setDeleting] = useState<NotificationConfig | null>(null)
 
   // Preview state
-  const [previewSource, setPreviewSource] = useState<string | null>(null)
   const [previewItems, setPreviewItems] = useState<NotificationPreview[]>([])
   const [previewCaughtUp, setPreviewCaughtUp] = useState(false)
+  const [previewActive, setPreviewActive] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const previewEndRef = useRef<HTMLDivElement | null>(null)
 
-  const startPreview = useCallback((sourceType: string) => {
+  const startPreview = useCallback((sourceType: string, filters: Record<string, unknown>) => {
     abortRef.current?.abort()
 
-    setPreviewSource(sourceType)
     setPreviewItems([])
     setPreviewCaughtUp(false)
+    setPreviewActive(true)
 
     const controller = new AbortController()
     abortRef.current = controller
@@ -115,14 +115,14 @@ export function NotificationSettingsPage() {
         setPreviewItems(prev => [...prev.slice(-99), preview])
       },
       onCaughtUp: () => setPreviewCaughtUp(true),
-      onError: (msg) => setError(msg),
-    }, controller.signal)
+      onError: (msg) => { if (!controller.signal.aborted) setError(msg) },
+    }, controller.signal, filters)
   }, [])
 
   const stopPreview = useCallback(() => {
     abortRef.current?.abort()
     abortRef.current = null
-    setPreviewSource(null)
+    setPreviewActive(false)
   }, [])
 
   // Cleanup on unmount
@@ -134,6 +134,17 @@ export function NotificationSettingsPage() {
   useEffect(() => {
     previewEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [previewItems])
+
+  // Restart preview when form source type or filters change
+  useEffect(() => {
+    if (!showForm) {
+      stopPreview()
+      return
+    }
+    const filters = serializeFilters(form.source_type, form.exclude_keys)
+    startPreview(form.source_type, filters)
+    return () => { abortRef.current?.abort() }
+  }, [showForm, form.source_type, form.exclude_keys, startPreview, stopPreview])
 
   useEffect(() => {
     loadData()
@@ -576,6 +587,50 @@ export function NotificationSettingsPage() {
                 )
               })()}
 
+              {/* Live Preview */}
+              <div>
+                <div className="flex items-center gap-2 mb-2">
+                  <label className="block text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                    Preview
+                  </label>
+                  {previewActive && (
+                    <div className="flex items-center gap-1.5">
+                      <Radio className="h-3 w-3 text-primary animate-pulse" />
+                      <span className="text-xs text-muted-foreground">
+                        {previewCaughtUp ? 'Watching for new events...' : 'Loading...'}
+                      </span>
+                    </div>
+                  )}
+                </div>
+                <div className="border border-border rounded-lg overflow-hidden bg-background">
+                  <div className="max-h-72 overflow-y-auto">
+                    {previewItems.length === 0 && previewCaughtUp && (
+                      <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                        No recent events. New events will appear here as they happen.
+                      </div>
+                    )}
+                    {previewItems.length === 0 && !previewCaughtUp && previewActive && (
+                      <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                        Loading recent events...
+                      </div>
+                    )}
+                    {previewItems.map((item, idx) => (
+                      <div
+                        key={idx}
+                        className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
+                      >
+                        <div className="prose prose-sm dark:prose-invert max-w-none text-sm [&_p]:my-0.5 [&_strong]:text-foreground [&_code]:text-xs [&_code]:text-muted-foreground [&_hr]:my-2">
+                          <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
+                            {item.markdown}
+                          </ReactMarkdown>
+                        </div>
+                      </div>
+                    ))}
+                    <div ref={previewEndRef} />
+                  </div>
+                </div>
+              </div>
+
               {/* Save / Cancel */}
               <div className="flex gap-3 justify-end pt-2">
                 <button
@@ -596,85 +651,6 @@ export function NotificationSettingsPage() {
           </div>
         )}
 
-        {/* Preview section */}
-        {!showForm && !loading && (
-          <section className="mt-8">
-            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide mb-4">
-              Preview
-            </h2>
-            <div className="bg-card border border-border rounded-lg overflow-hidden">
-              <div className="px-4 py-3 flex items-center justify-between border-b border-border">
-                <div className="flex items-center gap-3">
-                  {previewSource ? (
-                    <>
-                      <Radio className="h-4 w-4 text-primary animate-pulse" />
-                      <span className="text-sm text-foreground">
-                        Live: {sourceTypes.find(s => s.value === previewSource)?.label}
-                      </span>
-                      {previewCaughtUp && (
-                        <span className="text-xs text-muted-foreground">Watching for new events...</span>
-                      )}
-                    </>
-                  ) : (
-                    <span className="text-sm text-muted-foreground">
-                      Preview events from a source in realtime
-                    </span>
-                  )}
-                </div>
-                <div className="flex items-center gap-2">
-                  {!previewSource ? (
-                    sourceTypes.map(s => (
-                      <button
-                        key={s.value}
-                        onClick={() => startPreview(s.value)}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                      >
-                        <Eye className="h-3 w-3" />
-                        {s.label}
-                      </button>
-                    ))
-                  ) : (
-                    <button
-                      onClick={stopPreview}
-                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
-                    >
-                      <EyeOff className="h-3 w-3" />
-                      Stop
-                    </button>
-                  )}
-                </div>
-              </div>
-
-              {previewSource && (
-                <div className="max-h-96 overflow-y-auto">
-                  {previewItems.length === 0 && previewCaughtUp && (
-                    <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      No recent events. New events will appear here as they happen.
-                    </div>
-                  )}
-                  {previewItems.length === 0 && !previewCaughtUp && (
-                    <div className="px-4 py-6 text-center text-sm text-muted-foreground">
-                      Loading recent events...
-                    </div>
-                  )}
-                  {previewItems.map((item, idx) => (
-                    <div
-                      key={idx}
-                      className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
-                    >
-                      <div className="prose prose-sm dark:prose-invert max-w-none text-sm [&_p]:my-0.5 [&_strong]:text-foreground [&_code]:text-xs [&_code]:text-muted-foreground [&_hr]:my-2">
-                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
-                          {item.markdown}
-                        </ReactMarkdown>
-                      </div>
-                    </div>
-                  ))}
-                  <div ref={previewEndRef} />
-                </div>
-              )}
-            </div>
-          </section>
-        )}
       </div>
 
       <ConfirmDialog

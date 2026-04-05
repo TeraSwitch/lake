@@ -5400,8 +5400,12 @@ export async function streamNotificationPreview(
   sourceType: string,
   callbacks: NotificationPreviewCallbacks,
   signal: AbortSignal,
+  filters?: Record<string, unknown>,
 ): Promise<void> {
   const params = new URLSearchParams({ source_type: sourceType })
+  if (filters && Object.keys(filters).length > 0) {
+    params.set('filters', JSON.stringify(filters))
+  }
   const res = await fetch(`/api/notifications/preview?${params}`, {
     headers: {
       ...getAuthHeaders(),

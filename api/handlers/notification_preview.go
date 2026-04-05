@@ -31,6 +31,12 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Parse optional filters (same JSON format as notification config filters).
+	var filters json.RawMessage
+	if f := r.URL.Query().Get("filters"); f != "" {
+		filters = json.RawMessage(f)
+	}
+
 	// SSE headers
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -53,7 +59,8 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 	}
 
 	sendGroups := func(groups []notifier.EventGroup) {
-		for _, g := range groups {
+		filtered := source.Filter(groups, filters)
+		for _, g := range filtered {
 			sendEvent("notification", map[string]string{
 				"summary":  g.Summary,
 				"markdown": notifier.RenderMarkdown([]notifier.EventGroup{g}),
