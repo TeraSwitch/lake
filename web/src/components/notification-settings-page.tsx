@@ -738,7 +738,7 @@ export function NotificationSettingsPage() {
                                   )}
                                   {group.key && (
                                     <code className="text-xs text-muted-foreground/50 font-mono">
-                                      tx: {group.key.length > 20 ? `${group.key.slice(0, 10)}...${group.key.slice(-6)}` : group.key}
+                                      {first?.tx_signature ? 'tx' : 'pk'}: {group.key.length > 20 ? `${group.key.slice(0, 10)}...${group.key.slice(-6)}` : group.key}
                                     </code>
                                   )}
                                   {first?.slot != null && (
