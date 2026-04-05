@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import remarkBreaks from 'remark-breaks'
 import { ArrowLeft, Plus, Trash2, Bell, BellOff, Webhook, MessageSquare, X, Eye, EyeOff, Radio } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
@@ -270,7 +271,7 @@ export function NotificationSettingsPage() {
   if (!user) {
     return (
       <div className="flex-1 overflow-auto">
-        <div className="max-w-2xl mx-auto px-6 py-8">
+        <div className="max-w-4xl mx-auto px-6 py-8">
           <p className="text-sm text-muted-foreground">Sign in to manage notifications.</p>
         </div>
       </div>
@@ -279,7 +280,7 @@ export function NotificationSettingsPage() {
 
   return (
     <div className="flex-1 overflow-auto">
-      <div className="max-w-2xl mx-auto px-6 py-8">
+      <div className="max-w-4xl mx-auto px-6 py-8">
         <div className="flex items-center gap-3 mb-8">
           <Link
             to="/settings"
@@ -662,7 +663,7 @@ export function NotificationSettingsPage() {
                       className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
                     >
                       <div className="prose prose-sm dark:prose-invert max-w-none text-sm [&_p]:my-0.5 [&_strong]:text-foreground [&_code]:text-xs [&_code]:text-muted-foreground [&_hr]:my-2">
-                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        <ReactMarkdown remarkPlugins={[remarkGfm, remarkBreaks]}>
                           {item.markdown}
                         </ReactMarkdown>
                       </div>
