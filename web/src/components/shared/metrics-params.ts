@@ -10,7 +10,7 @@ function parseCustomTime(s: string): number | undefined {
 }
 
 /** Convert SQL interval bucket to short form: "5 MINUTE" → "5m" */
-function bucketToShortForm(bucket: BucketSize): string | undefined {
+export function bucketToShortForm(bucket: BucketSize): string | undefined {
   if (!bucket || bucket === 'auto') return undefined
   const m = bucket.match(/^(\d+)\s+(SECOND|MINUTE|HOUR|DAY)$/)
   if (!m) return undefined

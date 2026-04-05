@@ -20,6 +20,9 @@ import {
   type EntityStatusChange,
 } from '@/lib/api'
 import { useDocumentTitle } from '@/hooks/use-document-title'
+import { TrafficFilters } from '@/components/topology/TimeRangeSelector'
+import { resolveAutoBucketFromSeconds, bucketLabels, type BucketSize } from '@/components/topology/utils'
+import { bucketToShortForm } from '@/components/shared/metrics-params'
 
 function formatDuration(seconds: number | undefined): string {
   if (seconds === undefined) return '-'
@@ -375,9 +378,15 @@ function LinkIncidentDetailContent({ data }: { data: LinkIncidentDetailResponse 
   const startTime = useMemo(() => Math.floor(new Date(data.started_at).getTime() / 1000), [data.started_at])
   const endTime = !isOngoing && data.ended_at ? Math.floor(new Date(data.ended_at).getTime() / 1000) : nowSeconds
 
+  const [bucket, setBucket] = useState<BucketSize>('auto')
+  const bucketParam = bucketToShortForm(bucket)
+  const effectiveBucketLabel = bucket === 'auto'
+    ? bucketLabels[resolveAutoBucketFromSeconds(endTime - startTime)]
+    : undefined
+
   const { data: metrics } = useQuery({
-    queryKey: ['linkMetrics', data.link_pk, startTime, endTime],
-    queryFn: () => fetchLinkMetrics(data.link_pk, { startTime, endTime }),
+    queryKey: ['linkMetrics', data.link_pk, startTime, endTime, bucket],
+    queryFn: () => fetchLinkMetrics(data.link_pk, { startTime, endTime, bucket: bucketParam }),
     refetchInterval: isOngoing ? 60000 : undefined,
   })
 
@@ -449,6 +458,13 @@ function LinkIncidentDetailContent({ data }: { data: LinkIncidentDetailResponse 
       {/* Metrics Charts */}
       {metrics && (
         <div className="space-y-4">
+          <div className="flex justify-end">
+            <TrafficFilters
+              bucket={bucket}
+              onBucketChange={setBucket}
+              effectiveBucketLabel={effectiveBucketLabel}
+            />
+          </div>
           <LinkHealthTimeline data={metrics} />
           <LinkPacketLossChart data={metrics} className="rounded-lg border border-border p-4" />
           <LinkInterfaceIssuesChart data={metrics} className="rounded-lg border border-border p-4" />

@@ -77,6 +77,19 @@ export type BucketSize = 'auto' | '10 SECOND' | '30 SECOND' | '1 MINUTE' | '5 MI
 // Metric type for traffic charts
 export type TrafficMetric = 'throughput' | 'packets'
 
+// Resolve auto bucket from a duration in seconds (for absolute time ranges).
+export function resolveAutoBucketFromSeconds(durationSeconds: number): BucketSize {
+  if (durationSeconds <= 3600) return '10 SECOND'
+  if (durationSeconds <= 3 * 3600) return '30 SECOND'
+  if (durationSeconds <= 6 * 3600) return '1 MINUTE'
+  if (durationSeconds <= 12 * 3600) return '10 MINUTE'
+  if (durationSeconds <= 86400) return '15 MINUTE'
+  if (durationSeconds <= 3 * 86400) return '30 MINUTE'
+  if (durationSeconds <= 7 * 86400) return '4 HOUR'
+  if (durationSeconds <= 14 * 86400) return '12 HOUR'
+  return '1 DAY'
+}
+
 // Resolve auto bucket to an effective bucket size label based on time range preset.
 // This mirrors the backend's calculateBucketSize() function and matches the traffic dashboard.
 export function resolveAutoBucket(preset: TimeRangePreset): BucketSize {
