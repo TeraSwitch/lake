@@ -724,18 +724,31 @@ export function NotificationSettingsPage() {
                                 </div>
                               ))}
                             </div>
-                            {group.key && (
-                              <div className="mt-1.5 flex items-center gap-2">
-                                <code className="text-xs text-muted-foreground/50 font-mono">
-                                  {group.key.length > 20 ? `${group.key.slice(0, 10)}...${group.key.slice(-6)}` : group.key}
-                                </code>
-                                {group.events?.[0]?.details?.slot != null && (
-                                  <span className="text-xs text-muted-foreground/50">
-                                    slot {String(group.events[0].details.slot)}
-                                  </span>
-                                )}
-                              </div>
-                            )}
+                            {(() => {
+                              const first = group.events?.[0]?.details
+                              const signer = first?.signer as string | undefined
+                              const hasContext = group.key || signer
+                              if (!hasContext) return null
+                              return (
+                                <div className="mt-1.5 flex items-center gap-2 flex-wrap">
+                                  {signer && (
+                                    <code className="text-xs text-muted-foreground/50 font-mono">
+                                      signer: {signer.length > 16 ? `${signer.slice(0, 8)}...${signer.slice(-4)}` : signer}
+                                    </code>
+                                  )}
+                                  {group.key && (
+                                    <code className="text-xs text-muted-foreground/50 font-mono">
+                                      tx: {group.key.length > 20 ? `${group.key.slice(0, 10)}...${group.key.slice(-6)}` : group.key}
+                                    </code>
+                                  )}
+                                  {first?.slot != null && (
+                                    <span className="text-xs text-muted-foreground/50">
+                                      slot {String(first.slot)}
+                                    </span>
+                                  )}
+                                </div>
+                              )
+                            })()}
                           </div>
                           {timeStr && (
                             <div className="text-right shrink-0">

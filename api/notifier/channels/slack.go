@@ -115,6 +115,13 @@ func formatEventGroup(group notifier.EventGroup) []slack.Block {
 	if len(group.Events) > 0 {
 		first := group.Events[0]
 		var contextParts []string
+		if signer, ok := first.Details["signer"].(string); ok && signer != "" {
+			short := signer
+			if len(short) > 12 {
+				short = short[:8] + "..." + short[len(short)-4:]
+			}
+			contextParts = append(contextParts, fmt.Sprintf("signer: `%s`", short))
+		}
 		if txSig, ok := first.Details["tx_signature"].(string); ok && txSig != "" {
 			short := txSig
 			if len(short) > 8 {
