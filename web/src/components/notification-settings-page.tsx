@@ -1,5 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import { ArrowLeft, Plus, Trash2, Bell, BellOff, Webhook, MessageSquare, X, Eye, EyeOff, Radio } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
@@ -10,7 +12,7 @@ import {
   getSlackInstallations,
   streamNotificationPreview,
   type NotificationConfig,
-  type NotificationEventGroup,
+  type NotificationPreview,
   type SlackInstallation,
 } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -77,115 +79,6 @@ function deserializeFilters(sourceType: string, filters: Record<string, unknown>
   return []
 }
 
-function truncateKey(key: string, max = 20): string {
-  if (key.length <= max) return key
-  return `${key.slice(0, 8)}...${key.slice(-4)}`
-}
-
-function formatUSDC(raw: unknown): string | null {
-  if (typeof raw !== 'number') return null
-  return (raw / 1_000_000).toFixed(2)
-}
-
-// Escrow event preview card
-function EscrowEventCard({ group }: { group: NotificationEventGroup }) {
-  const first = group.events?.[0]?.details
-  const ts = first?.event_ts ? new Date(String(first.event_ts)) : null
-  const signer = first?.signer as string | undefined
-
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-foreground">{group.summary}</div>
-        <div className="mt-1.5 space-y-1">
-          {group.events?.map((evt, i) => {
-            const d = evt.details
-            let line: string
-            switch (evt.type) {
-              case 'fund': {
-                const amount = formatUSDC(d.amount_usdc)
-                const balance = formatUSDC(d.balance_after_usdc)
-                line = amount && balance ? `Funded ${amount} USDC (balance: ${balance} USDC)`
-                  : amount ? `Funded ${amount} USDC` : 'Funded'
-                break
-              }
-              case 'allocate_seat':
-                line = d.epoch ? `Instant allocated (epoch ${d.epoch})` : 'Instant allocated'; break
-              case 'batch_allocate':
-                line = d.epoch ? `Batch allocated (epoch ${d.epoch})` : 'Batch allocated'; break
-              case 'initialize_seat':
-                line = 'Seat initialized'; break
-              case 'initialize_escrow':
-                line = 'Escrow initialized'; break
-              case 'close': {
-                const amount = formatUSDC(d.amount_usdc)
-                line = amount ? `Escrow closed (withdrew ${amount} USDC)` : 'Escrow closed'; break
-              }
-              case 'withdraw_seat': line = 'Withdrawal requested'; break
-              case 'ack_withdraw': line = 'Withdrawal confirmed'; break
-              case 'ack_allocate': line = 'Allocation confirmed'; break
-              case 'reject_allocate': line = 'Allocation rejected'; break
-              default: line = evt.type
-            }
-            return <div key={i} className="text-sm text-muted-foreground">{line}</div>
-          })}
-        </div>
-        <div className="mt-1.5 flex items-center gap-2 flex-wrap text-xs text-muted-foreground/50 font-mono">
-          {signer && <span>signer: {truncateKey(signer)}</span>}
-          {group.key && <span>tx: {truncateKey(group.key)}</span>}
-          {first?.slot != null && <span>slot {String(first.slot)}</span>}
-        </div>
-      </div>
-      {ts && (
-        <div className="text-right shrink-0">
-          <div className="text-xs text-muted-foreground">{ts.toLocaleTimeString()}</div>
-          <div className="text-xs text-muted-foreground/50">{ts.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-// User activity preview card
-function UserActivityCard({ group }: { group: NotificationEventGroup }) {
-  const first = group.events?.[0]?.details
-  const ts = first?.event_ts ? new Date(String(first.event_ts)) : null
-  const ownerPubkey = first?.owner_pubkey as string | undefined
-  const clientIP = first?.client_ip as string | undefined
-  const dzIP = first?.dz_ip as string | undefined
-  const devicePK = first?.device_pk as string | undefined
-  const kind = first?.kind as string | undefined
-
-  return (
-    <div className="flex items-start justify-between gap-3">
-      <div className="flex-1 min-w-0">
-        <div className="text-sm font-medium text-foreground">{group.summary}</div>
-        <div className="mt-1.5 space-y-0.5 text-sm text-muted-foreground">
-          {clientIP && <div>IP: {clientIP}{dzIP ? ` (DZ: ${dzIP})` : ''}</div>}
-          {kind && <div>Kind: {kind}</div>}
-          {devicePK && <div>Device: <code className="font-mono text-xs">{truncateKey(devicePK)}</code></div>}
-        </div>
-        {ownerPubkey && (
-          <div className="mt-1.5 text-xs text-muted-foreground/50 font-mono">
-            owner: {truncateKey(ownerPubkey)}
-          </div>
-        )}
-      </div>
-      {ts && (
-        <div className="text-right shrink-0">
-          <div className="text-xs text-muted-foreground">{ts.toLocaleTimeString()}</div>
-          <div className="text-xs text-muted-foreground/50">{ts.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
-        </div>
-      )}
-    </div>
-  )
-}
-
-const previewCardComponents: Record<string, React.ComponentType<{ group: NotificationEventGroup }>> = {
-  escrow_events: EscrowEventCard,
-  user_activity: UserActivityCard,
-}
-
 export function NotificationSettingsPage() {
   const { user } = useAuth()
   const [configs, setConfigs] = useState<NotificationConfig[]>([])
@@ -201,25 +94,24 @@ export function NotificationSettingsPage() {
 
   // Preview state
   const [previewSource, setPreviewSource] = useState<string | null>(null)
-  const [previewEvents, setPreviewEvents] = useState<NotificationEventGroup[]>([])
+  const [previewItems, setPreviewItems] = useState<NotificationPreview[]>([])
   const [previewCaughtUp, setPreviewCaughtUp] = useState(false)
   const abortRef = useRef<AbortController | null>(null)
   const previewEndRef = useRef<HTMLDivElement | null>(null)
 
   const startPreview = useCallback((sourceType: string) => {
-    // Stop any existing preview
     abortRef.current?.abort()
 
     setPreviewSource(sourceType)
-    setPreviewEvents([])
+    setPreviewItems([])
     setPreviewCaughtUp(false)
 
     const controller = new AbortController()
     abortRef.current = controller
 
     streamNotificationPreview(sourceType, {
-      onEventGroup: (group) => {
-        setPreviewEvents(prev => [...prev.slice(-99), group])
+      onNotification: (preview) => {
+        setPreviewItems(prev => [...prev.slice(-99), preview])
       },
       onCaughtUp: () => setPreviewCaughtUp(true),
       onError: (msg) => setError(msg),
@@ -240,7 +132,7 @@ export function NotificationSettingsPage() {
   // Auto-scroll preview
   useEffect(() => {
     previewEndRef.current?.scrollIntoView({ behavior: 'smooth' })
-  }, [previewEvents])
+  }, [previewItems])
 
   useEffect(() => {
     loadData()
@@ -753,28 +645,29 @@ export function NotificationSettingsPage() {
               </div>
 
               {previewSource && (
-                <div className="max-h-80 overflow-y-auto">
-                  {previewEvents.length === 0 && previewCaughtUp && (
+                <div className="max-h-96 overflow-y-auto">
+                  {previewItems.length === 0 && previewCaughtUp && (
                     <div className="px-4 py-6 text-center text-sm text-muted-foreground">
                       No recent events. New events will appear here as they happen.
                     </div>
                   )}
-                  {previewEvents.length === 0 && !previewCaughtUp && (
+                  {previewItems.length === 0 && !previewCaughtUp && (
                     <div className="px-4 py-6 text-center text-sm text-muted-foreground">
                       Loading recent events...
                     </div>
                   )}
-                  {previewEvents.map((group, idx) => {
-                    const Card = previewCardComponents[previewSource!] ?? UserActivityCard
-                    return (
-                      <div
-                        key={`${group.key}-${idx}`}
-                        className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
-                      >
-                        <Card group={group} />
+                  {previewItems.map((item, idx) => (
+                    <div
+                      key={idx}
+                      className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
+                    >
+                      <div className="prose prose-sm dark:prose-invert max-w-none text-sm [&_p]:my-0.5 [&_strong]:text-foreground [&_code]:text-xs [&_code]:text-muted-foreground [&_hr]:my-2">
+                        <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                          {item.markdown}
+                        </ReactMarkdown>
                       </div>
-                    )
-                  })}
+                    </div>
+                  ))}
                   <div ref={previewEndRef} />
                 </div>
               )}

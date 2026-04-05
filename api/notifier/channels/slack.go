@@ -35,7 +35,7 @@ func (c *SlackChannel) Type() string {
 	return ChannelTypeSlack
 }
 
-func (c *SlackChannel) Send(ctx context.Context, destination json.RawMessage, groups []notifier.EventGroup) error {
+func (c *SlackChannel) Send(ctx context.Context, destination json.RawMessage, groups []notifier.EventGroup, outputFormat string) error {
 	var dest SlackDestination
 	if err := json.Unmarshal(destination, &dest); err != nil {
 		return fmt.Errorf("invalid slack destination: %w", err)
@@ -51,29 +51,58 @@ func (c *SlackChannel) Send(ctx context.Context, destination json.RawMessage, gr
 
 	api := slack.New(botToken)
 
+	// Summary mode for large backlogs.
 	if len(groups) > maxIndividualNotifications {
-		blocks := formatSummary(groups)
-		_, _, err := api.PostMessageContext(ctx, dest.ChannelID,
-			slack.MsgOptionBlocks(blocks...),
-			slack.MsgOptionDisableLinkUnfurl(),
-		)
-		if err != nil {
-			return fmt.Errorf("failed to post summary to %s: %w", dest.ChannelID, err)
-		}
-		return nil
+		return c.postText(ctx, api, dest.ChannelID, notifier.RenderSummaryMarkdown(groups))
 	}
 
+	switch outputFormat {
+	case notifier.FormatMarkdown, notifier.FormatPlaintext:
+		return c.sendAsText(ctx, api, dest.ChannelID, groups, outputFormat)
+	default:
+		return c.sendAsBlocks(ctx, api, dest.ChannelID, groups)
+	}
+}
+
+// sendAsText renders all groups as text and posts each as a message.
+func (c *SlackChannel) sendAsText(ctx context.Context, api *slack.Client, channelID string, groups []notifier.EventGroup, format string) error {
 	for _, group := range groups {
-		blocks := formatEventGroup(group)
-		_, _, err := api.PostMessageContext(ctx, dest.ChannelID,
+		var text string
+		if format == notifier.FormatPlaintext {
+			text = notifier.RenderPlaintext([]notifier.EventGroup{group})
+		} else {
+			text = notifier.RenderMarkdown([]notifier.EventGroup{group})
+		}
+		if err := c.postText(ctx, api, channelID, text); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sendAsBlocks renders groups as Slack Block Kit and posts each as a message.
+func (c *SlackChannel) sendAsBlocks(ctx context.Context, api *slack.Client, channelID string, groups []notifier.EventGroup) error {
+	for _, group := range groups {
+		blocks := buildBlocks(group)
+		_, _, err := api.PostMessageContext(ctx, channelID,
 			slack.MsgOptionBlocks(blocks...),
 			slack.MsgOptionDisableLinkUnfurl(),
 		)
 		if err != nil {
-			return fmt.Errorf("failed to post message to %s: %w", dest.ChannelID, err)
+			return fmt.Errorf("failed to post message to %s: %w", channelID, err)
 		}
 	}
+	return nil
+}
 
+func (c *SlackChannel) postText(ctx context.Context, api *slack.Client, channelID, text string) error {
+	_, _, err := api.PostMessageContext(ctx, channelID,
+		slack.MsgOptionText(text, false),
+		slack.MsgOptionDisableLinkUnfurl(),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to post message to %s: %w", channelID, err)
+	}
 	return nil
 }
 
@@ -89,45 +118,38 @@ func (c *SlackChannel) getBotToken(ctx context.Context, teamID string) (string, 
 	return token, nil
 }
 
-// formatEventGroup builds Slack Block Kit blocks for a notification.
-func formatEventGroup(group notifier.EventGroup) []slack.Block {
+// buildBlocks creates Slack Block Kit blocks for a single event group,
+// using the shared formatters for event lines and context.
+func buildBlocks(group notifier.EventGroup) []slack.Block {
 	var blocks []slack.Block
 
-	// Header with summary.
 	headerText := slack.NewTextBlockObject(slack.MarkdownType, fmt.Sprintf("*%s*", group.Summary), false, false)
 	blocks = append(blocks, slack.NewSectionBlock(headerText, nil, nil))
 
-	// Event details.
 	var details []string
 	for _, event := range group.Events {
-		line := formatEventLine(event)
+		line := notifier.FormatEventLine(event)
 		if line != "" {
 			details = append(details, line)
 		}
 	}
-
 	if len(details) > 0 {
 		detailText := slack.NewTextBlockObject(slack.MarkdownType, strings.Join(details, "\n"), false, false)
 		blocks = append(blocks, slack.NewSectionBlock(detailText, nil, nil))
 	}
 
-	// Transaction context line.
+	// Context line (signer, tx, slot, owner, etc.)
 	if len(group.Events) > 0 {
 		first := group.Events[0]
 		var contextParts []string
 		if signer, ok := first.Details["signer"].(string); ok && signer != "" {
-			short := signer
-			if len(short) > 12 {
-				short = short[:8] + "..." + short[len(short)-4:]
-			}
-			contextParts = append(contextParts, fmt.Sprintf("signer: `%s`", short))
+			contextParts = append(contextParts, fmt.Sprintf("signer: `%s`", truncateKey(signer)))
+		}
+		if owner, ok := first.Details["owner_pubkey"].(string); ok && owner != "" {
+			contextParts = append(contextParts, fmt.Sprintf("owner: `%s`", truncateKey(owner)))
 		}
 		if txSig, ok := first.Details["tx_signature"].(string); ok && txSig != "" {
-			short := txSig
-			if len(short) > 8 {
-				short = short[:8]
-			}
-			contextParts = append(contextParts, fmt.Sprintf("`tx: %s...`", short))
+			contextParts = append(contextParts, fmt.Sprintf("tx: `%s`", truncateKey(txSig)))
 		}
 		if slot, ok := first.Details["slot"]; ok {
 			contextParts = append(contextParts, fmt.Sprintf("slot %v", slot))
@@ -138,140 +160,13 @@ func formatEventGroup(group notifier.EventGroup) []slack.Block {
 		}
 	}
 
-	// Divider between groups if we ever batch multiple into one message.
 	blocks = append(blocks, slack.NewDividerBlock())
-
 	return blocks
 }
 
-// formatEventLine returns a human-readable line for a single event.
-func formatEventLine(event notifier.Event) string {
-	switch event.Type {
-	case "initialize_seat":
-		return formatWithSeatContext(event, "Seat initialized")
-	case "initialize_escrow":
-		return formatWithSeatContext(event, "Escrow initialized")
-	case "fund":
-		amount := formatUSDC(event.Details["amount_usdc"])
-		balance := formatUSDC(event.Details["balance_after_usdc"])
-		if amount != "" && balance != "" {
-			return fmt.Sprintf("Funded %s USDC (balance: %s USDC)", amount, balance)
-		}
-		if amount != "" {
-			return fmt.Sprintf("Funded %s USDC", amount)
-		}
-		return "Funded"
-	case "allocate_seat":
-		if epoch, ok := event.Details["epoch"]; ok {
-			return fmt.Sprintf("Instant allocated (epoch %v)", epoch)
-		}
-		return "Instant allocated"
-	case "batch_allocate":
-		if epoch, ok := event.Details["epoch"]; ok {
-			return fmt.Sprintf("Batch allocated (epoch %v)", epoch)
-		}
-		return "Batch allocated"
-	case "ack_allocate":
-		return "Allocation confirmed"
-	case "reject_allocate":
-		return "Allocation rejected"
-	case "withdraw_seat":
-		return "Withdrawal requested"
-	case "ack_withdraw":
-		return "Withdrawal confirmed"
-	case "close":
-		amount := formatUSDC(event.Details["amount_usdc"])
-		if amount != "" {
-			return fmt.Sprintf("Escrow closed (withdrew %s USDC)", amount)
-		}
-		return "Escrow closed"
-	case "batch_settle":
-		return "Devices settled"
-	case "set_price_override":
-		return "Price override set"
-	case "connected":
-		return formatUserActivityLine(event, "Connected")
-	case "disconnected":
-		return formatUserActivityLine(event, "Disconnected")
-	default:
-		return event.Type
+func truncateKey(key string) string {
+	if len(key) <= 12 {
+		return key
 	}
-}
-
-// formatWithSeatContext adds client seat PK context to a line if available.
-func formatWithSeatContext(event notifier.Event, prefix string) string {
-	if pk, ok := event.Details["client_seat_pk"].(string); ok && pk != "" {
-		short := pk
-		if len(short) > 8 {
-			short = short[:8]
-		}
-		return fmt.Sprintf("%s (`%s...`)", prefix, short)
-	}
-	return prefix
-}
-
-// formatUserActivityLine formats a user connected/disconnected event line.
-func formatUserActivityLine(event notifier.Event, action string) string {
-	var parts []string
-	if kind, ok := event.Details["kind"].(string); ok && kind != "" {
-		parts = append(parts, kind)
-	}
-	if clientIP, ok := event.Details["client_ip"].(string); ok && clientIP != "" {
-		parts = append(parts, fmt.Sprintf("IP: %s", clientIP))
-	}
-	if devicePK, ok := event.Details["device_pk"].(string); ok && devicePK != "" {
-		short := devicePK
-		if len(short) > 8 {
-			short = short[:8]
-		}
-		parts = append(parts, fmt.Sprintf("device: `%s...`", short))
-	}
-	if len(parts) > 0 {
-		return fmt.Sprintf("%s (%s)", action, strings.Join(parts, ", "))
-	}
-	return action
-}
-
-// formatSummary builds a single Slack message summarizing a large batch of
-// event groups, used when too many events accumulated to send individually.
-func formatSummary(groups []notifier.EventGroup) []slack.Block {
-	// Count events by summary type.
-	counts := make(map[string]int)
-	for _, g := range groups {
-		counts[g.Summary]++
-	}
-
-	headerText := slack.NewTextBlockObject(slack.MarkdownType,
-		fmt.Sprintf("*%d events while notifications were batched*", len(groups)), false, false)
-	blocks := []slack.Block{slack.NewSectionBlock(headerText, nil, nil)}
-
-	var lines []string
-	for summary, count := range counts {
-		if count == 1 {
-			lines = append(lines, fmt.Sprintf("- %s", summary))
-		} else {
-			lines = append(lines, fmt.Sprintf("- %s (%d)", summary, count))
-		}
-	}
-
-	detailText := slack.NewTextBlockObject(slack.MarkdownType, strings.Join(lines, "\n"), false, false)
-	blocks = append(blocks, slack.NewSectionBlock(detailText, nil, nil))
-	blocks = append(blocks, slack.NewDividerBlock())
-
-	return blocks
-}
-
-// formatUSDC formats a raw USDC lamport value (int64) to a human-readable dollar string.
-// USDC has 6 decimal places, so 1_000_000 = $1.00.
-func formatUSDC(v any) string {
-	switch n := v.(type) {
-	case int64:
-		dollars := float64(n) / 1_000_000
-		return fmt.Sprintf("%.2f", dollars)
-	case float64:
-		dollars := n / 1_000_000
-		return fmt.Sprintf("%.2f", dollars)
-	default:
-		return ""
-	}
+	return key[:8] + "..." + key[len(key)-4:]
 }

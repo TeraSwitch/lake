@@ -10,8 +10,8 @@ import (
 )
 
 // PreviewNotifications streams a live preview of notification events via SSE.
-// Uses an ephemeral in-memory checkpoint (starts at now minus lookback window)
-// so no config or persistent state is needed.
+// Each event is sent as pre-rendered markdown, matching what the actual
+// notification channels would produce.
 func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 	account := GetAccountFromContext(r.Context())
 	if account == nil {
@@ -52,12 +52,20 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
+	sendGroups := func(groups []notifier.EventGroup) {
+		for _, g := range groups {
+			sendEvent("notification", map[string]string{
+				"summary":  g.Summary,
+				"markdown": notifier.RenderMarkdown([]notifier.EventGroup{g}),
+			})
+		}
+	}
+
 	// Start with a lookback window to show recent events immediately.
 	cp := notifier.Checkpoint{
 		LastEventTS: time.Now().Add(-5 * time.Minute),
 	}
 
-	// Initial poll for recent events.
 	groups, newCP, err := source.Poll(r.Context(), cp)
 	if err != nil {
 		sendEvent("error", map[string]string{"message": "failed to poll: " + err.Error()})
@@ -67,10 +75,7 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 		cp = newCP
 	}
 
-	for _, g := range groups {
-		sendEvent("event_group", g)
-	}
-
+	sendGroups(groups)
 	sendEvent("caught_up", map[string]bool{"caught_up": true})
 
 	// Poll for new events while the connection is open.
@@ -95,9 +100,7 @@ func (a *API) PreviewNotifications(w http.ResponseWriter, r *http.Request) {
 			if newCP.LastEventTS.After(cp.LastEventTS) || newCP.LastSlot > cp.LastSlot {
 				cp = newCP
 			}
-			for _, g := range groups {
-				sendEvent("event_group", g)
-			}
+			sendGroups(groups)
 		}
 	}
 }

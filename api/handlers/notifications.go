@@ -39,11 +39,12 @@ func (a *API) ListNotificationConfigs(w http.ResponseWriter, r *http.Request) {
 
 // createNotificationConfigRequest is the JSON body for creating a notification config.
 type createNotificationConfigRequest struct {
-	SourceType  string          `json:"source_type"`
-	ChannelType string          `json:"channel_type"`
-	Destination json.RawMessage `json:"destination"`
-	Enabled     *bool           `json:"enabled"`
-	Filters     json.RawMessage `json:"filters"`
+	SourceType   string          `json:"source_type"`
+	ChannelType  string          `json:"channel_type"`
+	Destination  json.RawMessage `json:"destination"`
+	OutputFormat string          `json:"output_format"`
+	Enabled      *bool           `json:"enabled"`
+	Filters      json.RawMessage `json:"filters"`
 }
 
 // CreateNotificationConfig creates a new notification config.
@@ -85,12 +86,13 @@ func (a *API) CreateNotificationConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := &notifier.NotificationConfig{
-		AccountID:   account.ID.String(),
-		SourceType:  req.SourceType,
-		ChannelType: req.ChannelType,
-		Destination: destination,
-		Enabled:     enabled,
-		Filters:     filters,
+		AccountID:    account.ID.String(),
+		SourceType:   req.SourceType,
+		ChannelType:  req.ChannelType,
+		Destination:  destination,
+		OutputFormat: req.OutputFormat,
+		Enabled:      enabled,
+		Filters:      filters,
 	}
 
 	if err := a.notificationConfigStore().Create(r.Context(), cfg); err != nil {
@@ -106,10 +108,11 @@ func (a *API) CreateNotificationConfig(w http.ResponseWriter, r *http.Request) {
 
 // updateNotificationConfigRequest is the JSON body for updating a notification config.
 type updateNotificationConfigRequest struct {
-	ChannelType string          `json:"channel_type"`
-	Destination json.RawMessage `json:"destination"`
-	Enabled     *bool           `json:"enabled"`
-	Filters     json.RawMessage `json:"filters"`
+	ChannelType  string          `json:"channel_type"`
+	Destination  json.RawMessage `json:"destination"`
+	OutputFormat string          `json:"output_format"`
+	Enabled      *bool           `json:"enabled"`
+	Filters      json.RawMessage `json:"filters"`
 }
 
 // UpdateNotificationConfig updates an existing notification config.
@@ -154,10 +157,11 @@ func (a *API) UpdateNotificationConfig(w http.ResponseWriter, r *http.Request) {
 	}
 
 	cfg := &notifier.NotificationConfig{
-		ChannelType: req.ChannelType,
-		Destination: destination,
-		Enabled:     enabled,
-		Filters:     filters,
+		ChannelType:  req.ChannelType,
+		Destination:  destination,
+		OutputFormat: req.OutputFormat,
+		Enabled:      enabled,
+		Filters:      filters,
 	}
 
 	if err := a.notificationConfigStore().Update(r.Context(), id, account.ID.String(), cfg); err != nil {

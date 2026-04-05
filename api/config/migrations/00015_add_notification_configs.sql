@@ -14,6 +14,7 @@ CREATE TABLE notification_configs (
     source_type VARCHAR(50) NOT NULL,
     channel_type VARCHAR(50) NOT NULL,
     destination JSONB NOT NULL DEFAULT '{}',
+    output_format VARCHAR(20) NOT NULL DEFAULT '',
     enabled BOOLEAN NOT NULL DEFAULT true,
     filters JSONB NOT NULL DEFAULT '{}',
     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),

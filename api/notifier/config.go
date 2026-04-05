@@ -9,17 +9,39 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Output format constants.
+const (
+	FormatMarkdown  = "markdown"
+	FormatPlaintext = "plaintext"
+	FormatBlocks    = "blocks" // Slack Block Kit (Slack-only)
+)
+
 // NotificationConfig is a stored notification configuration.
 type NotificationConfig struct {
-	ID          string          `json:"id"`
-	AccountID   string          `json:"account_id"`
-	SourceType  string          `json:"source_type"`
-	ChannelType string          `json:"channel_type"`
-	Destination json.RawMessage `json:"destination"`
-	Enabled     bool            `json:"enabled"`
-	Filters     json.RawMessage `json:"filters"`
-	CreatedAt   time.Time       `json:"created_at"`
-	UpdatedAt   time.Time       `json:"updated_at"`
+	ID           string          `json:"id"`
+	AccountID    string          `json:"account_id"`
+	SourceType   string          `json:"source_type"`
+	ChannelType  string          `json:"channel_type"`
+	Destination  json.RawMessage `json:"destination"`
+	OutputFormat string          `json:"output_format"`
+	Enabled      bool            `json:"enabled"`
+	Filters      json.RawMessage `json:"filters"`
+	CreatedAt    time.Time       `json:"created_at"`
+	UpdatedAt    time.Time       `json:"updated_at"`
+}
+
+// EffectiveFormat returns the output format, falling back to a channel-specific
+// default if not set.
+func (c *NotificationConfig) EffectiveFormat() string {
+	if c.OutputFormat != "" {
+		return c.OutputFormat
+	}
+	switch c.ChannelType {
+	case "slack":
+		return FormatBlocks
+	default:
+		return FormatMarkdown
+	}
 }
 
 // ConfigStore provides CRUD operations for notification configs and checkpoints.
@@ -30,7 +52,7 @@ type ConfigStore struct {
 // ListEnabled returns all enabled notification configs.
 func (s *ConfigStore) ListEnabled(ctx context.Context) ([]NotificationConfig, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, account_id, source_type, channel_type, destination, enabled, filters, created_at, updated_at
+		`SELECT id, account_id, source_type, channel_type, destination, output_format, enabled, filters, created_at, updated_at
 		 FROM notification_configs WHERE enabled = true`)
 	if err != nil {
 		return nil, err
@@ -40,7 +62,7 @@ func (s *ConfigStore) ListEnabled(ctx context.Context) ([]NotificationConfig, er
 	var configs []NotificationConfig
 	for rows.Next() {
 		var c NotificationConfig
-		if err := rows.Scan(&c.ID, &c.AccountID, &c.SourceType, &c.ChannelType, &c.Destination, &c.Enabled, &c.Filters, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.AccountID, &c.SourceType, &c.ChannelType, &c.Destination, &c.OutputFormat, &c.Enabled, &c.Filters, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		configs = append(configs, c)
@@ -51,7 +73,7 @@ func (s *ConfigStore) ListEnabled(ctx context.Context) ([]NotificationConfig, er
 // ListByAccount returns all notification configs for an account.
 func (s *ConfigStore) ListByAccount(ctx context.Context, accountID string) ([]NotificationConfig, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, account_id, source_type, channel_type, destination, enabled, filters, created_at, updated_at
+		`SELECT id, account_id, source_type, channel_type, destination, output_format, enabled, filters, created_at, updated_at
 		 FROM notification_configs WHERE account_id = $1 ORDER BY created_at DESC`, accountID)
 	if err != nil {
 		return nil, err
@@ -61,7 +83,7 @@ func (s *ConfigStore) ListByAccount(ctx context.Context, accountID string) ([]No
 	var configs []NotificationConfig
 	for rows.Next() {
 		var c NotificationConfig
-		if err := rows.Scan(&c.ID, &c.AccountID, &c.SourceType, &c.ChannelType, &c.Destination, &c.Enabled, &c.Filters, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.AccountID, &c.SourceType, &c.ChannelType, &c.Destination, &c.OutputFormat, &c.Enabled, &c.Filters, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		configs = append(configs, c)
@@ -79,10 +101,10 @@ func (s *ConfigStore) Create(ctx context.Context, c *NotificationConfig) error {
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx,
-		`INSERT INTO notification_configs (account_id, source_type, channel_type, destination, enabled, filters)
-		 VALUES ($1, $2, $3, $4, $5, $6)
+		`INSERT INTO notification_configs (account_id, source_type, channel_type, destination, output_format, enabled, filters)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7)
 		 RETURNING id, created_at, updated_at`,
-		c.AccountID, c.SourceType, c.ChannelType, c.Destination, c.Enabled, c.Filters,
+		c.AccountID, c.SourceType, c.ChannelType, c.Destination, c.OutputFormat, c.Enabled, c.Filters,
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return err
@@ -106,9 +128,9 @@ func (s *ConfigStore) Create(ctx context.Context, c *NotificationConfig) error {
 func (s *ConfigStore) Update(ctx context.Context, id, accountID string, c *NotificationConfig) error {
 	tag, err := s.Pool.Exec(ctx,
 		`UPDATE notification_configs
-		 SET channel_type = $1, destination = $2, enabled = $3, filters = $4, updated_at = NOW()
-		 WHERE id = $5 AND account_id = $6`,
-		c.ChannelType, c.Destination, c.Enabled, c.Filters, id, accountID)
+		 SET channel_type = $1, destination = $2, output_format = $3, enabled = $4, filters = $5, updated_at = NOW()
+		 WHERE id = $6 AND account_id = $7`,
+		c.ChannelType, c.Destination, c.OutputFormat, c.Enabled, c.Filters, id, accountID)
 	if err != nil {
 		return err
 	}

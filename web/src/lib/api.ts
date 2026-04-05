@@ -5318,6 +5318,7 @@ export interface NotificationConfig {
   source_type: string
   channel_type: string
   destination: Record<string, string>
+  output_format: string
   enabled: boolean
   filters: Record<string, unknown>
   created_at: string
@@ -5328,6 +5329,7 @@ export interface CreateNotificationConfigRequest {
   source_type: string
   channel_type: string
   destination: Record<string, string>
+  output_format?: string
   enabled?: boolean
   filters?: Record<string, unknown>
 }
@@ -5335,6 +5337,7 @@ export interface CreateNotificationConfigRequest {
 export interface UpdateNotificationConfigRequest {
   channel_type?: string
   destination?: Record<string, string>
+  output_format?: string
   enabled?: boolean
   filters?: Record<string, unknown>
 }
@@ -5382,14 +5385,13 @@ export async function deleteNotificationConfig(id: string): Promise<void> {
 }
 
 // Notification preview SSE stream
-export interface NotificationEventGroup {
-  key: string
+export interface NotificationPreview {
   summary: string
-  events: { type: string; details: Record<string, unknown> }[]
+  markdown: string
 }
 
 export interface NotificationPreviewCallbacks {
-  onEventGroup: (group: NotificationEventGroup) => void
+  onNotification: (preview: NotificationPreview) => void
   onCaughtUp: () => void
   onError: (msg: string) => void
 }
@@ -5442,8 +5444,8 @@ export async function streamNotificationPreview(
             i++
             try {
               switch (eventType) {
-                case 'event_group':
-                  callbacks.onEventGroup(JSON.parse(data))
+                case 'notification':
+                  callbacks.onNotification(JSON.parse(data))
                   break
                 case 'caught_up':
                   callbacks.onCaughtUp()

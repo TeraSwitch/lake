@@ -97,7 +97,7 @@ func (a *Activities) CheckAndNotify(ctx context.Context) error {
 			continue
 		}
 
-		if err := ch.Send(ctx, d.config.Destination, d.groups); err != nil {
+		if err := ch.Send(ctx, d.config.Destination, d.groups, d.config.EffectiveFormat()); err != nil {
 			a.Log.Error("notification delivery failed",
 				"error", err,
 				"channel_type", d.config.ChannelType,
