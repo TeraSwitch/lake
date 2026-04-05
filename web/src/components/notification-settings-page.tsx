@@ -181,6 +181,11 @@ function UserActivityCard({ group }: { group: NotificationEventGroup }) {
   )
 }
 
+const previewCardComponents: Record<string, React.ComponentType<{ group: NotificationEventGroup }>> = {
+  escrow_events: EscrowEventCard,
+  user_activity: UserActivityCard,
+}
+
 export function NotificationSettingsPage() {
   const { user } = useAuth()
   const [configs, setConfigs] = useState<NotificationConfig[]>([])
@@ -759,17 +764,17 @@ export function NotificationSettingsPage() {
                       Loading recent events...
                     </div>
                   )}
-                  {previewEvents.map((group, idx) => (
-                    <div
-                      key={`${group.key}-${idx}`}
-                      className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
-                    >
-                      {previewSource === 'escrow_events'
-                        ? <EscrowEventCard group={group} />
-                        : <UserActivityCard group={group} />
-                      }
-                    </div>
-                  ))}
+                  {previewEvents.map((group, idx) => {
+                    const Card = previewCardComponents[previewSource!] ?? UserActivityCard
+                    return (
+                      <div
+                        key={`${group.key}-${idx}`}
+                        className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
+                      >
+                        <Card group={group} />
+                      </div>
+                    )
+                  })}
                   <div ref={previewEndRef} />
                 </div>
               )}
