@@ -28,7 +28,6 @@ import (
 	"github.com/malbeclabs/lake/api/handlers"
 	"github.com/malbeclabs/lake/api/metrics"
 	"github.com/malbeclabs/lake/api/notifier"
-	"github.com/malbeclabs/lake/api/notifier/channels"
 	"github.com/malbeclabs/lake/api/notifier/sources"
 	"github.com/malbeclabs/lake/api/worker"
 	slackbot "github.com/malbeclabs/lake/slack/bot"
@@ -397,9 +396,6 @@ func main() {
 				Log:     slog.Default(),
 				PgPool:  config.PgPool,
 				Sources: notifSources,
-				Channels: map[string]notifier.Channel{
-					channels.ChannelTypeWebhook: &channels.WebhookChannel{},
-				},
 			}); err != nil && notifierCtx.Err() == nil {
 				slog.Error("notifier worker failed", "error", err)
 			}
@@ -779,9 +775,13 @@ func main() {
 		r.Get("/api/slack/oauth/callback", api.GetSlackOAuthCallback)
 	}
 
-	// Notification config routes
+	// Notification routes (webhook endpoints + configs + preview)
 	r.Group(func(r chi.Router) {
 		r.Use(api.RequireAuth)
+		r.Get("/api/webhooks", api.ListWebhookEndpoints)
+		r.Post("/api/webhooks", api.CreateWebhookEndpoint)
+		r.Put("/api/webhooks/{id}", api.UpdateWebhookEndpoint)
+		r.Delete("/api/webhooks/{id}", api.DeleteWebhookEndpoint)
 		r.Get("/api/notifications/configs", api.ListNotificationConfigs)
 		r.Post("/api/notifications/configs", api.CreateNotificationConfig)
 		r.Put("/api/notifications/configs/{id}", api.UpdateNotificationConfig)

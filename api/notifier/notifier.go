@@ -14,10 +14,9 @@ import (
 
 // Config configures the notifier worker.
 type Config struct {
-	Log      *slog.Logger
-	PgPool   *pgxpool.Pool
-	Sources  map[string]Source
-	Channels map[string]Channel
+	Log     *slog.Logger
+	PgPool  *pgxpool.Pool
+	Sources map[string]Source
 }
 
 // Start connects to Temporal, registers workflows and activities, then runs
@@ -43,10 +42,9 @@ func Start(ctx context.Context, cfg Config) error {
 
 	store := &ConfigStore{Pool: cfg.PgPool}
 	activities := &Activities{
-		Log:      log.With("component", "notifier"),
-		Store:    store,
-		Sources:  cfg.Sources,
-		Channels: cfg.Channels,
+		Log:     log.With("component", "notifier"),
+		Store:   store,
+		Sources: cfg.Sources,
 	}
 
 	w := worker.New(tc, TaskQueue, worker.Options{})

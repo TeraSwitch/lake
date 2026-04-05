@@ -5311,46 +5311,72 @@ export async function fetchShredDevices(params: {
   return res.json()
 }
 
+// Webhook endpoints
+export interface WebhookEndpoint {
+  id: string
+  account_id: string
+  name: string
+  url: string
+  output_format: string
+  created_at: string
+  updated_at: string
+}
+
+export async function getWebhookEndpoints(): Promise<WebhookEndpoint[]> {
+  const res = await fetchWithRetry('/api/webhooks')
+  if (!res.ok) throw new Error('Failed to get webhook endpoints')
+  return res.json()
+}
+
+export async function createWebhookEndpoint(req: { name: string; url: string; output_format?: string }): Promise<WebhookEndpoint> {
+  const res = await fetchWithRetry('/api/webhooks', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || 'Failed to create webhook endpoint')
+  }
+  return res.json()
+}
+
+export async function updateWebhookEndpoint(id: string, req: { name?: string; url?: string; output_format?: string }): Promise<void> {
+  const res = await fetchWithRetry(`/api/webhooks/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || 'Failed to update webhook endpoint')
+  }
+}
+
+export async function deleteWebhookEndpoint(id: string): Promise<void> {
+  const res = await fetchWithRetry(`/api/webhooks/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete webhook endpoint')
+}
+
 // Notification configs
 export interface NotificationConfig {
   id: string
   account_id: string
+  endpoint_id: string
   source_type: string
-  channel_type: string
-  destination: Record<string, string>
-  output_format: string
   enabled: boolean
   filters: Record<string, unknown>
   created_at: string
   updated_at: string
 }
 
-export interface CreateNotificationConfigRequest {
-  source_type: string
-  channel_type: string
-  destination: Record<string, string>
-  output_format?: string
-  enabled?: boolean
-  filters?: Record<string, unknown>
-}
-
-export interface UpdateNotificationConfigRequest {
-  channel_type?: string
-  destination?: Record<string, string>
-  output_format?: string
-  enabled?: boolean
-  filters?: Record<string, unknown>
-}
-
 export async function getNotificationConfigs(): Promise<NotificationConfig[]> {
   const res = await fetchWithRetry('/api/notifications/configs')
-  if (!res.ok) {
-    throw new Error('Failed to get notification configs')
-  }
+  if (!res.ok) throw new Error('Failed to get notification configs')
   return res.json()
 }
 
-export async function createNotificationConfig(req: CreateNotificationConfigRequest): Promise<NotificationConfig> {
+export async function createNotificationConfig(req: { endpoint_id: string; source_type: string; enabled?: boolean; filters?: Record<string, unknown> }): Promise<NotificationConfig> {
   const res = await fetchWithRetry('/api/notifications/configs', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -5363,7 +5389,7 @@ export async function createNotificationConfig(req: CreateNotificationConfigRequ
   return res.json()
 }
 
-export async function updateNotificationConfig(id: string, req: UpdateNotificationConfigRequest): Promise<void> {
+export async function updateNotificationConfig(id: string, req: { endpoint_id?: string; enabled?: boolean; filters?: Record<string, unknown> }): Promise<void> {
   const res = await fetchWithRetry(`/api/notifications/configs/${encodeURIComponent(id)}`, {
     method: 'PUT',
     headers: { 'Content-Type': 'application/json' },
@@ -5376,12 +5402,8 @@ export async function updateNotificationConfig(id: string, req: UpdateNotificati
 }
 
 export async function deleteNotificationConfig(id: string): Promise<void> {
-  const res = await fetchWithRetry(`/api/notifications/configs/${encodeURIComponent(id)}`, {
-    method: 'DELETE',
-  })
-  if (!res.ok) {
-    throw new Error('Failed to delete notification config')
-  }
+  const res = await fetchWithRetry(`/api/notifications/configs/${encodeURIComponent(id)}`, { method: 'DELETE' })
+  if (!res.ok) throw new Error('Failed to delete notification config')
 }
 
 // Notification preview SSE stream

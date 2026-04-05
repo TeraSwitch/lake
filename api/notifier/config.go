@@ -15,47 +15,131 @@ const (
 	FormatPlaintext = "plaintext"
 )
 
-// NotificationConfig is a stored notification configuration.
+// WebhookEndpoint is a reusable delivery target.
+type WebhookEndpoint struct {
+	ID           string    `json:"id"`
+	AccountID    string    `json:"account_id"`
+	Name         string    `json:"name"`
+	URL          string    `json:"url"`
+	OutputFormat string    `json:"output_format"`
+	CreatedAt    time.Time `json:"created_at"`
+	UpdatedAt    time.Time `json:"updated_at"`
+}
+
+// NotificationConfig defines what to watch and which endpoint to deliver to.
 type NotificationConfig struct {
-	ID           string          `json:"id"`
-	AccountID    string          `json:"account_id"`
-	SourceType   string          `json:"source_type"`
-	ChannelType  string          `json:"channel_type"`
-	Destination  json.RawMessage `json:"destination"`
-	OutputFormat string          `json:"output_format"`
-	Enabled      bool            `json:"enabled"`
-	Filters      json.RawMessage `json:"filters"`
-	CreatedAt    time.Time       `json:"created_at"`
-	UpdatedAt    time.Time       `json:"updated_at"`
+	ID         string          `json:"id"`
+	AccountID  string          `json:"account_id"`
+	EndpointID string          `json:"endpoint_id"`
+	SourceType string          `json:"source_type"`
+	Enabled    bool            `json:"enabled"`
+	Filters    json.RawMessage `json:"filters"`
+	CreatedAt  time.Time       `json:"created_at"`
+	UpdatedAt  time.Time       `json:"updated_at"`
 }
 
-// EffectiveFormat returns the output format, falling back to markdown if not set.
-func (c *NotificationConfig) EffectiveFormat() string {
-	if c.OutputFormat != "" {
-		return c.OutputFormat
-	}
-	return FormatMarkdown
-}
-
-// ConfigStore provides CRUD operations for notification configs and checkpoints.
+// ConfigStore provides CRUD operations for webhook endpoints, notification
+// configs, and checkpoints.
 type ConfigStore struct {
 	Pool *pgxpool.Pool
 }
 
-// ListEnabled returns all enabled notification configs.
-func (s *ConfigStore) ListEnabled(ctx context.Context) ([]NotificationConfig, error) {
+// --- Webhook Endpoints ---
+
+func (s *ConfigStore) ListEndpoints(ctx context.Context, accountID string) ([]WebhookEndpoint, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, account_id, source_type, channel_type, destination, output_format, enabled, filters, created_at, updated_at
-		 FROM notification_configs WHERE enabled = true`)
+		`SELECT id, account_id, name, url, output_format, created_at, updated_at
+		 FROM webhook_endpoints WHERE account_id = $1 ORDER BY created_at DESC`, accountID)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 
-	var configs []NotificationConfig
+	var endpoints []WebhookEndpoint
 	for rows.Next() {
-		var c NotificationConfig
-		if err := rows.Scan(&c.ID, &c.AccountID, &c.SourceType, &c.ChannelType, &c.Destination, &c.OutputFormat, &c.Enabled, &c.Filters, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		var e WebhookEndpoint
+		if err := rows.Scan(&e.ID, &e.AccountID, &e.Name, &e.URL, &e.OutputFormat, &e.CreatedAt, &e.UpdatedAt); err != nil {
+			return nil, err
+		}
+		endpoints = append(endpoints, e)
+	}
+	return endpoints, rows.Err()
+}
+
+func (s *ConfigStore) GetEndpoint(ctx context.Context, id string) (*WebhookEndpoint, error) {
+	var e WebhookEndpoint
+	err := s.Pool.QueryRow(ctx,
+		`SELECT id, account_id, name, url, output_format, created_at, updated_at
+		 FROM webhook_endpoints WHERE id = $1`, id,
+	).Scan(&e.ID, &e.AccountID, &e.Name, &e.URL, &e.OutputFormat, &e.CreatedAt, &e.UpdatedAt)
+	if err != nil {
+		return nil, err
+	}
+	return &e, nil
+}
+
+func (s *ConfigStore) CreateEndpoint(ctx context.Context, e *WebhookEndpoint) error {
+	return s.Pool.QueryRow(ctx,
+		`INSERT INTO webhook_endpoints (account_id, name, url, output_format)
+		 VALUES ($1, $2, $3, $4)
+		 RETURNING id, created_at, updated_at`,
+		e.AccountID, e.Name, e.URL, e.OutputFormat,
+	).Scan(&e.ID, &e.CreatedAt, &e.UpdatedAt)
+}
+
+func (s *ConfigStore) UpdateEndpoint(ctx context.Context, id, accountID string, e *WebhookEndpoint) error {
+	tag, err := s.Pool.Exec(ctx,
+		`UPDATE webhook_endpoints SET name = $1, url = $2, output_format = $3, updated_at = NOW()
+		 WHERE id = $4 AND account_id = $5`,
+		e.Name, e.URL, e.OutputFormat, id, accountID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("webhook endpoint not found")
+	}
+	return nil
+}
+
+func (s *ConfigStore) DeleteEndpoint(ctx context.Context, id, accountID string) error {
+	tag, err := s.Pool.Exec(ctx,
+		`DELETE FROM webhook_endpoints WHERE id = $1 AND account_id = $2`, id, accountID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return fmt.Errorf("webhook endpoint not found")
+	}
+	return nil
+}
+
+// --- Notification Configs ---
+
+// ConfigWithEndpoint is a notification config joined with its endpoint,
+// used by the workflow to resolve delivery targets.
+type ConfigWithEndpoint struct {
+	NotificationConfig
+	EndpointURL  string
+	OutputFormat string
+}
+
+func (s *ConfigStore) ListEnabledWithEndpoints(ctx context.Context) ([]ConfigWithEndpoint, error) {
+	rows, err := s.Pool.Query(ctx,
+		`SELECT c.id, c.account_id, c.endpoint_id, c.source_type, c.enabled, c.filters, c.created_at, c.updated_at,
+		        e.url, e.output_format
+		 FROM notification_configs c
+		 JOIN webhook_endpoints e ON e.id = c.endpoint_id
+		 WHERE c.enabled = true`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var configs []ConfigWithEndpoint
+	for rows.Next() {
+		var c ConfigWithEndpoint
+		if err := rows.Scan(&c.ID, &c.AccountID, &c.EndpointID, &c.SourceType, &c.Enabled, &c.Filters,
+			&c.CreatedAt, &c.UpdatedAt, &c.EndpointURL, &c.OutputFormat); err != nil {
 			return nil, err
 		}
 		configs = append(configs, c)
@@ -63,10 +147,9 @@ func (s *ConfigStore) ListEnabled(ctx context.Context) ([]NotificationConfig, er
 	return configs, rows.Err()
 }
 
-// ListByAccount returns all notification configs for an account.
-func (s *ConfigStore) ListByAccount(ctx context.Context, accountID string) ([]NotificationConfig, error) {
+func (s *ConfigStore) ListConfigsByAccount(ctx context.Context, accountID string) ([]NotificationConfig, error) {
 	rows, err := s.Pool.Query(ctx,
-		`SELECT id, account_id, source_type, channel_type, destination, output_format, enabled, filters, created_at, updated_at
+		`SELECT id, account_id, endpoint_id, source_type, enabled, filters, created_at, updated_at
 		 FROM notification_configs WHERE account_id = $1 ORDER BY created_at DESC`, accountID)
 	if err != nil {
 		return nil, err
@@ -76,7 +159,7 @@ func (s *ConfigStore) ListByAccount(ctx context.Context, accountID string) ([]No
 	var configs []NotificationConfig
 	for rows.Next() {
 		var c NotificationConfig
-		if err := rows.Scan(&c.ID, &c.AccountID, &c.SourceType, &c.ChannelType, &c.Destination, &c.OutputFormat, &c.Enabled, &c.Filters, &c.CreatedAt, &c.UpdatedAt); err != nil {
+		if err := rows.Scan(&c.ID, &c.AccountID, &c.EndpointID, &c.SourceType, &c.Enabled, &c.Filters, &c.CreatedAt, &c.UpdatedAt); err != nil {
 			return nil, err
 		}
 		configs = append(configs, c)
@@ -84,9 +167,7 @@ func (s *ConfigStore) ListByAccount(ctx context.Context, accountID string) ([]No
 	return configs, rows.Err()
 }
 
-// Create inserts a new notification config and initializes the checkpoint to
-// now so that only future events are delivered (not historical data).
-func (s *ConfigStore) Create(ctx context.Context, c *NotificationConfig) error {
+func (s *ConfigStore) CreateConfig(ctx context.Context, c *NotificationConfig) error {
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -94,10 +175,10 @@ func (s *ConfigStore) Create(ctx context.Context, c *NotificationConfig) error {
 	defer tx.Rollback(ctx)
 
 	err = tx.QueryRow(ctx,
-		`INSERT INTO notification_configs (account_id, source_type, channel_type, destination, output_format, enabled, filters)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`INSERT INTO notification_configs (account_id, endpoint_id, source_type, enabled, filters)
+		 VALUES ($1, $2, $3, $4, $5)
 		 RETURNING id, created_at, updated_at`,
-		c.AccountID, c.SourceType, c.ChannelType, c.Destination, c.OutputFormat, c.Enabled, c.Filters,
+		c.AccountID, c.EndpointID, c.SourceType, c.Enabled, c.Filters,
 	).Scan(&c.ID, &c.CreatedAt, &c.UpdatedAt)
 	if err != nil {
 		return err
@@ -117,13 +198,12 @@ func (s *ConfigStore) Create(ctx context.Context, c *NotificationConfig) error {
 	return tx.Commit(ctx)
 }
 
-// Update modifies an existing notification config.
-func (s *ConfigStore) Update(ctx context.Context, id, accountID string, c *NotificationConfig) error {
+func (s *ConfigStore) UpdateConfig(ctx context.Context, id, accountID string, c *NotificationConfig) error {
 	tag, err := s.Pool.Exec(ctx,
 		`UPDATE notification_configs
-		 SET channel_type = $1, destination = $2, output_format = $3, enabled = $4, filters = $5, updated_at = NOW()
-		 WHERE id = $6 AND account_id = $7`,
-		c.ChannelType, c.Destination, c.OutputFormat, c.Enabled, c.Filters, id, accountID)
+		 SET endpoint_id = $1, enabled = $2, filters = $3, updated_at = NOW()
+		 WHERE id = $4 AND account_id = $5`,
+		c.EndpointID, c.Enabled, c.Filters, id, accountID)
 	if err != nil {
 		return err
 	}
@@ -133,8 +213,7 @@ func (s *ConfigStore) Update(ctx context.Context, id, accountID string, c *Notif
 	return nil
 }
 
-// Delete removes a notification config.
-func (s *ConfigStore) Delete(ctx context.Context, id, accountID string) error {
+func (s *ConfigStore) DeleteConfig(ctx context.Context, id, accountID string) error {
 	tag, err := s.Pool.Exec(ctx,
 		`DELETE FROM notification_configs WHERE id = $1 AND account_id = $2`, id, accountID)
 	if err != nil {
@@ -146,7 +225,8 @@ func (s *ConfigStore) Delete(ctx context.Context, id, accountID string) error {
 	return nil
 }
 
-// GetCheckpoint returns the checkpoint for an account + source type.
+// --- Checkpoints ---
+
 func (s *ConfigStore) GetCheckpoint(ctx context.Context, accountID, sourceType string) (Checkpoint, error) {
 	var cp Checkpoint
 	err := s.Pool.QueryRow(ctx,
@@ -155,13 +235,11 @@ func (s *ConfigStore) GetCheckpoint(ctx context.Context, accountID, sourceType s
 		accountID, sourceType,
 	).Scan(&cp.LastEventTS, &cp.LastSlot)
 	if err != nil {
-		// Return zero checkpoint on not found — will poll from beginning
 		return Checkpoint{}, nil
 	}
 	return cp, nil
 }
 
-// SaveCheckpoint upserts the checkpoint for an account + source type.
 func (s *ConfigStore) SaveCheckpoint(ctx context.Context, accountID, sourceType string, cp Checkpoint) error {
 	_, err := s.Pool.Exec(ctx,
 		`INSERT INTO notification_checkpoints (account_id, source_type, last_event_ts, last_slot, updated_at)
