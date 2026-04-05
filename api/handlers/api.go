@@ -7,6 +7,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/malbeclabs/lake/api/notifier"
 	"github.com/malbeclabs/lake/indexer/pkg/neo4j"
 )
 
@@ -41,6 +42,9 @@ type API struct {
 
 	// Workflow manager (manages background workflow execution)
 	Manager *WorkflowManager
+
+	// NotificationSources are the registered notification sources, used for preview.
+	NotificationSources map[string]notifier.Source
 
 	// OnSlackInstallationChange is called when a Slack installation changes.
 	OnSlackInstallationChange func(teamID string)

@@ -1,6 +1,6 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import { Link } from 'react-router-dom'
-import { ArrowLeft, Plus, Trash2, Bell, BellOff, Webhook, MessageSquare, X } from 'lucide-react'
+import { ArrowLeft, Plus, Trash2, Bell, BellOff, Webhook, MessageSquare, X, Eye, EyeOff, Radio } from 'lucide-react'
 import { useAuth } from '@/contexts/AuthContext'
 import {
   getNotificationConfigs,
@@ -8,7 +8,9 @@ import {
   updateNotificationConfig,
   deleteNotificationConfig,
   getSlackInstallations,
+  streamNotificationPreview,
   type NotificationConfig,
+  type NotificationEventGroup,
   type SlackInstallation,
 } from '@/lib/api'
 import { ConfirmDialog } from '@/components/confirm-dialog'
@@ -75,6 +77,54 @@ function deserializeFilters(sourceType: string, filters: Record<string, unknown>
   return []
 }
 
+// Format a single event for the preview panel.
+function formatPreviewEvent(evt: { type: string; details: Record<string, unknown> }): string {
+  const d = evt.details
+  switch (evt.type) {
+    case 'fund': {
+      const amount = typeof d.amount_usdc === 'number' ? (d.amount_usdc / 1_000_000).toFixed(2) : null
+      const balance = typeof d.balance_after_usdc === 'number' ? (d.balance_after_usdc / 1_000_000).toFixed(2) : null
+      if (amount && balance) return `Funded ${amount} USDC (balance: ${balance} USDC)`
+      if (amount) return `Funded ${amount} USDC`
+      return 'Funded'
+    }
+    case 'allocate_seat':
+      return d.epoch ? `Instant allocated (epoch ${d.epoch})` : 'Instant allocated'
+    case 'batch_allocate':
+      return d.epoch ? `Batch allocated (epoch ${d.epoch})` : 'Batch allocated'
+    case 'initialize_seat':
+      return 'Seat initialized'
+    case 'initialize_escrow':
+      return 'Escrow initialized'
+    case 'close': {
+      const amount = typeof d.amount_usdc === 'number' ? (d.amount_usdc / 1_000_000).toFixed(2) : null
+      return amount ? `Escrow closed (withdrew ${amount} USDC)` : 'Escrow closed'
+    }
+    case 'withdraw_seat':
+      return 'Withdrawal requested'
+    case 'ack_withdraw':
+      return 'Withdrawal confirmed'
+    case 'ack_allocate':
+      return 'Allocation confirmed'
+    case 'reject_allocate':
+      return 'Allocation rejected'
+    case 'connected': {
+      const parts: string[] = []
+      if (d.kind) parts.push(String(d.kind))
+      if (d.client_ip) parts.push(`IP: ${d.client_ip}`)
+      return parts.length ? `Connected (${parts.join(', ')})` : 'Connected'
+    }
+    case 'disconnected': {
+      const parts: string[] = []
+      if (d.kind) parts.push(String(d.kind))
+      if (d.client_ip) parts.push(`IP: ${d.client_ip}`)
+      return parts.length ? `Disconnected (${parts.join(', ')})` : 'Disconnected'
+    }
+    default:
+      return evt.type
+  }
+}
+
 export function NotificationSettingsPage() {
   const { user } = useAuth()
   const [configs, setConfigs] = useState<NotificationConfig[]>([])
@@ -87,6 +137,49 @@ export function NotificationSettingsPage() {
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [deleting, setDeleting] = useState<NotificationConfig | null>(null)
+
+  // Preview state
+  const [previewSource, setPreviewSource] = useState<string | null>(null)
+  const [previewEvents, setPreviewEvents] = useState<NotificationEventGroup[]>([])
+  const [previewCaughtUp, setPreviewCaughtUp] = useState(false)
+  const abortRef = useRef<AbortController | null>(null)
+  const previewEndRef = useRef<HTMLDivElement | null>(null)
+
+  const startPreview = useCallback((sourceType: string) => {
+    // Stop any existing preview
+    abortRef.current?.abort()
+
+    setPreviewSource(sourceType)
+    setPreviewEvents([])
+    setPreviewCaughtUp(false)
+
+    const controller = new AbortController()
+    abortRef.current = controller
+
+    streamNotificationPreview(sourceType, {
+      onEventGroup: (group) => {
+        setPreviewEvents(prev => [...prev.slice(-99), group])
+      },
+      onCaughtUp: () => setPreviewCaughtUp(true),
+      onError: (msg) => setError(msg),
+    }, controller.signal)
+  }, [])
+
+  const stopPreview = useCallback(() => {
+    abortRef.current?.abort()
+    abortRef.current = null
+    setPreviewSource(null)
+  }, [])
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => { abortRef.current?.abort() }
+  }, [])
+
+  // Auto-scroll preview
+  useEffect(() => {
+    previewEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [previewEvents])
 
   useEffect(() => {
     loadData()
@@ -547,6 +640,92 @@ export function NotificationSettingsPage() {
               </div>
             </div>
           </div>
+        )}
+
+        {/* Preview section */}
+        {!showForm && !loading && (
+          <section className="mt-8">
+            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide mb-4">
+              Preview
+            </h2>
+            <div className="bg-card border border-border rounded-lg overflow-hidden">
+              <div className="px-4 py-3 flex items-center justify-between border-b border-border">
+                <div className="flex items-center gap-3">
+                  {previewSource ? (
+                    <>
+                      <Radio className="h-4 w-4 text-primary animate-pulse" />
+                      <span className="text-sm text-foreground">
+                        Live: {sourceTypes.find(s => s.value === previewSource)?.label}
+                      </span>
+                      {previewCaughtUp && (
+                        <span className="text-xs text-muted-foreground">Watching for new events...</span>
+                      )}
+                    </>
+                  ) : (
+                    <span className="text-sm text-muted-foreground">
+                      Preview events from a source in realtime
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {!previewSource ? (
+                    sourceTypes.map(s => (
+                      <button
+                        key={s.value}
+                        onClick={() => startPreview(s.value)}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                      >
+                        <Eye className="h-3 w-3" />
+                        {s.label}
+                      </button>
+                    ))
+                  ) : (
+                    <button
+                      onClick={stopPreview}
+                      className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-border text-xs text-muted-foreground hover:text-foreground hover:bg-muted transition-colors"
+                    >
+                      <EyeOff className="h-3 w-3" />
+                      Stop
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {previewSource && (
+                <div className="max-h-80 overflow-y-auto">
+                  {previewEvents.length === 0 && previewCaughtUp && (
+                    <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      No recent events. New events will appear here as they happen.
+                    </div>
+                  )}
+                  {previewEvents.length === 0 && !previewCaughtUp && (
+                    <div className="px-4 py-6 text-center text-sm text-muted-foreground">
+                      Loading recent events...
+                    </div>
+                  )}
+                  {previewEvents.map((group, idx) => (
+                    <div
+                      key={`${group.key}-${idx}`}
+                      className={`px-4 py-2.5 text-sm ${idx !== 0 ? 'border-t border-border/50' : ''}`}
+                    >
+                      <div className="font-medium text-foreground">{group.summary}</div>
+                      {group.events.map((evt, eidx) => (
+                        <div key={eidx} className="text-xs text-muted-foreground mt-0.5">
+                          {formatPreviewEvent(evt)}
+                        </div>
+                      ))}
+                      {group.key && (
+                        <div className="text-xs text-muted-foreground/60 mt-0.5 font-mono">
+                          {group.key.length > 16 ? `${group.key.slice(0, 16)}...` : group.key}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                  <div ref={previewEndRef} />
+                </div>
+              )}
+            </div>
+          </section>
         )}
       </div>
 

@@ -5380,3 +5380,87 @@ export async function deleteNotificationConfig(id: string): Promise<void> {
     throw new Error('Failed to delete notification config')
   }
 }
+
+// Notification preview SSE stream
+export interface NotificationEventGroup {
+  key: string
+  summary: string
+  events: { type: string; details: Record<string, unknown> }[]
+}
+
+export interface NotificationPreviewCallbacks {
+  onEventGroup: (group: NotificationEventGroup) => void
+  onCaughtUp: () => void
+  onError: (msg: string) => void
+}
+
+export async function streamNotificationPreview(
+  sourceType: string,
+  callbacks: NotificationPreviewCallbacks,
+  signal: AbortSignal,
+): Promise<void> {
+  const params = new URLSearchParams({ source_type: sourceType })
+  const res = await fetch(`/api/notifications/preview?${params}`, {
+    headers: {
+      ...getAuthHeaders(),
+      'X-DZ-Env': getEnv(),
+    },
+    signal,
+  })
+
+  if (!res.ok) {
+    const text = await res.text()
+    callbacks.onError(text || 'Failed to start preview')
+    return
+  }
+
+  const reader = res.body?.getReader()
+  if (!reader) {
+    callbacks.onError('Streaming not supported')
+    return
+  }
+
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() || ''
+
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i]
+        if (line.startsWith('event: ')) {
+          const eventType = line.slice(7)
+          const nextLine = lines[i + 1]
+          if (nextLine?.startsWith('data: ')) {
+            const data = nextLine.slice(6)
+            i++
+            try {
+              switch (eventType) {
+                case 'event_group':
+                  callbacks.onEventGroup(JSON.parse(data))
+                  break
+                case 'caught_up':
+                  callbacks.onCaughtUp()
+                  break
+                case 'error':
+                  callbacks.onError(JSON.parse(data).message || 'Unknown error')
+                  break
+              }
+            } catch {
+              // ignore parse errors
+            }
+          }
+        }
+      }
+    }
+  } catch (e) {
+    if (signal.aborted) return
+    callbacks.onError(e instanceof Error ? e.message : 'Stream failed')
+  }
+}

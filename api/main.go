@@ -363,6 +363,19 @@ func main() {
 	}
 	api.Manager = handlers.NewWorkflowManager(api)
 
+	// Notification sources (shared between preview endpoint and notifier worker)
+	notifSources := map[string]notifier.Source{
+		sources.SourceTypeEscrowEvents: &sources.EscrowEventsSource{
+			DB:       config.DB,
+			Database: config.Database(),
+		},
+		sources.SourceTypeUserActivity: &sources.UserActivitySource{
+			DB:       config.DB,
+			Database: config.Database(),
+		},
+	}
+	api.NotificationSources = notifSources
+
 	// Start embedded page cache worker (unless --no-worker)
 	workerCtx, workerCancel := context.WithCancel(context.Background())
 	if !*noWorkerFlag {
@@ -381,18 +394,9 @@ func main() {
 	if !*noWorkerFlag {
 		go func() {
 			if err := notifier.Start(notifierCtx, notifier.Config{
-				Log:    slog.Default(),
-				PgPool: config.PgPool,
-				Sources: map[string]notifier.Source{
-					sources.SourceTypeEscrowEvents: &sources.EscrowEventsSource{
-						DB:       config.DB,
-						Database: config.Database(),
-					},
-					sources.SourceTypeUserActivity: &sources.UserActivitySource{
-						DB:       config.DB,
-						Database: config.Database(),
-					},
-				},
+				Log:     slog.Default(),
+				PgPool:  config.PgPool,
+				Sources: notifSources,
 				Channels: map[string]notifier.Channel{
 					channels.ChannelTypeSlack: &channels.SlackChannel{
 						PgPool: config.PgPool,
@@ -784,6 +788,7 @@ func main() {
 		r.Post("/api/notifications/configs", api.CreateNotificationConfig)
 		r.Put("/api/notifications/configs/{id}", api.UpdateNotificationConfig)
 		r.Delete("/api/notifications/configs/{id}", api.DeleteNotificationConfig)
+		r.Get("/api/notifications/preview", api.PreviewNotifications)
 	})
 
 	// Transfer notification configs on Slack installation takeover
