@@ -53,7 +53,7 @@ import { MetroDetailPage } from '@/components/metro-detail-page'
 import { ContributorDetailPage } from '@/components/contributor-detail-page'
 import { UserDetailPage } from '@/components/user-detail-page'
 import { MulticastGroupsPage } from '@/components/multicast-groups-page'
-import { ShredsSeatsPage, ShredsFundersPage, ShredsDevicesPage, ShredsMetrosPage, ShredsEscrowEventsPage } from '@/components/shreds-page'
+import { ShredsSeatsPage, ShredsFundersPage, ShredsDevicesPage, ShredsEscrowEventsPage } from '@/components/shreds-page'
 import { PublisherCheckPage } from './components/publisher-check-page'
 import { EdgeScoreboardPage } from './components/edge-scoreboard-page'
 import { MulticastGroupDetailPage } from '@/components/multicast-group-detail-page'
@@ -702,14 +702,16 @@ function AppContent() {
             <Route path="/dz/users/:pk" element={<UserDetailPage />} />
             <Route path="/dz/multicast-groups" element={<MulticastGroupsPage />} />
             <Route path="/dz/multicast-groups/:pk" element={<MulticastGroupDetailPage />} />
-            <Route path="/dz/shreds" element={<Navigate to="/dz/shreds/seats" replace />} />
-            <Route path="/dz/shreds/seats" element={<ShredsSeatsPage />} />
+            <Route path="/dz/shreds" element={<Navigate to="/dz/shreds/subscribers" replace />} />
+            <Route path="/dz/shreds/subscribers" element={<ShredsSeatsPage />} />
+            <Route path="/dz/shreds/seats" element={<Navigate to="/dz/shreds/subscribers" replace />} />
             <Route path="/dz/shreds/funders" element={<ShredsFundersPage />} />
             <Route path="/dz/shreds/devices" element={<ShredsDevicesPage />} />
-            <Route path="/dz/shreds/metros" element={<ShredsMetrosPage />} />
             <Route path="/dz/shreds/activity" element={<ShredsEscrowEventsPage />} />
+            {/* Subscribe page hidden for now — see shreds-subscribe-page.tsx */}
             <Route path="/dz/publisher-check" element={<PublisherCheckPage />} />
-            <Route path="/dz/edge/scoreboard" element={<InternalOnly><EdgeScoreboardPage /></InternalOnly>} />
+            <Route path="/dz/shreds/scoreboard" element={<InternalOnly><EdgeScoreboardPage /></InternalOnly>} />
+            <Route path="/dz/edge/scoreboard" element={<Navigate to="/dz/shreds/scoreboard" replace />} />
 
             {/* Solana entity routes */}
             <Route path="/solana/overview" element={<SolanaOverviewPage />} />
