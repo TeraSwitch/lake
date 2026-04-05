@@ -44,6 +44,10 @@ type API struct {
 
 	// OnSlackInstallationChange is called when a Slack installation changes.
 	OnSlackInstallationChange func(teamID string)
+
+	// OnSlackInstallationTakeover is called when a Slack installation is taken over
+	// by a new account. Used to transfer notification configs.
+	OnSlackInstallationTakeover func(teamID, newAccountID string)
 }
 
 // envDB returns the ClickHouse connection for the environment in the context.

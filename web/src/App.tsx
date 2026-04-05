@@ -62,6 +62,7 @@ import { GossipNodeDetailPage } from '@/components/gossip-node-detail-page'
 
 import { DZLedgerPage, SolanaOverviewPage } from '@/components/ledger-page'
 import { SettingsPage } from '@/components/settings-page'
+import { NotificationSettingsPage } from '@/components/notification-settings-page'
 import { ChangelogPage } from '@/components/changelog-page'
 import { TermsPage } from '@/components/terms-page'
 import { MCPDocsPage } from '@/components/mcp-docs-page'
@@ -676,6 +677,7 @@ function AppContent() {
 
             {/* Settings */}
             <Route path="/settings" element={<SettingsPage />} />
+            <Route path="/settings/notifications" element={<NotificationSettingsPage />} />
 
             {/* Changelog */}
             <Route path="/changelog" element={<ChangelogPage />} />

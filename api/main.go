@@ -27,6 +27,9 @@ import (
 	"github.com/malbeclabs/lake/api/config"
 	"github.com/malbeclabs/lake/api/handlers"
 	"github.com/malbeclabs/lake/api/metrics"
+	"github.com/malbeclabs/lake/api/notifier"
+	"github.com/malbeclabs/lake/api/notifier/channels"
+	"github.com/malbeclabs/lake/api/notifier/sources"
 	"github.com/malbeclabs/lake/api/worker"
 	slackbot "github.com/malbeclabs/lake/slack/bot"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
@@ -369,6 +372,34 @@ func main() {
 				API: api,
 			}); err != nil && workerCtx.Err() == nil {
 				slog.Error("page cache worker failed", "error", err)
+			}
+		}()
+	}
+
+	// Start embedded notifier worker (unless --no-worker)
+	notifierCtx, notifierCancel := context.WithCancel(context.Background())
+	if !*noWorkerFlag {
+		go func() {
+			if err := notifier.Start(notifierCtx, notifier.Config{
+				Log:    slog.Default(),
+				PgPool: config.PgPool,
+				Sources: map[string]notifier.Source{
+					sources.SourceTypeEscrowEvents: &sources.EscrowEventsSource{
+						DB:       config.DB,
+						Database: config.Database(),
+					},
+					sources.SourceTypeUserActivity: &sources.UserActivitySource{
+						DB:       config.DB,
+						Database: config.Database(),
+					},
+				},
+				Channels: map[string]notifier.Channel{
+					channels.ChannelTypeSlack: &channels.SlackChannel{
+						PgPool: config.PgPool,
+					},
+				},
+			}); err != nil && notifierCtx.Err() == nil {
+				slog.Error("notifier worker failed", "error", err)
 			}
 		}()
 	}
@@ -746,6 +777,23 @@ func main() {
 		r.Get("/api/slack/oauth/callback", api.GetSlackOAuthCallback)
 	}
 
+	// Notification config routes
+	r.Group(func(r chi.Router) {
+		r.Use(api.RequireAuth)
+		r.Get("/api/notifications/configs", api.ListNotificationConfigs)
+		r.Post("/api/notifications/configs", api.CreateNotificationConfig)
+		r.Put("/api/notifications/configs/{id}", api.UpdateNotificationConfig)
+		r.Delete("/api/notifications/configs/{id}", api.DeleteNotificationConfig)
+	})
+
+	// Transfer notification configs on Slack installation takeover
+	notifStore := &notifier.ConfigStore{Pool: config.PgPool}
+	api.OnSlackInstallationTakeover = func(teamID, newAccountID string) {
+		if err := notifStore.TransferSlackConfigs(context.Background(), teamID, newAccountID); err != nil {
+			slog.Error("failed to transfer notification configs on takeover", "team_id", teamID, "error", err)
+		}
+	}
+
 	// Start Slack bot if configured
 	var slackEventHandler *slackbot.EventHandler
 	if slackBotToken := os.Getenv("SLACK_BOT_TOKEN"); slackBotToken != "" {
@@ -784,8 +832,9 @@ func main() {
 	// This triggers ctx.Done() in all active request handlers
 	serverCancel()
 
-	// Stop embedded page cache worker
+	// Stop embedded workers
 	workerCancel()
+	notifierCancel()
 
 	// Give existing connections a short time to complete after context cancellation
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

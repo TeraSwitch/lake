@@ -5310,3 +5310,73 @@ export async function fetchShredDevices(params: {
   }
   return res.json()
 }
+
+// Notification configs
+export interface NotificationConfig {
+  id: string
+  account_id: string
+  source_type: string
+  channel_type: string
+  destination: Record<string, string>
+  enabled: boolean
+  filters: Record<string, unknown>
+  created_at: string
+  updated_at: string
+}
+
+export interface CreateNotificationConfigRequest {
+  source_type: string
+  channel_type: string
+  destination: Record<string, string>
+  enabled?: boolean
+  filters?: Record<string, unknown>
+}
+
+export interface UpdateNotificationConfigRequest {
+  channel_type?: string
+  destination?: Record<string, string>
+  enabled?: boolean
+  filters?: Record<string, unknown>
+}
+
+export async function getNotificationConfigs(): Promise<NotificationConfig[]> {
+  const res = await fetchWithRetry('/api/notifications/configs')
+  if (!res.ok) {
+    throw new Error('Failed to get notification configs')
+  }
+  return res.json()
+}
+
+export async function createNotificationConfig(req: CreateNotificationConfigRequest): Promise<NotificationConfig> {
+  const res = await fetchWithRetry('/api/notifications/configs', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || 'Failed to create notification config')
+  }
+  return res.json()
+}
+
+export async function updateNotificationConfig(id: string, req: UpdateNotificationConfigRequest): Promise<void> {
+  const res = await fetchWithRetry(`/api/notifications/configs/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(req),
+  })
+  if (!res.ok) {
+    const text = await res.text()
+    throw new Error(text || 'Failed to update notification config')
+  }
+}
+
+export async function deleteNotificationConfig(id: string): Promise<void> {
+  const res = await fetchWithRetry(`/api/notifications/configs/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  })
+  if (!res.ok) {
+    throw new Error('Failed to delete notification config')
+  }
+}

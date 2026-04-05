@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react'
-import { Sun, Moon, Monitor, Wallet, Infinity as InfinityIcon, MessageSquare, Trash2, ExternalLink } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { Sun, Moon, Monitor, Wallet, Infinity as InfinityIcon, MessageSquare, Trash2, ExternalLink, Bell, ChevronRight } from 'lucide-react'
 import { useTheme } from '@/hooks/use-theme'
 import { useAuth } from '@/contexts/AuthContext'
 import { useEnv } from '@/contexts/EnvContext'
@@ -253,6 +254,32 @@ export function SettingsPage() {
             </div>
           </section>
         )}
+
+        {/* Notifications Section */}
+        <section className="mb-10">
+          <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wide mb-4">
+            Notifications
+          </h2>
+          <div className="bg-card border border-border rounded-lg overflow-hidden">
+            <Link
+              to="/settings/notifications"
+              className="flex items-center justify-between px-4 py-3 hover:bg-muted/50 transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-md bg-muted text-muted-foreground">
+                  <Bell className="h-4 w-4" />
+                </div>
+                <div>
+                  <div className="text-sm font-medium text-foreground">Manage Notifications</div>
+                  <div className="text-xs text-muted-foreground">
+                    Configure alerts for subscription activity
+                  </div>
+                </div>
+              </div>
+              <ChevronRight className="h-4 w-4 text-muted-foreground" />
+            </Link>
+          </div>
+        </section>
 
         {/* Network Section */}
         {availableEnvs.length > 1 && (

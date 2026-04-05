@@ -337,8 +337,30 @@ cmd_env() {
     fi
 
     echo "export KUBECONFIG=\"$KUBECONFIG\""
+
+    # ClickHouse
     echo "export CLICKHOUSE_ADDR_TCP=\"localhost:$((9100 + offset))\""
+    echo "export CLICKHOUSE_DATABASE=\"default\""
+    echo "export CLICKHOUSE_USERNAME=\"default\""
+    echo "export CLICKHOUSE_PASSWORD=\"\""
+
+    # PostgreSQL
+    echo "export POSTGRES_HOST=\"localhost\""
+    echo "export POSTGRES_PORT=\"$((5432 + offset))\""
+    echo "export POSTGRES_DB=\"lakedev\""
+    echo "export POSTGRES_USER=\"lakedev\""
+    echo "export POSTGRES_PASSWORD=\"lakedev\""
+
+    # Neo4j
+    echo "export NEO4J_URI=\"bolt://localhost:$((7687 + offset))\""
+    echo "export NEO4J_USERNAME=\"neo4j\""
+    echo "export NEO4J_PASSWORD=\"password\""
+    echo "export NEO4J_DATABASE=\"neo4j\""
+
+    # Temporal
     echo "export TEMPORAL_HOST_PORT=\"localhost:$((7233 + offset))\""
+    echo "export TEMPORAL_NAMESPACE=\"default\""
+
     echo "# Usage: eval \$($0 env${NAME_ARG:+ $NAME_ARG})"
 }
 
