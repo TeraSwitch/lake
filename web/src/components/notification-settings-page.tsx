@@ -77,52 +77,108 @@ function deserializeFilters(sourceType: string, filters: Record<string, unknown>
   return []
 }
 
-// Format a single event for the preview panel.
-function formatPreviewEvent(evt: { type: string; details: Record<string, unknown> }): string {
-  const d = evt.details
-  switch (evt.type) {
-    case 'fund': {
-      const amount = typeof d.amount_usdc === 'number' ? (d.amount_usdc / 1_000_000).toFixed(2) : null
-      const balance = typeof d.balance_after_usdc === 'number' ? (d.balance_after_usdc / 1_000_000).toFixed(2) : null
-      if (amount && balance) return `Funded ${amount} USDC (balance: ${balance} USDC)`
-      if (amount) return `Funded ${amount} USDC`
-      return 'Funded'
-    }
-    case 'allocate_seat':
-      return d.epoch ? `Instant allocated (epoch ${d.epoch})` : 'Instant allocated'
-    case 'batch_allocate':
-      return d.epoch ? `Batch allocated (epoch ${d.epoch})` : 'Batch allocated'
-    case 'initialize_seat':
-      return 'Seat initialized'
-    case 'initialize_escrow':
-      return 'Escrow initialized'
-    case 'close': {
-      const amount = typeof d.amount_usdc === 'number' ? (d.amount_usdc / 1_000_000).toFixed(2) : null
-      return amount ? `Escrow closed (withdrew ${amount} USDC)` : 'Escrow closed'
-    }
-    case 'withdraw_seat':
-      return 'Withdrawal requested'
-    case 'ack_withdraw':
-      return 'Withdrawal confirmed'
-    case 'ack_allocate':
-      return 'Allocation confirmed'
-    case 'reject_allocate':
-      return 'Allocation rejected'
-    case 'connected': {
-      const parts: string[] = []
-      if (d.kind) parts.push(String(d.kind))
-      if (d.client_ip) parts.push(`IP: ${d.client_ip}`)
-      return parts.length ? `Connected (${parts.join(', ')})` : 'Connected'
-    }
-    case 'disconnected': {
-      const parts: string[] = []
-      if (d.kind) parts.push(String(d.kind))
-      if (d.client_ip) parts.push(`IP: ${d.client_ip}`)
-      return parts.length ? `Disconnected (${parts.join(', ')})` : 'Disconnected'
-    }
-    default:
-      return evt.type
-  }
+function truncateKey(key: string, max = 20): string {
+  if (key.length <= max) return key
+  return `${key.slice(0, 8)}...${key.slice(-4)}`
+}
+
+function formatUSDC(raw: unknown): string | null {
+  if (typeof raw !== 'number') return null
+  return (raw / 1_000_000).toFixed(2)
+}
+
+// Escrow event preview card
+function EscrowEventCard({ group }: { group: NotificationEventGroup }) {
+  const first = group.events?.[0]?.details
+  const ts = first?.event_ts ? new Date(String(first.event_ts)) : null
+  const signer = first?.signer as string | undefined
+
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-foreground">{group.summary}</div>
+        <div className="mt-1.5 space-y-1">
+          {group.events?.map((evt, i) => {
+            const d = evt.details
+            let line: string
+            switch (evt.type) {
+              case 'fund': {
+                const amount = formatUSDC(d.amount_usdc)
+                const balance = formatUSDC(d.balance_after_usdc)
+                line = amount && balance ? `Funded ${amount} USDC (balance: ${balance} USDC)`
+                  : amount ? `Funded ${amount} USDC` : 'Funded'
+                break
+              }
+              case 'allocate_seat':
+                line = d.epoch ? `Instant allocated (epoch ${d.epoch})` : 'Instant allocated'; break
+              case 'batch_allocate':
+                line = d.epoch ? `Batch allocated (epoch ${d.epoch})` : 'Batch allocated'; break
+              case 'initialize_seat':
+                line = 'Seat initialized'; break
+              case 'initialize_escrow':
+                line = 'Escrow initialized'; break
+              case 'close': {
+                const amount = formatUSDC(d.amount_usdc)
+                line = amount ? `Escrow closed (withdrew ${amount} USDC)` : 'Escrow closed'; break
+              }
+              case 'withdraw_seat': line = 'Withdrawal requested'; break
+              case 'ack_withdraw': line = 'Withdrawal confirmed'; break
+              case 'ack_allocate': line = 'Allocation confirmed'; break
+              case 'reject_allocate': line = 'Allocation rejected'; break
+              default: line = evt.type
+            }
+            return <div key={i} className="text-sm text-muted-foreground">{line}</div>
+          })}
+        </div>
+        <div className="mt-1.5 flex items-center gap-2 flex-wrap text-xs text-muted-foreground/50 font-mono">
+          {signer && <span>signer: {truncateKey(signer)}</span>}
+          {group.key && <span>tx: {truncateKey(group.key)}</span>}
+          {first?.slot != null && <span>slot {String(first.slot)}</span>}
+        </div>
+      </div>
+      {ts && (
+        <div className="text-right shrink-0">
+          <div className="text-xs text-muted-foreground">{ts.toLocaleTimeString()}</div>
+          <div className="text-xs text-muted-foreground/50">{ts.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// User activity preview card
+function UserActivityCard({ group }: { group: NotificationEventGroup }) {
+  const first = group.events?.[0]?.details
+  const ts = first?.event_ts ? new Date(String(first.event_ts)) : null
+  const ownerPubkey = first?.owner_pubkey as string | undefined
+  const clientIP = first?.client_ip as string | undefined
+  const dzIP = first?.dz_ip as string | undefined
+  const devicePK = first?.device_pk as string | undefined
+  const kind = first?.kind as string | undefined
+
+  return (
+    <div className="flex items-start justify-between gap-3">
+      <div className="flex-1 min-w-0">
+        <div className="text-sm font-medium text-foreground">{group.summary}</div>
+        <div className="mt-1.5 space-y-0.5 text-sm text-muted-foreground">
+          {clientIP && <div>IP: {clientIP}{dzIP ? ` (DZ: ${dzIP})` : ''}</div>}
+          {kind && <div>Kind: {kind}</div>}
+          {devicePK && <div>Device: <code className="font-mono text-xs">{truncateKey(devicePK)}</code></div>}
+        </div>
+        {ownerPubkey && (
+          <div className="mt-1.5 text-xs text-muted-foreground/50 font-mono">
+            owner: {truncateKey(ownerPubkey)}
+          </div>
+        )}
+      </div>
+      {ts && (
+        <div className="text-right shrink-0">
+          <div className="text-xs text-muted-foreground">{ts.toLocaleTimeString()}</div>
+          <div className="text-xs text-muted-foreground/50">{ts.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })}</div>
+        </div>
+      )}
+    </div>
+  )
 }
 
 export function NotificationSettingsPage() {
@@ -703,63 +759,17 @@ export function NotificationSettingsPage() {
                       Loading recent events...
                     </div>
                   )}
-                  {previewEvents.map((group, idx) => {
-                    // Extract timestamp from first event's details
-                    const ts = group.events?.[0]?.details?.event_ts ?? group.events?.[0]?.details?.first_seen
-                    const timeStr = ts ? new Date(String(ts)).toLocaleTimeString() : null
-                    const dateStr = ts ? new Date(String(ts)).toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : null
-
-                    return (
-                      <div
-                        key={`${group.key}-${idx}`}
-                        className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex-1 min-w-0">
-                            <div className="text-sm font-medium text-foreground">{group.summary}</div>
-                            <div className="mt-1.5 space-y-1">
-                              {group.events?.map((evt, eidx) => (
-                                <div key={eidx} className="text-sm text-muted-foreground">
-                                  {formatPreviewEvent(evt)}
-                                </div>
-                              ))}
-                            </div>
-                            {(() => {
-                              const first = group.events?.[0]?.details
-                              const signer = first?.signer as string | undefined
-                              const hasContext = group.key || signer
-                              if (!hasContext) return null
-                              return (
-                                <div className="mt-1.5 flex items-center gap-2 flex-wrap">
-                                  {signer && (
-                                    <code className="text-xs text-muted-foreground/50 font-mono">
-                                      signer: {signer.length > 16 ? `${signer.slice(0, 8)}...${signer.slice(-4)}` : signer}
-                                    </code>
-                                  )}
-                                  {group.key && (
-                                    <code className="text-xs text-muted-foreground/50 font-mono">
-                                      {first?.tx_signature ? 'tx' : 'pk'}: {group.key.length > 20 ? `${group.key.slice(0, 10)}...${group.key.slice(-6)}` : group.key}
-                                    </code>
-                                  )}
-                                  {first?.slot != null && (
-                                    <span className="text-xs text-muted-foreground/50">
-                                      slot {String(first.slot)}
-                                    </span>
-                                  )}
-                                </div>
-                              )
-                            })()}
-                          </div>
-                          {timeStr && (
-                            <div className="text-right shrink-0">
-                              <div className="text-xs text-muted-foreground">{timeStr}</div>
-                              <div className="text-xs text-muted-foreground/50">{dateStr}</div>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    )
-                  })}
+                  {previewEvents.map((group, idx) => (
+                    <div
+                      key={`${group.key}-${idx}`}
+                      className={`px-4 py-3 ${idx !== 0 ? 'border-t border-border' : ''}`}
+                    >
+                      {previewSource === 'escrow_events'
+                        ? <EscrowEventCard group={group} />
+                        : <UserActivityCard group={group} />
+                      }
+                    </div>
+                  ))}
                   <div ref={previewEndRef} />
                 </div>
               )}
