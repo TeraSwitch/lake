@@ -371,6 +371,8 @@ function DeviceIncidentDetailContent({ data }: { data: DeviceIncidentDetailRespo
   const endTime = !isOngoing && data.ended_at ? Math.floor(new Date(data.ended_at).getTime() / 1000) : nowSeconds
 
   const [bucket, setBucket] = useState<BucketSize>('auto')
+  const [hoveredTimeRange, setHoveredTimeRange] = useState<{ start: number; end: number } | null>(null)
+  const [chartHoveredTime, setChartHoveredTime] = useState<number | null>(null)
   const bucketParam = bucketToShortForm(bucket)
   const effectiveBucketLabel = bucket === 'auto'
     ? bucketLabels[resolveAutoBucketFromSeconds(endTime - startTime)]
@@ -457,9 +459,9 @@ function DeviceIncidentDetailContent({ data }: { data: DeviceIncidentDetailRespo
               effectiveBucketLabel={effectiveBucketLabel}
             />
           </div>
-          <DeviceHealthTimeline data={metrics} />
-          <DeviceInterfaceIssuesChart data={metrics} className="rounded-lg border border-border p-4" />
-          <DeviceTrafficChart data={metrics} className="rounded-lg border border-border p-4" />
+          <DeviceHealthTimeline data={metrics} onBarHover={setHoveredTimeRange} highlightedTime={chartHoveredTime} />
+          <DeviceInterfaceIssuesChart data={metrics} className="rounded-lg border border-border p-4" highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} />
+          <DeviceTrafficChart data={metrics} className="rounded-lg border border-border p-4" highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} />
         </div>
       )}
     </div>

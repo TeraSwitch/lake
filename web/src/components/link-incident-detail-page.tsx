@@ -379,6 +379,8 @@ function LinkIncidentDetailContent({ data }: { data: LinkIncidentDetailResponse 
   const endTime = !isOngoing && data.ended_at ? Math.floor(new Date(data.ended_at).getTime() / 1000) : nowSeconds
 
   const [bucket, setBucket] = useState<BucketSize>('auto')
+  const [hoveredTimeRange, setHoveredTimeRange] = useState<{ start: number; end: number } | null>(null)
+  const [chartHoveredTime, setChartHoveredTime] = useState<number | null>(null)
   const bucketParam = bucketToShortForm(bucket)
   const effectiveBucketLabel = bucket === 'auto'
     ? bucketLabels[resolveAutoBucketFromSeconds(endTime - startTime)]
@@ -465,12 +467,12 @@ function LinkIncidentDetailContent({ data }: { data: LinkIncidentDetailResponse 
               effectiveBucketLabel={effectiveBucketLabel}
             />
           </div>
-          <LinkHealthTimeline data={metrics} />
-          <LinkPacketLossChart data={metrics} className="rounded-lg border border-border p-4" />
-          <LinkInterfaceIssuesChart data={metrics} className="rounded-lg border border-border p-4" />
-          <LinkLatencyChart data={metrics} className="rounded-lg border border-border p-4" />
-          <LinkJitterChart data={metrics} className="rounded-lg border border-border p-4" />
-          <LinkTrafficChart data={metrics} className="rounded-lg border border-border p-4" />
+          <LinkHealthTimeline data={metrics} onBarHover={setHoveredTimeRange} highlightedTime={chartHoveredTime} />
+          <LinkPacketLossChart data={metrics} className="rounded-lg border border-border p-4" highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} />
+          <LinkInterfaceIssuesChart data={metrics} className="rounded-lg border border-border p-4" highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} />
+          <LinkLatencyChart data={metrics} className="rounded-lg border border-border p-4" highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} />
+          <LinkJitterChart data={metrics} className="rounded-lg border border-border p-4" highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} />
+          <LinkTrafficChart data={metrics} className="rounded-lg border border-border p-4" highlightTimeRange={hoveredTimeRange} onCursorTime={setChartHoveredTime} />
         </div>
       )}
     </div>
