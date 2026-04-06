@@ -587,7 +587,7 @@ func buildLinkMetricsStatus(
 	if committedRtt > 0 && avgLatency > 0 {
 		overPct := ((avgLatency - committedRtt) / committedRtt) * 100
 		if overPct >= 20 {
-			reasons = append(reasons, fmt.Sprintf("High latency (%d%% over SLA)", int(overPct)))
+			reasons = append(reasons, fmt.Sprintf("High latency (%d%% over SLO)", int(overPct)))
 		}
 	}
 	if hasIssues {

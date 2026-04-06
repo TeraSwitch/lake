@@ -2284,7 +2284,7 @@ export async function fetchSimulateLinkAddition(
   return res.json()
 }
 
-// Link Health (SLA compliance) for topology overlay
+// Link Health (SLO compliance) for topology overlay
 export interface TopologyLinkHealth {
   link_pk: string
   side_a_pk: string

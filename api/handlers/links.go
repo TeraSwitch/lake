@@ -208,7 +208,7 @@ type LinkDetail struct {
 	ISISDelayOverrideNs int64   `json:"isis_delay_override_ns"`
 }
 
-// TopologyLinkHealth represents the SLA health status of a link for topology overlay
+// TopologyLinkHealth represents the SLO health status of a link for topology overlay
 type TopologyLinkHealth struct {
 	LinkPK         string  `json:"link_pk"`
 	SideAPK        string  `json:"side_a_pk"`
@@ -327,7 +327,7 @@ func (a *API) GetLinkHealth(w http.ResponseWriter, r *http.Request) {
 			lh.LossPct = 0
 		}
 
-		// Calculate SLA status
+		// Calculate SLO status
 		if lh.IsDown {
 			lh.SlaStatus = "critical"
 			lh.SlaRatio = 0

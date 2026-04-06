@@ -128,9 +128,9 @@ function getStatusReasons(hour: LinkHourStatus, committedRttUs?: number): string
   if (committedRttUs && committedRttUs > 0 && hour.avg_latency_us > 0) {
     const latencyOveragePct = ((hour.avg_latency_us - committedRttUs) / committedRttUs) * 100
     if (latencyOveragePct >= LATENCY_CRITICAL_PCT) {
-      reasons.push(`High latency (${latencyOveragePct.toFixed(0)}% over SLA)`)
+      reasons.push(`High latency (${latencyOveragePct.toFixed(0)}% over SLO)`)
     } else if (latencyOveragePct >= LATENCY_WARNING_PCT) {
-      reasons.push(`Elevated latency (${latencyOveragePct.toFixed(0)}% over SLA)`)
+      reasons.push(`Elevated latency (${latencyOveragePct.toFixed(0)}% over SLO)`)
     }
   }
 
@@ -237,7 +237,7 @@ export function StatusTimeline({ hours, committedRttUs, bucketMinutes = 60, time
                             {formatLatency(hour.avg_latency_us)}
                             {committedRttUs && committedRttUs > 0 && (
                               <span className="text-xs ml-1">
-                                ({((hour.avg_latency_us - committedRttUs) / committedRttUs * 100).toFixed(0)}% vs SLA)
+                                ({((hour.avg_latency_us - committedRttUs) / committedRttUs * 100).toFixed(0)}% vs SLO)
                               </span>
                             )}
                           </span>

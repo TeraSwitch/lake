@@ -38,7 +38,7 @@ export interface OverlayState {
   linkType: boolean            // Color links by type (dark fiber, wavelength, etc.) - DEFAULT
   bandwidth: boolean           // Link bandwidth/capacity - affects thickness only
   // Link color overlays (mutually exclusive with each other and linkType)
-  linkHealth: boolean          // Link health/SLA overlay
+  linkHealth: boolean          // Link health/SLO overlay
   trafficFlow: boolean         // Traffic flow visualization
   contributorLinks: boolean    // Color links by contributor
   criticality: boolean         // Link criticality analysis

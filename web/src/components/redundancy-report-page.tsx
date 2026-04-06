@@ -233,7 +233,7 @@ function DegradedLinkRow({
               {link.side_a_code} <span className="text-muted-foreground">↔</span> {link.side_z_code}
             </span>
             <span className={`text-xs px-2 py-0.5 rounded ${severity.bg} ${severity.text}`}>
-              {isCritical ? 'SLA Critical' : 'SLA Warning'}
+              {isCritical ? 'SLO Critical' : 'SLO Warning'}
             </span>
           </div>
           <div className="text-sm text-muted-foreground truncate flex items-center gap-3">
@@ -274,7 +274,7 @@ function DegradedLinkRow({
                 <div className="text-sm font-medium">{formatMicroseconds(committedRttUs)}</div>
               </div>
               <div>
-                <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">SLA Ratio</div>
+                <div className="text-xs text-muted-foreground uppercase tracking-wider mb-1">SLO Ratio</div>
                 <div className="text-sm font-medium">{(link.sla_ratio * 100).toFixed(1)}%</div>
               </div>
             </div>
@@ -570,7 +570,7 @@ export function RedundancyReportPage() {
                 <>
                   <Shield className="h-10 w-10 mx-auto mb-3 text-green-500" />
                   <div className="text-base font-medium text-foreground">All links healthy</div>
-                  <div className="text-sm mt-1">No SLA violations detected.</div>
+                  <div className="text-sm mt-1">No SLO violations detected.</div>
                 </>
               )}
             </div>
