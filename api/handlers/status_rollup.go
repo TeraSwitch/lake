@@ -416,14 +416,23 @@ func queryLinkRollup(ctx context.Context, db driver.Conn, params bucketParams, l
 			JOIN dim_dz_links_history lh ON lb.link_pk = lh.pk AND lh.snapshot_ts <= lb.bucket_ts + INTERVAL 5 MINUTE
 			GROUP BY ls_bucket, ls_pk
 		),
-		-- ISIS adjacency state as of each bucket's end time
+		-- ISIS adjacency state: true if down at any point during the bucket.
+		-- Checks carry-forward state entering the bucket and any deletion within it.
 		isis_state_asof AS (
 			SELECT
-				lb.bucket_ts AS is_bucket, lb.link_pk AS is_pk,
-				argMax(ih.is_deleted, ih.snapshot_ts) AS is_deleted
-			FROM latency_buckets lb
-			JOIN dim_isis_adjacencies_history ih ON lb.link_pk = ih.link_pk AND ih.snapshot_ts <= lb.bucket_ts + INTERVAL 5 MINUTE
-			WHERE ih.link_pk != ''
+				is_bucket, is_pk,
+				greatest(
+					argMax(ih_is_deleted, ih_ts) = 1 AND argMax(ih_ts, ih_ts) <= is_bucket,
+					maxIf(ih_is_deleted, ih_ts > is_bucket AND ih_ts <= is_bucket + INTERVAL 5 MINUTE) = 1
+				) AS is_deleted
+			FROM (
+				SELECT
+					lb.bucket_ts AS is_bucket, lb.link_pk AS is_pk,
+					ih.is_deleted AS ih_is_deleted, ih.snapshot_ts AS ih_ts
+				FROM latency_buckets lb
+				JOIN dim_isis_adjacencies_history ih ON lb.link_pk = ih.link_pk AND ih.snapshot_ts <= lb.bucket_ts + INTERVAL 5 MINUTE
+				WHERE ih.link_pk != ''
+			)
 			GROUP BY is_bucket, is_pk
 		),
 		raw_source AS (
@@ -1011,6 +1020,58 @@ func queryStatusLinkMeta(ctx context.Context, db driver.Conn, linkPKs ...string)
 			return nil, fmt.Errorf("link metadata scan: %w", err)
 		}
 		result[m.PK] = &m
+	}
+	return result, rows.Err()
+}
+
+// queryCurrentISISDown returns the set of link PKs that currently have ISIS down.
+// A link is considered ISIS down if it has an adjacency record in dim_isis_adjacencies_history
+// whose most recent snapshot shows is_deleted=1, OR if it's an activated link with a tunnel_net
+// that has no adjacency at all in isis_adjacencies_current (and no peer on the same tunnel does).
+// If linkPKs is provided, only those links are checked.
+func queryCurrentISISDown(ctx context.Context, db driver.Conn, linkPKs ...string) (map[string]bool, error) {
+	// Get activated link PKs that have no current ISIS adjacency.
+	// This mirrors the status endpoint's missing-adjacency check.
+	var filterClause string
+	var args []any
+	args = append(args, committedRttProvisioningNs)
+	if len(linkPKs) > 0 {
+		args = append(args, linkPKs)
+		filterClause = fmt.Sprintf(" AND l.pk IN ($%d)", len(args))
+	}
+
+	query := fmt.Sprintf(`
+		SELECT l.pk
+		FROM dz_links_current l
+		WHERE l.status = 'activated'
+		  AND l.tunnel_net != ''
+		  AND l.committed_rtt_ns != $1
+		  AND l.pk NOT IN (
+		    SELECT DISTINCT link_pk
+		    FROM isis_adjacencies_current
+		    WHERE link_pk != ''
+		  )
+		  AND l.tunnel_net NOT IN (
+		    SELECT DISTINCT l2.tunnel_net
+		    FROM dz_links_current l2
+		    JOIN isis_adjacencies_current a ON a.link_pk = l2.pk
+		    WHERE l2.tunnel_net != '' AND a.link_pk != ''
+		  )%s
+	`, filterClause)
+
+	rows, err := db.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("current ISIS down query: %w", err)
+	}
+	defer rows.Close()
+
+	result := make(map[string]bool)
+	for rows.Next() {
+		var pk string
+		if err := rows.Scan(&pk); err != nil {
+			return nil, fmt.Errorf("current ISIS down scan: %w", err)
+		}
+		result[pk] = true
 	}
 	return result, rows.Err()
 }
