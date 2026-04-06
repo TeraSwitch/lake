@@ -144,7 +144,7 @@ function LinkHoverContent({ link }: { link: LinkInfo }) {
         )}
         {link.health && (
           <div className="flex justify-between gap-4">
-            <span>SLA:</span>
+            <span>SLO:</span>
             <span className={
               link.health.status === 'healthy' ? 'text-green-500' :
               link.health.status === 'warning' ? 'text-yellow-500' :

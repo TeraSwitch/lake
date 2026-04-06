@@ -216,8 +216,8 @@ function getReasons(bar: MergedBar, committedRttUs: number): string[] {
 
   if (committedRttUs > 0 && bar.avgLatencyUs > 0) {
     const overPct = ((bar.avgLatencyUs - committedRttUs) / committedRttUs) * 100
-    if (overPct >= 100) reasons.push(`High latency (${overPct.toFixed(0)}% over SLA)`)
-    else if (overPct >= 20) reasons.push(`Elevated latency (${overPct.toFixed(0)}% over SLA)`)
+    if (overPct >= 100) reasons.push(`High latency (${overPct.toFixed(0)}% over SLO)`)
+    else if (overPct >= 20) reasons.push(`Elevated latency (${overPct.toFixed(0)}% over SLO)`)
   }
 
   const intfIssues: string[] = []

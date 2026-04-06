@@ -59,7 +59,7 @@ export function StatusAppendix() {
                 <h3 className="font-medium">2. High Latency</h3>
               </div>
               <p className="text-sm text-muted-foreground mb-2">
-                Link measured RTT exceeds the committed RTT (SLA) by a significant margin.
+                Link measured RTT exceeds the committed RTT (SLO) by a significant margin.
                 Only applies to inter-metro WAN links with a committed RTT configured.
               </p>
               <ul className="text-sm text-muted-foreground space-y-2 ml-5 list-disc">
@@ -178,7 +178,7 @@ export function StatusAppendix() {
           <ul className="text-sm text-muted-foreground space-y-2 ml-5 list-disc">
             <li><strong>Link type is WAN</strong> — DZX and other local link types are excluded</li>
             <li><strong>Inter-metro connection</strong> — Links between devices in the same metro are excluded (intra-metro)</li>
-            <li><strong>Committed RTT is defined</strong> — The link must have a committed RTT SLA configured</li>
+            <li><strong>Committed RTT is defined</strong> — The link must have a committed RTT SLO configured</li>
           </ul>
           <p className="text-sm text-muted-foreground mt-4">
             Latency overage is calculated as a percentage over the committed RTT:
@@ -227,7 +227,7 @@ export function StatusAppendix() {
             <div className="flex items-start gap-3">
               <div className="w-4 h-4 rounded-sm bg-amber-500 flex-shrink-0 mt-0.5" />
               <div className="text-sm text-muted-foreground">
-                <strong className="text-foreground">Degraded</strong> — Moderate packet loss (1% - 10%) or latency SLA breach
+                <strong className="text-foreground">Degraded</strong> — Moderate packet loss (1% - 10%) or latency SLO breach
               </div>
             </div>
             <div className="flex items-start gap-3">

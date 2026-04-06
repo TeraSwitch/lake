@@ -494,7 +494,7 @@ export function TopologyGraph({
     return criticality
   }, [criticalLinksData])
 
-  // Build edge SLA status map from link health data (maps device pair to SLA status)
+  // Build edge SLO status map from link health data (maps device pair to SLO status)
   const edgeSlaStatus = useMemo(() => {
     if (!linkHealthData?.links) return new Map<string, { status: string; avgRttUs: number; committedRttNs: number; lossPct: number; slaRatio: number }>()
     const slaMap = new Map<string, { status: string; avgRttUs: number; committedRttNs: number; lossPct: number; slaRatio: number }>()
@@ -2701,7 +2701,7 @@ export function TopologyGraph({
             'overlay-color': '#06b6d4',
           },
         },
-        // Link Health (SLA compliance) styles
+        // Link Health (SLO compliance) styles
         {
           selector: 'edge.sla-healthy',
           style: {

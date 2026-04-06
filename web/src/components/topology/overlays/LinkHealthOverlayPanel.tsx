@@ -18,7 +18,7 @@ export function LinkHealthOverlayPanel({
       <div className="flex items-center justify-between mb-2">
         <span className="font-medium flex items-center gap-1.5">
           <Activity className="h-3.5 w-3.5 text-green-500" />
-          Link Health (SLA)
+          Link Health (SLO)
         </span>
         <button
           onClick={() => toggleOverlay('linkHealth')}
@@ -80,7 +80,7 @@ export function LinkHealthOverlayPanel({
                         </div>
                         <div className="text-muted-foreground pl-2">
                           {hasLatencyIssue && (
-                            <div>{(link.avg_rtt_us / 1000).toFixed(1)}ms vs {(link.committed_rtt_ns / 1_000_000).toFixed(1)}ms SLA ({(link.sla_ratio * 100).toFixed(0)}%)</div>
+                            <div>{(link.avg_rtt_us / 1000).toFixed(1)}ms vs {(link.committed_rtt_ns / 1_000_000).toFixed(1)}ms SLO ({(link.sla_ratio * 100).toFixed(0)}%)</div>
                           )}
                           {hasLossIssue && (
                             <div>{link.loss_pct.toFixed(1)}% packet loss</div>
@@ -99,7 +99,7 @@ export function LinkHealthOverlayPanel({
           {/* Thresholds */}
           <div className="pt-2 border-t border-[var(--border)] text-muted-foreground space-y-1">
             <div className="text-[10px] uppercase tracking-wider mb-1">Thresholds</div>
-            <div><span className="text-foreground">Latency:</span> warning at 150% of SLA, critical at 200%</div>
+            <div><span className="text-foreground">Latency:</span> warning at 150% of SLO, critical at 200%</div>
             <div><span className="text-foreground">Packet loss:</span> warning at 0.1%, critical at 10%</div>
           </div>
         </div>

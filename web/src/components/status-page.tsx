@@ -333,7 +333,7 @@ function IssueDetails({
                             <div className={`text-sm font-medium ${valueColor}`}>
                               {issue.issue === 'packet_loss'
                                 ? `${issue.value.toFixed(1)}% loss`
-                                : `${issue.value.toFixed(0)}% over SLA`}
+                                : `${issue.value.toFixed(0)}% over SLO`}
                             </div>
                           )}
                         </div>
@@ -989,7 +989,7 @@ function LinkHealthFilterCard({
           color="bg-amber-500"
           label="Degraded"
           count={links.degraded}
-          description="Moderate packet loss (1% - 10%), or latency SLA breach."
+          description="Moderate packet loss (1% - 10%), or latency SLO breach."
           selected={selected.includes('degraded')}
           onClick={() => toggleFilter('degraded')}
           issueBreakdown={issuesByHealth?.degraded}

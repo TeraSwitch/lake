@@ -491,7 +491,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
     refetchInterval: 60000,
   })
 
-  // Build link SLA status map (keyed by link PK)
+  // Build link SLO status map (keyed by link PK)
   const linkSlaStatus = useMemo(() => {
     if (!linkHealthData?.links) return new Map<string, { status: string; avgRttUs: number; committedRttNs: number; lossPct: number; slaRatio: number }>()
     const slaMap = new Map<string, { status: string; avgRttUs: number; committedRttNs: number; lossPct: number; slaRatio: number }>()
@@ -1536,7 +1536,7 @@ export function TopologyMap({ metros, devices, links, validators }: TopologyMapP
         displayOpacity = 0.6
         useDash = true
       } else if (linkHealthMode) {
-        // Link health mode: color by SLA status (preserves bandwidth weight if active)
+        // Link health mode: color by SLO status (preserves bandwidth weight if active)
         const slaInfo = linkSlaStatus.get(link.pk)
         if (slaInfo) {
           switch (slaInfo.status) {
