@@ -393,9 +393,11 @@ func (a *Activities) resolveISISAdjacency(ctx context.Context, linkPKs map[strin
 	}
 
 	// For each (link, bucket), check if ISIS was down at any point during the
-	// bucket. A bucket is marked isis_down=true if the adjacency was deleted
-	// entering the bucket OR if any snapshot within the bucket has is_deleted=1.
-	// This ensures short down-then-up events within a single bucket are visible.
+	// bucket. A bucket is marked isis_down=true if the carry-forward state
+	// entering the bucket is deleted, OR if any snapshot within the bucket
+	// window [bucket_start, bucket_end] has is_deleted=1. Historical entries
+	// from before the bucket only contribute via the carry-forward state
+	// (the latest value), not by marking the bucket as "was down".
 	const bucketWidth = 5 * time.Minute
 	result := make(map[bucketKey]bool)
 	sortedBuckets := sortedTimes(bucketTimes)
@@ -412,7 +414,9 @@ func (a *Activities) resolveISISAdjacency(ctx context.Context, linkPKs map[strin
 			wasDown := current // was already down entering this bucket
 			for entryIdx < len(entries) && !entries[entryIdx].ts.After(bucketEnd) {
 				current = entries[entryIdx].isDeleted
-				if current {
+				// Only count deletions that happened within this bucket's
+				// time window, not historical entries consumed here.
+				if current && !entries[entryIdx].ts.Before(bt) {
 					wasDown = true
 				}
 				seenEntry = true
