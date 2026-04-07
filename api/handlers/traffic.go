@@ -33,6 +33,8 @@ type SeriesInfo struct {
 	Intf      string  `json:"intf"`
 	Direction string  `json:"direction"`
 	Mean      float64 `json:"mean"`
+	LinkPK    string  `json:"link_pk,omitempty"`
+	CYOAType  string  `json:"cyoa_type,omitempty"`
 }
 
 // TrafficDataResponse is the JSON response for the traffic data endpoint.
@@ -51,7 +53,7 @@ const maxTrafficRows = 2_000_000
 // trafficDimensionJoins builds the SQL JOIN clauses needed for dimension filtering
 // in the traffic/discards endpoints. The source table must be aliased as "f" and
 // the devices CTE (with pk, code, metro_pk, contributor_pk) as "d".
-func trafficDimensionJoins(needsLinkJoin, needsMetroJoin, needsContributorJoin bool) string {
+func trafficDimensionJoins(needsLinkJoin, needsMetroJoin, needsContributorJoin, needsInterfaceJoin bool) string {
 	var joins []string
 	if needsLinkJoin {
 		joins = append(joins, "LEFT JOIN dz_links_current l ON f.link_pk = l.pk")
@@ -61,6 +63,9 @@ func trafficDimensionJoins(needsLinkJoin, needsMetroJoin, needsContributorJoin b
 	}
 	if needsContributorJoin {
 		joins = append(joins, "LEFT JOIN dz_contributors_current co ON d.contributor_pk = co.pk")
+	}
+	if needsInterfaceJoin {
+		joins = append(joins, "LEFT JOIN dz_device_interfaces_current di ON f.device_pk = di.device_pk AND f.intf = di.intf")
 	}
 	if len(joins) == 0 {
 		return ""
@@ -130,10 +135,12 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 	// Resolve time filter and data source (raw fact table for sub-5m, rollup for >= 5m)
 	timeFilter, bucketInterval, useRaw := trafficTimeFilter(r)
 
-	// Build dimension filters
-	filterSQL, intfFilterSQL, intfTypeSQL, userKindSQL, _, needsLinkJoin, needsMetroJoin, needsContributorJoin, needsUserJoin := buildDimensionFilters(r)
+	// Build dimension filters.
+	// Always join device interfaces so series metadata includes cyoa_type.
+	filterSQL, intfFilterSQL, intfTypeSQL, userKindSQL, _, needsLinkJoin, needsMetroJoin, needsContributorJoin, needsUserJoin, _ := buildDimensionFilters(r)
+	needsInterfaceJoin := true
 	intfTypeFilter := trafficIntfTypeFilter(r, intfTypeSQL)
-	dimJoins := trafficDimensionJoins(needsLinkJoin, needsMetroJoin, needsContributorJoin)
+	dimJoins := trafficDimensionJoins(needsLinkJoin, needsMetroJoin, needsContributorJoin, needsInterfaceJoin)
 
 	// Add user join when user_kind filter is present
 	var userJoinSQL, userKindFilter string
@@ -151,7 +158,7 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 		var inExpr, outExpr, fInExpr, fOutExpr, srcColumns, srcFilters string
 		switch metric {
 		case "packets":
-			srcColumns = "f.device_pk, f.intf, f.event_ts, f.in_pkts_delta, f.out_pkts_delta, f.delta_duration, f.in_discards_delta, f.out_discards_delta, f.in_errors_delta, f.out_errors_delta, f.in_fcs_errors_delta, f.carrier_transitions_delta"
+			srcColumns = "f.device_pk AS device_pk, f.intf AS intf, f.event_ts, f.in_pkts_delta, f.out_pkts_delta, f.delta_duration, f.in_discards_delta, f.out_discards_delta, f.in_errors_delta, f.out_errors_delta, f.in_fcs_errors_delta, f.carrier_transitions_delta"
 			inExpr = "in_pkts_delta / delta_duration"
 			outExpr = "out_pkts_delta / delta_duration"
 			fInExpr = "f.in_pkts_delta / f.delta_duration"
@@ -160,7 +167,7 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 				AND f.in_pkts_delta >= 0
 				AND f.out_pkts_delta >= 0`
 		default: // throughput
-			srcColumns = "f.device_pk, f.intf, f.event_ts, f.in_octets_delta, f.out_octets_delta, f.delta_duration, f.in_discards_delta, f.out_discards_delta, f.in_errors_delta, f.out_errors_delta, f.in_fcs_errors_delta, f.carrier_transitions_delta"
+			srcColumns = "f.device_pk AS device_pk, f.intf AS intf, f.event_ts, f.in_octets_delta, f.out_octets_delta, f.delta_duration, f.in_discards_delta, f.out_discards_delta, f.in_errors_delta, f.out_errors_delta, f.in_fcs_errors_delta, f.carrier_transitions_delta"
 			inExpr = "in_octets_delta * 8 / delta_duration"
 			outExpr = "out_octets_delta * 8 / delta_duration"
 			fInExpr = "f.in_octets_delta * 8 / f.delta_duration"
@@ -232,7 +239,9 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 			AVG(%s) AS mean_in_bps,
 			AVG(%s) AS mean_out_bps,
 			toInt64(SUM(COALESCE(f.in_discards_delta, 0))) AS total_in_discards,
-			toInt64(SUM(COALESCE(f.out_discards_delta, 0))) AS total_out_discards
+			toInt64(SUM(COALESCE(f.out_discards_delta, 0))) AS total_out_discards,
+			anyLast(f.link_pk) AS link_pk,
+			COALESCE(anyLast(di.cyoa_type), '') AS cyoa_type
 		FROM fact_dz_device_interface_counters f
 		INNER JOIN devices d ON d.pk = f.device_pk%s%s
 		WHERE f.%s
@@ -283,8 +292,8 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 		),
 		rates AS (
 			SELECT
-				f.device_pk,
-				f.intf,
+				f.device_pk AS device_pk,
+				f.intf AS intf,
 				toStartOfInterval(f.bucket_ts, INTERVAL %s) AS time_bucket,
 				%s(%s) AS in_bps,
 				%s(%s) AS out_bps,
@@ -335,7 +344,9 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 			AVG(%s) AS mean_in_bps,
 			AVG(%s) AS mean_out_bps,
 			toInt64(SUM(f.in_discards)) AS total_in_discards,
-			toInt64(SUM(f.out_discards)) AS total_out_discards
+			toInt64(SUM(f.out_discards)) AS total_out_discards,
+			anyLast(f.link_pk) AS link_pk,
+			COALESCE(anyLast(di.cyoa_type), '') AS cyoa_type
 		FROM device_interface_rollup_5m f
 		INNER JOIN devices d ON d.pk = f.device_pk%s%s
 		WHERE f.%s
@@ -384,7 +395,8 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 		var device, intf string
 		var meanIn, meanOut float64
 		var totalInDiscards, totalOutDiscards int64
-		if err := meanRows.Scan(&device, &intf, &meanIn, &meanOut, &totalInDiscards, &totalOutDiscards); err != nil {
+		var linkPK, cyoaType string
+		if err := meanRows.Scan(&device, &intf, &meanIn, &meanOut, &totalInDiscards, &totalOutDiscards, &linkPK, &cyoaType); err != nil {
 			logError("traffic mean row scan error", "error", err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
@@ -396,6 +408,8 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 			Intf:      intf,
 			Direction: "in",
 			Mean:      meanIn,
+			LinkPK:    linkPK,
+			CYOAType:  cyoaType,
 		})
 		series = append(series, SeriesInfo{
 			Key:       fmt.Sprintf("%s (out)", key),
@@ -403,6 +417,8 @@ func (a *API) GetTrafficData(w http.ResponseWriter, r *http.Request) {
 			Intf:      intf,
 			Direction: "out",
 			Mean:      meanOut,
+			LinkPK:    linkPK,
+			CYOAType:  cyoaType,
 		})
 		if totalInDiscards > 0 {
 			discardsSeries = append(discardsSeries, DiscardSeriesInfo{
@@ -499,9 +515,9 @@ func (a *API) GetDiscardsData(w http.ResponseWriter, r *http.Request) {
 	timeFilter, bucketInterval, useRaw := trafficTimeFilter(r)
 
 	// Build dimension filters
-	filterSQL, intfFilterSQL, intfTypeSQL, userKindSQL, _, needsLinkJoin, needsMetroJoin, needsContributorJoin, needsUserJoin := buildDimensionFilters(r)
+	filterSQL, intfFilterSQL, intfTypeSQL, userKindSQL, _, needsLinkJoin, needsMetroJoin, needsContributorJoin, needsUserJoin, needsInterfaceJoin := buildDimensionFilters(r)
 	intfTypeFilter := trafficIntfTypeFilter(r, intfTypeSQL)
-	dimJoins := trafficDimensionJoins(needsLinkJoin, needsMetroJoin, needsContributorJoin)
+	dimJoins := trafficDimensionJoins(needsLinkJoin, needsMetroJoin, needsContributorJoin, needsInterfaceJoin)
 
 	// Add user join when user_kind filter is present
 	var userJoinSQL, userKindFilter string

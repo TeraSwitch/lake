@@ -41,15 +41,22 @@ type DeviceMetricsBucket struct {
 
 // DeviceInterfaceTraffic holds per-interface traffic for a single bucket.
 type DeviceInterfaceTraffic struct {
-	Intf      string  `json:"intf"`
-	LinkPK    string  `json:"link_pk,omitempty"`
-	LinkCode  string  `json:"link_code,omitempty"`
-	LinkSide  string  `json:"link_side,omitempty"`
-	UserPK    string  `json:"user_pk,omitempty"`
-	InBps     float64 `json:"in_bps"`
-	OutBps    float64 `json:"out_bps"`
-	MaxInBps  float64 `json:"max_in_bps"`
-	MaxOutBps float64 `json:"max_out_bps"`
+	Intf               string  `json:"intf"`
+	LinkPK             string  `json:"link_pk,omitempty"`
+	LinkCode           string  `json:"link_code,omitempty"`
+	LinkSide           string  `json:"link_side,omitempty"`
+	UserPK             string  `json:"user_pk,omitempty"`
+	CYOAType           string  `json:"cyoa_type,omitempty"`
+	InBps              float64 `json:"in_bps"`
+	OutBps             float64 `json:"out_bps"`
+	MaxInBps           float64 `json:"max_in_bps"`
+	MaxOutBps          float64 `json:"max_out_bps"`
+	InErrors           uint64  `json:"in_errors"`
+	OutErrors          uint64  `json:"out_errors"`
+	InFcsErrors        uint64  `json:"in_fcs_errors"`
+	InDiscards         uint64  `json:"in_discards"`
+	OutDiscards        uint64  `json:"out_discards"`
+	CarrierTransitions uint64  `json:"carrier_transitions"`
 }
 
 // DeviceMetricsStatus represents health/drain/ISIS state for a bucket.
@@ -351,6 +358,21 @@ func (a *API) fetchDeviceMetrics(ctx context.Context, devicePK string, params bu
 		}
 	}
 
+	// Resolve interface CYOA types from the device interfaces dimension table
+	cyoaTypes := make(map[string]string)
+	{
+		rows, err := db.Query(ctx, "SELECT intf, cyoa_type FROM dz_device_interfaces_current WHERE device_pk = $1 AND cyoa_type != 'none'", devicePK)
+		if err == nil {
+			defer rows.Close()
+			for rows.Next() {
+				var intf, cyoaType string
+				if err := rows.Scan(&intf, &cyoaType); err == nil {
+					cyoaTypes[intf] = cyoaType
+				}
+			}
+		}
+	}
+
 	isDrained := health.IsDrainedStatus(meta.Status)
 
 	// Build buckets
@@ -402,15 +424,22 @@ func (a *API) fetchDeviceMetrics(ctx context.Context, devicePK string, params bu
 				intfs := make([]DeviceInterfaceTraffic, 0, len(intfRowsForBucket))
 				for _, ir := range intfRowsForBucket {
 					intfs = append(intfs, DeviceInterfaceTraffic{
-						Intf:      ir.Intf,
-						LinkPK:    ir.LinkPK,
-						LinkCode:  linkCodes[ir.LinkPK],
-						LinkSide:  ir.LinkSide,
-						UserPK:    ir.UserPK,
-						InBps:     ir.AvgInBps,
-						OutBps:    ir.AvgOutBps,
-						MaxInBps:  ir.MaxInBps,
-						MaxOutBps: ir.MaxOutBps,
+						Intf:               ir.Intf,
+						LinkPK:             ir.LinkPK,
+						LinkCode:           linkCodes[ir.LinkPK],
+						LinkSide:           ir.LinkSide,
+						UserPK:             ir.UserPK,
+						CYOAType:           cyoaTypes[ir.Intf],
+						InBps:              ir.AvgInBps,
+						OutBps:             ir.AvgOutBps,
+						MaxInBps:           ir.MaxInBps,
+						MaxOutBps:          ir.MaxOutBps,
+						InErrors:           ir.InErrors,
+						OutErrors:          ir.OutErrors,
+						InFcsErrors:        ir.InFcsErrors,
+						InDiscards:         ir.InDiscards,
+						OutDiscards:        ir.OutDiscards,
+						CarrierTransitions: ir.CarrierTransitions,
 					})
 				}
 				bucket.Interfaces = intfs

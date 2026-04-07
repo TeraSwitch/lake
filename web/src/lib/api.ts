@@ -1255,6 +1255,8 @@ export interface InterfaceIssue {
   contributor: string
   metro: string
   interface_name: string
+  interface_type?: string
+  cyoa_type?: string
   link_pk?: string
   link_code?: string
   link_type?: string
@@ -1586,6 +1588,17 @@ export interface DeviceInterface {
   name: string
   ip: string
   status: string
+  interface_type?: string
+  cyoa_type?: string
+  dia_type?: string
+  loopback_type?: string
+  routing_mode?: string
+  bandwidth?: number
+  cir?: number
+  mtu?: number
+  vlan_id?: number
+  node_segment_idx?: number
+  user_tunnel_endpoint?: boolean
 }
 
 export interface TopologyDevice {
@@ -3790,6 +3803,8 @@ export interface SeriesInfo {
   intf: string
   direction: string
   mean: number
+  link_pk?: string
+  cyoa_type?: string
 }
 
 export interface TrafficDataResponse {
@@ -5118,6 +5133,10 @@ export interface LinkMetricsResponse {
   contributor_code: string
   side_a_metro: string
   side_z_metro: string
+  side_a_device: string
+  side_z_device: string
+  side_a_iface_name: string
+  side_z_iface_name: string
   committed_rtt_us: number
   committed_jitter_us: number
   bandwidth_bps: number
@@ -5203,10 +5222,17 @@ export interface DeviceInterfaceTraffic {
   link_code?: string
   link_side?: string
   user_pk?: string
+  cyoa_type?: string
   in_bps: number
   out_bps: number
   max_in_bps: number
   max_out_bps: number
+  in_errors: number
+  out_errors: number
+  in_fcs_errors: number
+  in_discards: number
+  out_discards: number
+  carrier_transitions: number
 }
 
 export interface DeviceMetricsBucket {
