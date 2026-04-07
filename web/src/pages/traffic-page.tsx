@@ -319,16 +319,17 @@ function TrafficPageContent() {
     })
   }, [setSearchParams])
 
-  // null = auto (per-chart, >10 interfaces = aggregate), true = force all on, false = force all off
   const [aggregateOverride, setAggregateOverride] = useState<boolean | null>(null)
 
-  const cycleAggregate = useCallback(() => {
-    setAggregateOverride(prev => {
-      if (prev === null) return true    // auto → force on
-      if (prev === true) return false   // force on → force off
-      return null                       // force off → auto
+  const toggleAggregate = useCallback(() => {
+    startTransition(() => {
+      setAggregateOverride(prev => {
+        if (prev === null) return false  // auto → force off (most useful click)
+        if (prev === false) return true  // force off → force on
+        return null                      // force on → back to auto
+      })
     })
-  }, [])
+  }, [startTransition])
 
   const [layout, setLayout] = useState<Layout>('2x2')
   const [bidirectional, setBidirectional] = useState(true)
@@ -679,22 +680,20 @@ function TrafficPageContent() {
           <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
             <DashboardFilterBadges />
             <button
-              onClick={cycleAggregate}
+              onClick={toggleAggregate}
               className={`px-2 border rounded-md transition-colors inline-flex items-center justify-center h-[34px] gap-1 ${
                 aggregateOverride === true
                   ? 'border-foreground/30 text-foreground bg-muted'
-                  : aggregateOverride === false
-                    ? 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
-                    : anyAutoAggregate
-                      ? 'border-foreground/20 text-foreground/70 bg-muted/50'
-                      : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                  : aggregateOverride === null && anyAutoAggregate
+                    ? 'border-foreground/20 text-foreground/70 bg-muted/50'
+                    : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
               title={
                 aggregateOverride === true
-                  ? 'All charts aggregated. Click for per-interface.'
+                  ? 'All charts aggregated. Click to auto-detect.'
                   : aggregateOverride === false
-                    ? 'All charts per-interface. Click for auto.'
-                    : 'Auto: charts with >10 interfaces are aggregated. Click to force all aggregated.'
+                    ? 'All charts per-interface. Click to aggregate all.'
+                    : 'Auto: charts with >10 interfaces are aggregated. Click to show all per-interface.'
               }
             >
               {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sigma className="h-4 w-4" />}
