@@ -319,15 +319,11 @@ function TrafficPageContent() {
     })
   }, [setSearchParams])
 
-  // aggregate=1 (explicit on), aggregate=0 (explicit off), absent = auto (based on series count)
-  const aggregateParam = useMemo(() => searchParams.get('aggregate'), [searchParams])
+  const [aggregateOverride, setAggregateOverride] = useState<boolean | null>(null)
 
   const setAggregate = useCallback((v: boolean) => {
-    setSearchParams(prev => {
-      prev.set('aggregate', v ? '1' : '0')
-      return prev
-    })
-  }, [setSearchParams])
+    setAggregateOverride(v)
+  }, [])
 
   const [layout, setLayout] = useState<Layout>('2x2')
   const [bidirectional, setBidirectional] = useState(true)
@@ -406,17 +402,12 @@ function TrafficPageContent() {
     return map
   }, [allTrafficData])
 
-  // Resolve aggregate: explicit URL param wins, otherwise auto-detect from series count.
-  // Reset explicit choice when the interface count changes (e.g. filters added/removed)
-  // so auto-detect re-evaluates.
+  // Auto-detect aggregate based on interface count; reset override when count changes
   const seriesCount = intfCategoryMap.size
   useEffect(() => {
-    if (aggregateParam !== null) {
-      setSearchParamsRaw(prev => { prev.delete('aggregate'); return prev })
-    }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
+    setAggregateOverride(null)
   }, [seriesCount])
-  const aggregate = aggregateParam === '1' ? true : aggregateParam === '0' ? false : seriesCount > 10
+  const aggregate = aggregateOverride ?? seriesCount > 10
 
   // Split data by interface category client-side
   const categoryData = useMemo(() => {
