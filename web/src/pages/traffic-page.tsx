@@ -406,8 +406,16 @@ function TrafficPageContent() {
     return map
   }, [allTrafficData])
 
-  // Resolve aggregate: explicit URL param wins, otherwise auto-detect from series count
+  // Resolve aggregate: explicit URL param wins, otherwise auto-detect from series count.
+  // Reset explicit choice when the interface count changes (e.g. filters added/removed)
+  // so auto-detect re-evaluates.
   const seriesCount = intfCategoryMap.size
+  useEffect(() => {
+    if (aggregateParam !== null) {
+      setSearchParamsRaw(prev => { prev.delete('aggregate'); return prev })
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [seriesCount])
   const aggregate = aggregateParam === '1' ? true : aggregateParam === '0' ? false : seriesCount > 10
 
   // Split data by interface category client-side
