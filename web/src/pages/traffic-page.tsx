@@ -566,7 +566,7 @@ function TrafficPageContent() {
       if (!countersData && !countersLoading) {
         return (
           <div key={section} className="border border-border rounded-lg p-4 flex items-center justify-center h-[400px]">
-            <p className="text-green-600 dark:text-green-400">No errors or discards in the selected time range</p>
+            <p className="text-sm text-muted-foreground">No errors or discards in the selected time range</p>
           </div>
         )
       }

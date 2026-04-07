@@ -183,7 +183,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
   const isPinnedRef = useRef(false)
   const pinnedSeriesIdxRef = useRef<number>(-1)
   const tooltipRef = useRef<HTMLDivElement>(null)
-  const [listHeight, setListHeight] = useState(256) // 16rem = 256px
+  const [listHeight, setListHeight] = useState(160) // 10rem = 160px
   const listContainerRef = useRef<HTMLDivElement>(null)
 
   // Get visible series (selected or all if none selected)
@@ -826,7 +826,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
   // Handle double-click to collapse/restore
   const handleResizeDoubleClick = () => {
     const minHeight = 128
-    const defaultHeight = 256
+    const defaultHeight = 160
     // If currently at or near minimum, restore to default; otherwise collapse to minimum
     if (listHeight <= minHeight + 10) {
       setListHeight(defaultHeight)
