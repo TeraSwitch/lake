@@ -95,7 +95,7 @@ docker_build_with_restart(
         'indexer/', 'admin/',
         'api/', 'agent/', 'slack/', 'utils/',
     ],
-    entrypoint=['/usr/local/bin/lake-indexer', '--verbose', '--migrations-enable', '--setup-remote-tables'],
+    entrypoint=['/usr/local/bin/lake-indexer', '--migrations-enable', '--setup-remote-tables'],
     live_update=[
         sync('.', '/lake'),
         run(
