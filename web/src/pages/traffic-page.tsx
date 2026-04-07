@@ -319,10 +319,15 @@ function TrafficPageContent() {
     })
   }, [setSearchParams])
 
+  // null = auto (per-chart, >10 interfaces = aggregate), true = force all on, false = force all off
   const [aggregateOverride, setAggregateOverride] = useState<boolean | null>(null)
 
-  const setAggregate = useCallback((v: boolean) => {
-    setAggregateOverride(v)
+  const cycleAggregate = useCallback(() => {
+    setAggregateOverride(prev => {
+      if (prev === null) return true    // auto → force on
+      if (prev === true) return false   // force on → force off
+      return null                       // force off → auto
+    })
   }, [])
 
   const [layout, setLayout] = useState<Layout>('2x2')
@@ -402,21 +407,32 @@ function TrafficPageContent() {
     return map
   }, [allTrafficData])
 
-  // Auto-detect aggregate based on per-category interface count.
-  // When showing all types, use the max count across categories (each chart shows one category).
-  // When filtered to a specific type, use total count (only one chart type shown).
-  const autoAggregateCount = useMemo(() => {
-    if (intfType !== 'all') return intfCategoryMap.size
+  // Per-category interface counts for auto-detect
+  const categoryCounts = useMemo(() => {
     const counts: Record<IntfCategory, number> = { tunnel: 0, link: 0, cyoa: 0, other: 0 }
     for (const cat of intfCategoryMap.values()) {
       counts[cat]++
     }
-    return Math.max(...Object.values(counts), 0)
-  }, [intfCategoryMap, intfType])
+    return counts
+  }, [intfCategoryMap])
+
+  // Reset override when data changes
+  const totalCount = intfCategoryMap.size
   useEffect(() => {
     setAggregateOverride(null)
-  }, [autoAggregateCount])
-  const aggregate = aggregateOverride ?? autoAggregateCount > 10
+  }, [totalCount])
+
+  // Resolve whether a given category should be aggregated
+  const shouldAggregate = useCallback((cat: IntfCategory): boolean => {
+    if (aggregateOverride !== null) return aggregateOverride
+    const count = intfType !== 'all' ? intfCategoryMap.size : categoryCounts[cat]
+    return count > 10
+  }, [aggregateOverride, intfType, intfCategoryMap.size, categoryCounts])
+
+  // For the sigma button display: true = forced on, false = forced off, null = auto
+  const anyAutoAggregate = useMemo(() =>
+    Object.values(categoryCounts).some(c => c > 10),
+  [categoryCounts])
 
   // Split data by interface category client-side
   const categoryData = useMemo(() => {
@@ -449,24 +465,16 @@ function TrafficPageContent() {
   }, [])
 
   const aggregatedCategoryData = useMemo(() => {
-    if (!aggregate) return categoryData
-    return {
-      tunnel: aggHelper(categoryData.tunnel, aggregateTrafficData),
-      link: aggHelper(categoryData.link, aggregateTrafficData),
-      cyoa: aggHelper(categoryData.cyoa, aggregateTrafficData),
-      other: aggHelper(categoryData.other, aggregateTrafficData),
-    }
-  }, [categoryData, aggregate, aggHelper])
+    const maybeAgg = (cat: IntfCategory) =>
+      shouldAggregate(cat) ? aggHelper(categoryData[cat], aggregateTrafficData) : categoryData[cat]
+    return { tunnel: maybeAgg('tunnel'), link: maybeAgg('link'), cyoa: maybeAgg('cyoa'), other: maybeAgg('other') }
+  }, [categoryData, shouldAggregate, aggHelper])
 
   const aggregatedCategoryDataStacked = useMemo(() => {
-    if (!aggregate) return categoryData
-    return {
-      tunnel: aggHelper(categoryData.tunnel, aggregateTrafficDataTotal),
-      link: aggHelper(categoryData.link, aggregateTrafficDataTotal),
-      cyoa: aggHelper(categoryData.cyoa, aggregateTrafficDataTotal),
-      other: aggHelper(categoryData.other, aggregateTrafficDataTotal),
-    }
-  }, [categoryData, aggregate, aggHelper])
+    const maybeAgg = (cat: IntfCategory) =>
+      shouldAggregate(cat) ? aggHelper(categoryData[cat], aggregateTrafficDataTotal) : categoryData[cat]
+    return { tunnel: maybeAgg('tunnel'), link: maybeAgg('link'), cyoa: maybeAgg('cyoa'), other: maybeAgg('other') }
+  }, [categoryData, shouldAggregate, aggHelper])
 
   // Fetch topology data for link metadata
   const {
@@ -609,7 +617,8 @@ function TrafficPageContent() {
     }
     const typeLabel = categoryLabels[cat]
     const metricLabel = metric === 'packets' ? 'Packets' : 'Traffic'
-    const title = aggregate
+    const catAggregated = shouldAggregate(cat)
+    const title = catAggregated
       ? `${typeLabel} ${metricLabel}${stacked ? ' Total' : ' Summary'}${stacked ? ' (stacked)' : ''}`
       : `${typeLabel} ${metricLabel} Per Device & Interface${stacked ? ' (stacked)' : ''}`
 
@@ -645,7 +654,7 @@ function TrafficPageContent() {
               metric={metric}
               loading={fetching}
               timeRangeSeconds={timeRangeSeconds}
-              legendHeader={aggregate ? `Summary of ${originalIntfCount} interfaces` : undefined}
+              legendHeader={catAggregated ? `Summary of ${originalIntfCount} interfaces` : undefined}
             />
           )}
         </LazyChart>
@@ -670,15 +679,26 @@ function TrafficPageContent() {
           <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
             <DashboardFilterBadges />
             <button
-              onClick={() => setAggregate(!aggregate)}
-              className={`px-2 border rounded-md transition-colors inline-flex items-center justify-center h-[34px] ${
-                aggregate
+              onClick={cycleAggregate}
+              className={`px-2 border rounded-md transition-colors inline-flex items-center justify-center h-[34px] gap-1 ${
+                aggregateOverride === true
                   ? 'border-foreground/30 text-foreground bg-muted'
-                  : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                  : aggregateOverride === false
+                    ? 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                    : anyAutoAggregate
+                      ? 'border-foreground/20 text-foreground/70 bg-muted/50'
+                      : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
               }`}
-              title={aggregate ? 'Aggregating all interfaces into P50, P95, and Max lines. Click to show individual interfaces.' : 'Showing individual interface lines. Click to aggregate into P50, P95, and Max.'}
+              title={
+                aggregateOverride === true
+                  ? 'All charts aggregated. Click for per-interface.'
+                  : aggregateOverride === false
+                    ? 'All charts per-interface. Click for auto.'
+                    : 'Auto: charts with >10 interfaces are aggregated. Click to force all aggregated.'
+              }
             >
               {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sigma className="h-4 w-4" />}
+              {aggregateOverride === null && <span className="text-[9px] leading-none opacity-60">A</span>}
             </button>
             <button
               onClick={() => setBidirectional(!bidirectional)}
