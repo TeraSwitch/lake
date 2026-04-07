@@ -319,15 +319,12 @@ function TrafficPageContent() {
     })
   }, [setSearchParams])
 
-  const aggregate = useMemo(() => {
-    const param = searchParams.get('aggregate')
-    if (param === '0') return false
-    return true // default on
-  }, [searchParams])
+  // aggregate=1 (explicit on), aggregate=0 (explicit off), absent = auto (based on series count)
+  const aggregateParam = useMemo(() => searchParams.get('aggregate'), [searchParams])
 
   const setAggregate = useCallback((v: boolean) => {
     setSearchParams(prev => {
-      if (v) { prev.delete('aggregate') } else { prev.set('aggregate', '0') }
+      prev.set('aggregate', v ? '1' : '0')
       return prev
     })
   }, [setSearchParams])
@@ -408,6 +405,10 @@ function TrafficPageContent() {
     }
     return map
   }, [allTrafficData])
+
+  // Resolve aggregate: explicit URL param wins, otherwise auto-detect from series count
+  const seriesCount = intfCategoryMap.size
+  const aggregate = aggregateParam === '1' ? true : aggregateParam === '0' ? false : seriesCount > 10
 
   // Split data by interface category client-side
   const categoryData = useMemo(() => {
