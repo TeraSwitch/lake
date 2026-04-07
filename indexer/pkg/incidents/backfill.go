@@ -354,8 +354,8 @@ func (a *Activities) BackfillLinkChunk(ctx context.Context, input BackfillChunkI
 
 	safeHeartbeat(ctx, fmt.Sprintf("generating events for %d link incidents", len(incidents)))
 
-	// Check which incidents already have events (idempotency).
-	existingIDs, err := a.existingIncidentIDs(ctx, "link_incident_events", input.WindowStart)
+	// Check which incidents already have events and their known symptoms.
+	existingSymptoms, err := a.existingIncidentSymptoms(ctx, "link_incident_events", input.WindowStart)
 	if err != nil {
 		return fmt.Errorf("check existing link incidents: %w", err)
 	}
@@ -370,9 +370,67 @@ func (a *Activities) BackfillLinkChunk(ctx context.Context, input BackfillChunkI
 
 		w0 := inc.windows[0]
 
-		// Skip if this incident already has events (unless overwrite).
-		if !input.Overwrite && existingIDs[incID] {
-			continue
+		// If this incident already has events, check if new symptoms appeared.
+		// If symptoms are unchanged, skip (idempotency). If new symptoms were
+		// discovered (e.g. late-arriving rollup data), append symptom_added events.
+		if !input.Overwrite {
+			if existing, ok := existingSymptoms[incID]; ok {
+				var newWindows []backfillSymptomWindow
+				for _, w := range inc.windows {
+					if !existing[w.Symptom] {
+						newWindows = append(newWindows, w)
+					}
+				}
+				if len(newWindows) == 0 {
+					continue // no new symptoms, skip
+				}
+				// Emit symptom_added events for the new symptoms only.
+				deltas := a.generateTransitionEvents(
+					incID, w0.EntityPK,
+					w0.IncidentStart, w0.IncidentEnd,
+					newWindows, true, // isExisting=true to skip "opened" event
+					input.WindowEnd,
+				)
+				for _, d := range deltas {
+					if d.EventType != EventSymptomAdded {
+						continue
+					}
+					// Merge existing symptoms into the cumulative list.
+					allSyms := make(map[string]bool)
+					for s := range existing {
+						allSyms[s] = true
+					}
+					for _, s := range d.Symptoms {
+						allSyms[s] = true
+					}
+					merged := make([]string, 0, len(allSyms))
+					for s := range allSyms {
+						merged = append(merged, s)
+					}
+					sort.Strings(merged)
+					d.Symptoms = merged
+
+					allEvents = append(allEvents, LinkIncidentEvent{
+						IncidentID:      d.IncidentID,
+						LinkPK:          d.EntityPK,
+						EventType:       d.EventType,
+						EventTS:         d.EventTS,
+						StartedAt:       d.StartedAt,
+						ActiveSymptoms:  d.ActiveSymptoms,
+						Symptoms:        d.Symptoms,
+						Severity:        d.Severity,
+						PeakValues:      d.PeakValues,
+						LinkCode:        inc.meta.LinkCode,
+						LinkType:        inc.meta.LinkType,
+						SideAMetro:      inc.meta.SideAMetro,
+						SideZMetro:      inc.meta.SideZMetro,
+						ContributorCode: inc.meta.ContributorCode,
+						Status:          inc.meta.Status,
+						Provisioning:    inc.meta.Provisioning,
+					})
+				}
+				continue
+			}
 		}
 
 		deltas := a.generateTransitionEvents(
@@ -422,8 +480,19 @@ func (a *Activities) BackfillLinkChunk(ctx context.Context, input BackfillChunkI
 		if len(inc.windows) == 0 {
 			continue
 		}
-		if !input.Overwrite && existingIDs[incID] {
-			continue
+		if !input.Overwrite {
+			if existing, ok := existingSymptoms[incID]; ok {
+				hasNew := false
+				for _, w := range inc.windows {
+					if !existing[w.Symptom] {
+						hasNew = true
+						break
+					}
+				}
+				if !hasNew {
+					continue
+				}
+			}
 		}
 		w0 := inc.windows[0]
 		transitions := statusChanges[w0.EntityPK]
@@ -609,7 +678,7 @@ func (a *Activities) BackfillDeviceChunk(ctx context.Context, input BackfillChun
 
 	safeHeartbeat(ctx, fmt.Sprintf("generating events for %d device incidents", len(incidents)))
 
-	existingIDs, err := a.existingIncidentIDs(ctx, "device_incident_events", input.WindowStart)
+	existingSymptoms, err := a.existingIncidentSymptoms(ctx, "device_incident_events", input.WindowStart)
 	if err != nil {
 		return fmt.Errorf("check existing device incidents: %w", err)
 	}
@@ -623,8 +692,60 @@ func (a *Activities) BackfillDeviceChunk(ctx context.Context, input BackfillChun
 
 		w0 := inc.windows[0]
 
-		if !input.Overwrite && existingIDs[incID] {
-			continue
+		if !input.Overwrite {
+			if existing, ok := existingSymptoms[incID]; ok {
+				var newWindows []backfillSymptomWindow
+				for _, w := range inc.windows {
+					if !existing[w.Symptom] {
+						newWindows = append(newWindows, w)
+					}
+				}
+				if len(newWindows) == 0 {
+					continue
+				}
+				deltas := a.generateTransitionEvents(
+					incID, w0.EntityPK,
+					w0.IncidentStart, w0.IncidentEnd,
+					newWindows, true,
+					input.WindowEnd,
+				)
+				for _, d := range deltas {
+					if d.EventType != EventSymptomAdded {
+						continue
+					}
+					allSyms := make(map[string]bool)
+					for s := range existing {
+						allSyms[s] = true
+					}
+					for _, s := range d.Symptoms {
+						allSyms[s] = true
+					}
+					merged := make([]string, 0, len(allSyms))
+					for s := range allSyms {
+						merged = append(merged, s)
+					}
+					sort.Strings(merged)
+					d.Symptoms = merged
+
+					allEvents = append(allEvents, DeviceIncidentEvent{
+						IncidentID:      d.IncidentID,
+						DevicePK:        d.EntityPK,
+						EventType:       d.EventType,
+						EventTS:         d.EventTS,
+						StartedAt:       d.StartedAt,
+						ActiveSymptoms:  d.ActiveSymptoms,
+						Symptoms:        d.Symptoms,
+						Severity:        d.Severity,
+						PeakValues:      d.PeakValues,
+						DeviceCode:      inc.meta.DeviceCode,
+						DeviceType:      inc.meta.DeviceType,
+						Metro:           inc.meta.Metro,
+						ContributorCode: inc.meta.ContributorCode,
+						Status:          inc.meta.Status,
+					})
+				}
+				continue
+			}
 		}
 
 		deltas := a.generateTransitionEvents(
@@ -672,8 +793,19 @@ func (a *Activities) BackfillDeviceChunk(ctx context.Context, input BackfillChun
 		if len(inc.windows) == 0 {
 			continue
 		}
-		if !input.Overwrite && existingIDs[incID] {
-			continue
+		if !input.Overwrite {
+			if existing, ok := existingSymptoms[incID]; ok {
+				hasNew := false
+				for _, w := range inc.windows {
+					if !existing[w.Symptom] {
+						hasNew = true
+						break
+					}
+				}
+				if !hasNew {
+					continue
+				}
+			}
 		}
 		w0 := inc.windows[0]
 		transitions := deviceStatusChanges[w0.EntityPK]
@@ -965,24 +1097,37 @@ func (a *Activities) detectDeviceStatusChanges(ctx context.Context, windowStart,
 
 // --- Shared helpers ---
 
-// existingIncidentIDs returns the set of incident_ids that already have events
-// in the table. The query is scoped to incidents that could overlap the given
-// window to avoid scanning the full table on small detection windows.
-func (a *Activities) existingIncidentIDs(ctx context.Context, table string, windowStart time.Time) (map[string]bool, error) {
-	query := fmt.Sprintf("SELECT DISTINCT incident_id FROM %s WHERE started_at >= $1", table)
+// existingIncidentSymptoms returns a map of incident_id → known symptom set
+// for incidents that already have events. This allows the backfill to detect
+// when new symptoms have been discovered and append symptom_added events.
+func (a *Activities) existingIncidentSymptoms(ctx context.Context, table string, windowStart time.Time) (map[string]map[string]bool, error) {
+	query := fmt.Sprintf(`
+		SELECT incident_id, symptoms
+		FROM %s
+		WHERE started_at >= $1
+		ORDER BY incident_id, event_ts DESC
+	`, table)
 	rows, err := a.ClickHouse.Query(ctx, query, windowStart.Add(-25*time.Hour))
 	if err != nil {
-		return nil, fmt.Errorf("query existing incidents: %w", err)
+		return nil, fmt.Errorf("query existing incident symptoms: %w", err)
 	}
 	defer rows.Close()
 
-	result := make(map[string]bool)
+	result := make(map[string]map[string]bool)
 	for rows.Next() {
 		var id string
-		if err := rows.Scan(&id); err != nil {
+		var symptoms []string
+		if err := rows.Scan(&id, &symptoms); err != nil {
 			return nil, err
 		}
-		result[id] = true
+		// Only take the first row per incident (latest event due to ORDER BY).
+		if _, ok := result[id]; !ok {
+			symSet := make(map[string]bool, len(symptoms))
+			for _, s := range symptoms {
+				symSet[s] = true
+			}
+			result[id] = symSet
+		}
 	}
 	return result, rows.Err()
 }
