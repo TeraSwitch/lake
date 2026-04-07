@@ -1,7 +1,8 @@
-import { useState, useEffect, useRef, useMemo } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback, useTransition } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import { ChevronDown, Network } from 'lucide-react'
-import { fetchTrafficData, fetchTopology } from '@/lib/api'
+import { useSearchParams } from 'react-router-dom'
+import { ChevronDown, Network, Sigma } from 'lucide-react'
+import { fetchTrafficData, fetchTopology, type TrafficPoint, type SeriesInfo } from '@/lib/api'
 import { TrafficChart } from '@/components/traffic-chart-uplot'
 import { DashboardProvider, useDashboard, dashboardFilterParams, resolveAutoBucket } from '@/components/traffic-dashboard/dashboard-context'
 import { DashboardFilters, DashboardFilterBadges } from '@/components/traffic-dashboard/dashboard-filters'
@@ -173,6 +174,116 @@ function LayoutSelector({
   )
 }
 
+// Compute percentile from a sorted array (linear interpolation)
+function percentile(sorted: number[], p: number): number {
+  if (sorted.length === 0) return 0
+  if (sorted.length === 1) return sorted[0]
+  const idx = (p / 100) * (sorted.length - 1)
+  const lo = Math.floor(idx)
+  const hi = Math.ceil(idx)
+  if (lo === hi) return sorted[lo]
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (idx - lo)
+}
+
+// Aggregate per-interface traffic data into P50/P95/Max statistical series
+function aggregateTrafficData(
+  points: TrafficPoint[],
+  series: SeriesInfo[],
+): { points: TrafficPoint[]; series: SeriesInfo[] } {
+  if (!points.length) return { points: [], series: [] }
+
+  // Group values by timestamp
+  const byTime = new Map<string, { inVals: number[]; outVals: number[] }>()
+  for (const p of points) {
+    let entry = byTime.get(p.time)
+    if (!entry) {
+      entry = { inVals: [], outVals: [] }
+      byTime.set(p.time, entry)
+    }
+    entry.inVals.push(p.in_bps)
+    entry.outVals.push(p.out_bps)
+  }
+
+  // Pick a representative device_pk from the first series for the synthetic points
+  const refDevicePk = series[0]?.device ?? 'aggregate'
+
+  const stats = ['P50', 'P95', 'Max'] as const
+  const aggPoints: TrafficPoint[] = []
+
+  for (const [time, { inVals, outVals }] of byTime) {
+    const sortedIn = [...inVals].sort((a, b) => a - b)
+    const sortedOut = [...outVals].sort((a, b) => a - b)
+
+    const computed = {
+      P50: { in: percentile(sortedIn, 50), out: percentile(sortedOut, 50) },
+      P95: { in: percentile(sortedIn, 95), out: percentile(sortedOut, 95) },
+      Max: { in: sortedIn[sortedIn.length - 1] ?? 0, out: sortedOut[sortedOut.length - 1] ?? 0 },
+    }
+
+    for (const stat of stats) {
+      aggPoints.push({
+        time,
+        device_pk: refDevicePk,
+        device: stat,
+        intf: '',
+        in_bps: computed[stat].in,
+        out_bps: computed[stat].out,
+        in_discards: 0, out_discards: 0, in_errors: 0, out_errors: 0,
+        in_fcs_errors: 0, carrier_transitions: 0,
+      })
+    }
+  }
+
+  const aggSeries: SeriesInfo[] = stats.flatMap(stat => [
+    { key: `${stat} (in)`, device: stat, intf: '', direction: 'in', mean: 0 },
+    { key: `${stat} (out)`, device: stat, intf: '', direction: 'out', mean: 0 },
+  ])
+
+  return { points: aggPoints, series: aggSeries }
+}
+
+// Aggregate per-interface traffic data into a single Total series (sum across interfaces).
+// Used for stacked charts where percentile lines don't make sense.
+function aggregateTrafficDataTotal(
+  points: TrafficPoint[],
+  series: SeriesInfo[],
+): { points: TrafficPoint[]; series: SeriesInfo[] } {
+  if (!points.length) return { points: [], series: [] }
+
+  const byTime = new Map<string, { inSum: number; outSum: number }>()
+  for (const p of points) {
+    let entry = byTime.get(p.time)
+    if (!entry) {
+      entry = { inSum: 0, outSum: 0 }
+      byTime.set(p.time, entry)
+    }
+    entry.inSum += p.in_bps
+    entry.outSum += p.out_bps
+  }
+
+  const refDevicePk = series[0]?.device ?? 'aggregate'
+  const aggPoints: TrafficPoint[] = []
+  for (const [time, { inSum, outSum }] of byTime) {
+    aggPoints.push({
+      time,
+      device_pk: refDevicePk,
+      device: 'Total',
+      intf: '',
+      in_bps: inSum,
+      out_bps: outSum,
+      in_discards: 0, out_discards: 0, in_errors: 0, out_errors: 0,
+      in_fcs_errors: 0, carrier_transitions: 0,
+    })
+  }
+
+  const aggSeries: SeriesInfo[] = [
+    { key: 'Total (in)', device: 'Total', intf: '', direction: 'in', mean: 0 },
+    { key: 'Total (out)', device: 'Total', intf: '', direction: 'out', mean: 0 },
+  ]
+
+  return { points: aggPoints, series: aggSeries }
+}
+
 function TrafficPageContent() {
   const dashboardState = useDashboard()
   const { timeRange, intfType, metric, customStart, customEnd } = dashboardState
@@ -186,8 +297,41 @@ function TrafficPageContent() {
     return map[timeRange] || 86400
   }, [timeRange, customStart, customEnd])
 
-  const [aggMethod, setAggMethod] = useState<AggMethod>('max')
-  const [layout, setLayout] = useState<Layout>('1x4')
+  const [searchParams, setSearchParamsRaw] = useSearchParams()
+  const [isPending, startTransition] = useTransition()
+  const setSearchParams = useCallback(
+    (updater: (prev: URLSearchParams) => URLSearchParams) => {
+      startTransition(() => { setSearchParamsRaw(updater) })
+    },
+    [setSearchParamsRaw]
+  )
+
+  const aggMethod = useMemo<AggMethod>(() => {
+    const param = searchParams.get('agg')
+    if (param && param in aggLabels) return param as AggMethod
+    return 'max'
+  }, [searchParams])
+
+  const setAggMethod = useCallback((m: AggMethod) => {
+    setSearchParams(prev => {
+      if (m === 'max') { prev.delete('agg') } else { prev.set('agg', m) }
+      return prev
+    })
+  }, [setSearchParams])
+
+  const [aggregateOverride, setAggregateOverride] = useState<boolean | null>(null)
+
+  const toggleAggregate = useCallback(() => {
+    startTransition(() => {
+      setAggregateOverride(prev => {
+        if (prev === null) return false  // auto → force off (most useful click)
+        if (prev === false) return true  // force off → force on
+        return null                      // force on → back to auto
+      })
+    })
+  }, [startTransition])
+
+  const [layout, setLayout] = useState<Layout>('2x2')
   const [bidirectional, setBidirectional] = useState(true)
 
   // Load layout from localStorage
@@ -264,6 +408,33 @@ function TrafficPageContent() {
     return map
   }, [allTrafficData])
 
+  // Per-category interface counts for auto-detect
+  const categoryCounts = useMemo(() => {
+    const counts: Record<IntfCategory, number> = { tunnel: 0, link: 0, cyoa: 0, other: 0 }
+    for (const cat of intfCategoryMap.values()) {
+      counts[cat]++
+    }
+    return counts
+  }, [intfCategoryMap])
+
+  // Reset override when data changes
+  const totalCount = intfCategoryMap.size
+  useEffect(() => {
+    setAggregateOverride(null)
+  }, [totalCount])
+
+  // Resolve whether a given category should be aggregated
+  const shouldAggregate = useCallback((cat: IntfCategory): boolean => {
+    if (aggregateOverride !== null) return aggregateOverride
+    const count = intfType !== 'all' ? intfCategoryMap.size : categoryCounts[cat]
+    return count > 10
+  }, [aggregateOverride, intfType, intfCategoryMap.size, categoryCounts])
+
+  // For the sigma button display: true = forced on, false = forced off, null = auto
+  const anyAutoAggregate = useMemo(() =>
+    Object.values(categoryCounts).some(c => c > 10),
+  [categoryCounts])
+
   // Split data by interface category client-side
   const categoryData = useMemo(() => {
     if (!allTrafficData || intfType !== 'all') {
@@ -285,6 +456,26 @@ function TrafficPageContent() {
       other: filterByCategory('other'),
     }
   }, [allTrafficData, intfType, intfCategoryMap])
+
+  // When aggregate mode is on, compute stats across interfaces per category.
+  // Non-stacked charts get P50/P95/Max lines; stacked charts get a single Total sum.
+  const aggHelper = useCallback((data: typeof allTrafficData, fn: typeof aggregateTrafficData) => {
+    if (!data) return data
+    const { points, series } = fn(data.points, data.series)
+    return { ...data, points, series }
+  }, [])
+
+  const aggregatedCategoryData = useMemo(() => {
+    const maybeAgg = (cat: IntfCategory) =>
+      shouldAggregate(cat) ? aggHelper(categoryData[cat], aggregateTrafficData) : categoryData[cat]
+    return { tunnel: maybeAgg('tunnel'), link: maybeAgg('link'), cyoa: maybeAgg('cyoa'), other: maybeAgg('other') }
+  }, [categoryData, shouldAggregate, aggHelper])
+
+  const aggregatedCategoryDataStacked = useMemo(() => {
+    const maybeAgg = (cat: IntfCategory) =>
+      shouldAggregate(cat) ? aggHelper(categoryData[cat], aggregateTrafficDataTotal) : categoryData[cat]
+    return { tunnel: maybeAgg('tunnel'), link: maybeAgg('link'), cyoa: maybeAgg('cyoa'), other: maybeAgg('other') }
+  }, [categoryData, shouldAggregate, aggHelper])
 
   // Fetch topology data for link metadata
   const {
@@ -393,7 +584,7 @@ function TrafficPageContent() {
       if (!countersData && !countersLoading) {
         return (
           <div key={section} className="border border-border rounded-lg p-4 flex items-center justify-center h-[400px]">
-            <p className="text-green-600 dark:text-green-400">No errors or discards in the selected time range</p>
+            <p className="text-sm text-muted-foreground">No errors or discards in the selected time range</p>
           </div>
         )
       }
@@ -427,11 +618,18 @@ function TrafficPageContent() {
     }
     const typeLabel = categoryLabels[cat]
     const metricLabel = metric === 'packets' ? 'Packets' : 'Traffic'
-    const title = `${typeLabel} ${metricLabel} Per Device & Interface${stacked ? ' (stacked)' : ''}`
+    const catAggregated = shouldAggregate(cat)
+    const title = catAggregated
+      ? `${typeLabel} ${metricLabel}${stacked ? ' Total' : ' Summary'}${stacked ? ' (stacked)' : ''}`
+      : `${typeLabel} ${metricLabel} Per Device & Interface${stacked ? ' (stacked)' : ''}`
 
-    const data = categoryData[cat]
+    const data = stacked ? aggregatedCategoryDataStacked[cat] : aggregatedCategoryData[cat]
     const fetching = trafficFetching
     const error = trafficError
+
+    // Count original interfaces for this category (in-direction series = one per interface)
+    const rawSeries = categoryData[cat]?.series
+    const originalIntfCount = rawSeries ? rawSeries.filter(s => s.direction === 'in').length : 0
 
     return (
       <div key={section} className="border border-border rounded-lg p-4">
@@ -457,6 +655,7 @@ function TrafficPageContent() {
               metric={metric}
               loading={fetching}
               timeRangeSeconds={timeRangeSeconds}
+              legendHeader={catAggregated ? `Summary of ${originalIntfCount} interfaces` : undefined}
             />
           )}
         </LazyChart>
@@ -480,6 +679,26 @@ function TrafficPageContent() {
         <div className="flex items-center gap-3 mt-3">
           <div className="flex items-center gap-3 flex-shrink-0 ml-auto">
             <DashboardFilterBadges />
+            <button
+              onClick={toggleAggregate}
+              className={`px-2 border rounded-md transition-colors inline-flex items-center justify-center h-[34px] gap-1 ${
+                aggregateOverride === true
+                  ? 'border-foreground/30 text-foreground bg-muted'
+                  : aggregateOverride === null && anyAutoAggregate
+                    ? 'border-foreground/20 text-foreground/70 bg-muted/50'
+                    : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+              }`}
+              title={
+                aggregateOverride === true
+                  ? 'All charts aggregated. Click to auto-detect.'
+                  : aggregateOverride === false
+                    ? 'All charts per-interface. Click to aggregate all.'
+                    : 'Auto: charts with >10 interfaces are aggregated. Click to show all per-interface.'
+              }
+            >
+              <Sigma className={`h-4 w-4 transition-opacity duration-150 ${isPending ? 'opacity-40' : ''}`} />
+              {aggregateOverride === null && <span className="text-[9px] leading-none opacity-60">A</span>}
+            </button>
             <button
               onClick={() => setBidirectional(!bidirectional)}
               className={`px-3 py-1.5 text-sm border rounded-md transition-colors inline-flex items-center gap-1.5 ${
@@ -507,7 +726,7 @@ function TrafficPageContent() {
         )}
 
         {/* Charts */}
-        <div className={gridClass}>
+        <div className={`${gridClass} transition-opacity duration-150 ${isPending ? 'opacity-50' : ''}`}>
           {ALL_KNOWN_SECTIONS.map(section => renderChartSection(section))}
         </div>
       </div>

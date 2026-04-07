@@ -1,6 +1,6 @@
 import { useMemo, useRef, useState, useCallback, useEffect } from 'react'
 import { useQuery, useQueryClient, keepPreviousData } from '@tanstack/react-query'
-import { Loader2, RefreshCw, Search, X } from 'lucide-react'
+import { Loader2, RefreshCw, Search, Sigma, X } from 'lucide-react'
 import uPlot from 'uplot'
 import { useTheme } from '@/hooks/use-theme'
 import { useChartLegend } from '@/hooks/use-chart-legend'
@@ -396,13 +396,14 @@ export function MultiLinkLatencyCharts({
   const modeToggle = (
     <button
       onClick={(e) => { e.stopPropagation(); handleModeChange(chartMode === 'aggregate' ? 'per_link' : 'aggregate') }}
-      className={`px-2.5 py-1 text-xs rounded-md border transition-colors ${
+      className={`px-2 text-xs rounded-md border transition-colors inline-flex items-center justify-center h-[26px] ${
         chartMode === 'aggregate'
           ? 'border-foreground/30 text-foreground bg-muted'
           : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
       }`}
+      title={chartMode === 'aggregate' ? 'Aggregating all links into Avg, P95, P99, and Max lines. Click to show individual links.' : 'Showing individual link lines. Click to aggregate into Avg, P95, P99, and Max.'}
     >
-      Aggregate
+      <Sigma className="h-3.5 w-3.5" />
     </button>
   )
 
@@ -425,8 +426,8 @@ export function MultiLinkLatencyCharts({
   return (
     <div className={`space-y-4 ${className || ''}`}>
       <div className="flex items-center justify-end gap-2">
-        {directionToggle}
         {modeToggle}
+        {directionToggle}
       </div>
       {/* RTT */}
       <div className="border border-border rounded-lg bg-card overflow-hidden group/chart">

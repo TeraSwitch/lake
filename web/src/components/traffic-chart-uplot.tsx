@@ -8,13 +8,13 @@ import { useTheme } from '@/hooks/use-theme'
 
 // Color palette matching the app
 const COLORS = [
-  '#ff6b35',  // accent orange
-  '#5b8fd6',  // blue
   '#4ca89f',  // green
+  '#5b8fd6',  // blue
   '#9b59d0',  // purple
   '#e85988',  // pink
   '#f0ad4e',  // yellow
   '#5bc0de',  // cyan
+  '#ff6b35',  // accent orange
   '#e8603c',  // red-orange
 ]
 
@@ -32,6 +32,8 @@ interface TrafficChartProps {
   timeRangeSeconds?: number
   /** Custom labels for bidirectional directions (default: { in: 'Rx', out: 'Tx' }) */
   directionLabels?: { in: string; out: string }
+  /** Override legend header text (e.g. "Summary of 42 interfaces") */
+  legendHeader?: string
 }
 
 // Represents one interface with paired in/out in bidirectional mode
@@ -114,7 +116,7 @@ function formatPctAxis(pct: number): string {
   return pct.toFixed(1) + '%'
 }
 
-function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bidirectional = false, onTimeRangeSelect, metric = 'throughput', loading = false, timeRangeSeconds, directionLabels: dirLabels }: TrafficChartProps) {
+function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bidirectional = false, onTimeRangeSelect, metric = 'throughput', loading = false, timeRangeSeconds, directionLabels: dirLabels, legendHeader }: TrafficChartProps) {
   const inLabel = dirLabels?.in ?? 'Rx'
   const outLabel = dirLabels?.out ?? 'Tx'
   const { resolvedTheme } = useTheme()
@@ -183,7 +185,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
   const isPinnedRef = useRef(false)
   const pinnedSeriesIdxRef = useRef<number>(-1)
   const tooltipRef = useRef<HTMLDivElement>(null)
-  const [listHeight, setListHeight] = useState(256) // 16rem = 256px
+  const [listHeight, setListHeight] = useState(160) // 10rem = 160px
   const listContainerRef = useRef<HTMLDivElement>(null)
 
   // Get visible series (selected or all if none selected)
@@ -826,7 +828,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
   // Handle double-click to collapse/restore
   const handleResizeDoubleClick = () => {
     const minHeight = 128
-    const defaultHeight = 256
+    const defaultHeight = 160
     // If currently at or near minimum, restore to default; otherwise collapse to minimum
     if (listHeight <= minHeight + 10) {
       setListHeight(defaultHeight)
@@ -1166,9 +1168,11 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
           <div className="flex-none px-2 pt-2">
             <div className="flex items-center gap-2 mb-1.5">
               <div className="text-xs font-medium whitespace-nowrap">
-                {bidirectional
-                  ? `Interfaces (${sortedInterfaceGroups.filter(g => visibleSeries.has(g.inSeries.key)).length}/${sortedInterfaceGroups.length})`
-                  : `Series (${visibleSeriesList.length}/${sortedFilteredSeries.length})`
+                {legendHeader
+                  ? legendHeader
+                  : bidirectional
+                    ? `Interfaces (${sortedInterfaceGroups.filter(g => visibleSeries.has(g.inSeries.key)).length}/${sortedInterfaceGroups.length})`
+                    : `Series (${visibleSeriesList.length}/${sortedFilteredSeries.length})`
                 }
               </div>
               {hoveredTime && (
@@ -1291,7 +1295,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
                           className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
                           style={{ backgroundColor: color }}
                         />
-                        <span className="text-xs truncate">{g.intfKey}</span>
+                        <span className="text-xs truncate">{g.device && g.intf ? g.intfKey : g.device || g.intf}</span>
                         {g.inSeries.cyoa_type && g.inSeries.cyoa_type !== 'none' && g.inSeries.cyoa_type !== '' && (
                           <span className="px-1 py-0.5 rounded text-[9px] leading-none bg-amber-500/15 text-amber-400 flex-shrink-0">CYOA</span>
                         )}
