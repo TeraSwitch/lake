@@ -396,7 +396,7 @@ export function MultiLinkLatencyCharts({
   const modeToggle = (
     <button
       onClick={(e) => { e.stopPropagation(); handleModeChange(chartMode === 'aggregate' ? 'per_link' : 'aggregate') }}
-      className={`px-2 py-1 text-xs rounded-md border transition-colors inline-flex items-center justify-center ${
+      className={`px-2 text-xs rounded-md border transition-colors inline-flex items-center justify-center h-[26px] ${
         chartMode === 'aggregate'
           ? 'border-foreground/30 text-foreground bg-muted'
           : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
