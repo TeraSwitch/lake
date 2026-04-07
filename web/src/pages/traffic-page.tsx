@@ -402,12 +402,21 @@ function TrafficPageContent() {
     return map
   }, [allTrafficData])
 
-  // Auto-detect aggregate based on interface count; reset override when count changes
-  const seriesCount = intfCategoryMap.size
+  // Auto-detect aggregate based on per-category interface count.
+  // When showing all types, use the max count across categories (each chart shows one category).
+  // When filtered to a specific type, use total count (only one chart type shown).
+  const autoAggregateCount = useMemo(() => {
+    if (intfType !== 'all') return intfCategoryMap.size
+    const counts: Record<IntfCategory, number> = { tunnel: 0, link: 0, cyoa: 0, other: 0 }
+    for (const cat of intfCategoryMap.values()) {
+      counts[cat]++
+    }
+    return Math.max(...Object.values(counts), 0)
+  }, [intfCategoryMap, intfType])
   useEffect(() => {
     setAggregateOverride(null)
-  }, [seriesCount])
-  const aggregate = aggregateOverride ?? seriesCount > 10
+  }, [autoAggregateCount])
+  const aggregate = aggregateOverride ?? autoAggregateCount > 10
 
   // Split data by interface category client-side
   const categoryData = useMemo(() => {
