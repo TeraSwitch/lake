@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, useTransition } from 'react'
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 import { ChevronDown, Network, Sigma } from 'lucide-react'
@@ -297,14 +297,7 @@ function TrafficPageContent() {
     return map[timeRange] || 86400
   }, [timeRange, customStart, customEnd])
 
-  const [searchParams, setSearchParamsRaw] = useSearchParams()
-  const [isPending, startTransition] = useTransition()
-  const setSearchParams = useCallback(
-    (updater: (prev: URLSearchParams) => URLSearchParams) => {
-      startTransition(() => { setSearchParamsRaw(updater) })
-    },
-    [setSearchParamsRaw]
-  )
+  const [searchParams, setSearchParams] = useSearchParams()
 
   const aggMethod = useMemo<AggMethod>(() => {
     const param = searchParams.get('agg')
@@ -319,17 +312,34 @@ function TrafficPageContent() {
     })
   }, [setSearchParams])
 
-  const [aggregateOverride, setAggregateOverride] = useState<boolean | null>(null)
+  // aggregate param: absent = auto, 'on' = force all on, 'off' = force all off
+  const aggregateOverride = useMemo<boolean | null>(() => {
+    const param = searchParams.get('aggregate')
+    if (param === 'on') return true
+    if (param === 'off') return false
+    return null
+  }, [searchParams])
+
+  const setAggregateOverride = useCallback((v: boolean | null) => {
+    setSearchParams(prev => {
+      if (v === null) { prev.delete('aggregate') }
+      else { prev.set('aggregate', v ? 'on' : 'off') }
+      return prev
+    })
+  }, [setSearchParams])
+
+  const [aggregateProcessing, setAggregateProcessing] = useState(false)
 
   const toggleAggregate = useCallback(() => {
-    startTransition(() => {
-      setAggregateOverride(prev => {
-        if (prev === null) return false  // auto → force off (most useful click)
-        if (prev === false) return true  // force off → force on
-        return null                      // force on → back to auto
-      })
+    setAggregateProcessing(true)
+    // Defer the actual change so the processing state renders first
+    requestAnimationFrame(() => {
+      const current = searchParams.get('aggregate')
+      if (current === null) setAggregateOverride(false)
+      else if (current === 'off') setAggregateOverride(true)
+      else setAggregateOverride(null)
     })
-  }, [startTransition])
+  }, [searchParams, setAggregateOverride])
 
   const [layout, setLayout] = useState<Layout>('2x2')
   const [bidirectional, setBidirectional] = useState(true)
@@ -417,10 +427,15 @@ function TrafficPageContent() {
     return counts
   }, [intfCategoryMap])
 
-  // Reset override when data changes
+  // Reset override when filters change the interface count (but not on initial data load)
   const totalCount = intfCategoryMap.size
+  const prevTotalCount = useRef(totalCount)
   useEffect(() => {
-    setAggregateOverride(null)
+    if (prevTotalCount.current !== 0 && totalCount !== prevTotalCount.current && aggregateOverride !== null) {
+      setAggregateOverride(null)
+    }
+    prevTotalCount.current = totalCount
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [totalCount])
 
   // Resolve whether a given category should be aggregated
@@ -476,6 +491,19 @@ function TrafficPageContent() {
       shouldAggregate(cat) ? aggHelper(categoryData[cat], aggregateTrafficDataTotal) : categoryData[cat]
     return { tunnel: maybeAgg('tunnel'), link: maybeAgg('link'), cyoa: maybeAgg('cyoa'), other: maybeAgg('other') }
   }, [categoryData, shouldAggregate, aggHelper])
+
+  // Keep processing indicator visible until the browser is idle (charts done painting)
+  useEffect(() => {
+    if (!aggregateProcessing) return
+    // requestIdleCallback fires after the browser has finished layout/paint work
+    if ('requestIdleCallback' in window) {
+      const id = requestIdleCallback(() => setAggregateProcessing(false))
+      return () => cancelIdleCallback(id)
+    }
+    // Fallback: wait a generous amount for chart rendering
+    const t = setTimeout(() => setAggregateProcessing(false), 2000)
+    return () => clearTimeout(t)
+  }, [aggregateProcessing])
 
   // Fetch topology data for link metadata
   const {
@@ -696,7 +724,7 @@ function TrafficPageContent() {
                     : 'Auto: charts with >10 interfaces are aggregated. Click to show all per-interface.'
               }
             >
-              <Sigma className={`h-4 w-4 transition-opacity duration-150 ${isPending ? 'opacity-40' : ''}`} />
+              <Sigma className={`h-4 w-4 transition-opacity ${aggregateProcessing ? 'opacity-30 animate-pulse' : ''}`} />
               {aggregateOverride === null && <span className="text-[9px] leading-none opacity-60">A</span>}
             </button>
             <button
@@ -726,7 +754,7 @@ function TrafficPageContent() {
         )}
 
         {/* Charts */}
-        <div className={`${gridClass} transition-opacity duration-150 ${isPending ? 'opacity-50' : ''}`}>
+        <div className={gridClass}>
           {ALL_KNOWN_SECTIONS.map(section => renderChartSection(section))}
         </div>
       </div>
