@@ -32,6 +32,8 @@ interface TrafficChartProps {
   timeRangeSeconds?: number
   /** Custom labels for bidirectional directions (default: { in: 'Rx', out: 'Tx' }) */
   directionLabels?: { in: string; out: string }
+  /** Override legend header text (e.g. "Summary of 42 interfaces") */
+  legendHeader?: string
 }
 
 // Represents one interface with paired in/out in bidirectional mode
@@ -114,7 +116,7 @@ function formatPctAxis(pct: number): string {
   return pct.toFixed(1) + '%'
 }
 
-function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bidirectional = false, onTimeRangeSelect, metric = 'throughput', loading = false, timeRangeSeconds, directionLabels: dirLabels }: TrafficChartProps) {
+function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bidirectional = false, onTimeRangeSelect, metric = 'throughput', loading = false, timeRangeSeconds, directionLabels: dirLabels, legendHeader }: TrafficChartProps) {
   const inLabel = dirLabels?.in ?? 'Rx'
   const outLabel = dirLabels?.out ?? 'Tx'
   const { resolvedTheme } = useTheme()
@@ -1166,9 +1168,11 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
           <div className="flex-none px-2 pt-2">
             <div className="flex items-center gap-2 mb-1.5">
               <div className="text-xs font-medium whitespace-nowrap">
-                {bidirectional
-                  ? `Interfaces (${sortedInterfaceGroups.filter(g => visibleSeries.has(g.inSeries.key)).length}/${sortedInterfaceGroups.length})`
-                  : `Series (${visibleSeriesList.length}/${sortedFilteredSeries.length})`
+                {legendHeader
+                  ? legendHeader
+                  : bidirectional
+                    ? `Interfaces (${sortedInterfaceGroups.filter(g => visibleSeries.has(g.inSeries.key)).length}/${sortedInterfaceGroups.length})`
+                    : `Series (${visibleSeriesList.length}/${sortedFilteredSeries.length})`
                 }
               </div>
               {hoveredTime && (

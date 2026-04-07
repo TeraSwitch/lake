@@ -609,6 +609,10 @@ function TrafficPageContent() {
     const fetching = trafficFetching
     const error = trafficError
 
+    // Count original interfaces for this category (in-direction series = one per interface)
+    const rawSeries = categoryData[cat]?.series
+    const originalIntfCount = rawSeries ? rawSeries.filter(s => s.direction === 'in').length : 0
+
     return (
       <div key={section} className="border border-border rounded-lg p-4">
         <LazyChart key={section}>
@@ -633,6 +637,7 @@ function TrafficPageContent() {
               metric={metric}
               loading={fetching}
               timeRangeSeconds={timeRangeSeconds}
+              legendHeader={aggregate ? `Summary of ${originalIntfCount} interfaces` : undefined}
             />
           )}
         </LazyChart>
