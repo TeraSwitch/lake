@@ -125,6 +125,10 @@ docker_build(
         sync('./web/src', '/app/src'),
         sync('./web/public', '/app/public'),
         sync('./web/index.html', '/app/index.html'),
+        sync('./web/vite.config.ts', '/app/vite.config.ts'),
+        sync('./web/tsconfig.json', '/app/tsconfig.json'),
+        sync('./web/tsconfig.app.json', '/app/tsconfig.app.json'),
+        sync('./web/tsconfig.node.json', '/app/tsconfig.node.json'),
     ],
 )
 

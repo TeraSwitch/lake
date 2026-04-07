@@ -8,13 +8,13 @@ import { useTheme } from '@/hooks/use-theme'
 
 // Color palette matching the app
 const COLORS = [
-  '#ff6b35',  // accent orange
   '#5b8fd6',  // blue
   '#4ca89f',  // green
   '#9b59d0',  // purple
   '#e85988',  // pink
   '#f0ad4e',  // yellow
   '#5bc0de',  // cyan
+  '#ff6b35',  // accent orange
   '#e8603c',  // red-orange
 ]
 
@@ -1291,7 +1291,7 @@ function TrafficChartImpl({ title, data, series, stacked = false, linkLookup, bi
                           className="w-2.5 h-2.5 rounded-sm flex-shrink-0"
                           style={{ backgroundColor: color }}
                         />
-                        <span className="text-xs truncate">{g.intfKey}</span>
+                        <span className="text-xs truncate">{g.device && g.intf ? g.intfKey : g.device || g.intf}</span>
                         {g.inSeries.cyoa_type && g.inSeries.cyoa_type !== 'none' && g.inSeries.cyoa_type !== '' && (
                           <span className="px-1 py-0.5 rounded text-[9px] leading-none bg-amber-500/15 text-amber-400 flex-shrink-0">CYOA</span>
                         )}
