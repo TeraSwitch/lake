@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo, useCallback, useTransition } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
-import { ChevronDown, Loader2, Network, Sigma } from 'lucide-react'
+import { ChevronDown, Network, Sigma } from 'lucide-react'
 import { fetchTrafficData, fetchTopology, type TrafficPoint, type SeriesInfo } from '@/lib/api'
 import { TrafficChart } from '@/components/traffic-chart-uplot'
 import { DashboardProvider, useDashboard, dashboardFilterParams, resolveAutoBucket } from '@/components/traffic-dashboard/dashboard-context'
@@ -696,7 +696,7 @@ function TrafficPageContent() {
                     : 'Auto: charts with >10 interfaces are aggregated. Click to show all per-interface.'
               }
             >
-              {isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sigma className="h-4 w-4" />}
+              <Sigma className={`h-4 w-4 transition-opacity duration-150 ${isPending ? 'opacity-40' : ''}`} />
               {aggregateOverride === null && <span className="text-[9px] leading-none opacity-60">A</span>}
             </button>
             <button
