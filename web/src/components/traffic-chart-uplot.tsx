@@ -8,8 +8,8 @@ import { useTheme } from '@/hooks/use-theme'
 
 // Color palette matching the app
 const COLORS = [
-  '#5b8fd6',  // blue
   '#4ca89f',  // green
+  '#5b8fd6',  // blue
   '#9b59d0',  // purple
   '#e85988',  // pink
   '#f0ad4e',  // yellow
