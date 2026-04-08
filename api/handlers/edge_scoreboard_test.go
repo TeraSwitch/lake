@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// createShredderTables creates the slot_feed_races and publisher_shred_stats tables in the shredder DB.
+// createShredderTables creates the slot_feed_race_summary and publisher_shred_stats tables in the shredder DB.
 func createShredderTables(t *testing.T, api *handlers.API) {
 	t.Helper()
 	ctx := t.Context()
@@ -21,11 +21,11 @@ func createShredderTables(t *testing.T, api *handlers.API) {
 	err := api.DB.Exec(ctx, fmt.Sprintf("CREATE DATABASE IF NOT EXISTS %s", db))
 	require.NoError(t, err)
 	err = api.DB.Exec(ctx, fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.slot_feed_races (
+		CREATE TABLE IF NOT EXISTS %s.slot_feed_race_summary (
 			event_ts DateTime64(3),
 			ingested_at DateTime64(3) DEFAULT now(),
-			node_id String,
-			feed_type String,
+			host String,
+			feed_type String DEFAULT 'shred',
 			epoch UInt64,
 			slot UInt64,
 			feed String,
@@ -34,9 +34,9 @@ func createShredderTables(t *testing.T, api *handlers.API) {
 			shreds_won UInt64,
 			lead_time_p50_ms Float64 DEFAULT 0,
 			lead_time_p95_ms Float64 DEFAULT 0
-		) ENGINE = ReplacingMergeTree(ingested_at)
+		) ENGINE = MergeTree
 		PARTITION BY toYYYYMM(event_ts)
-		ORDER BY (node_id, slot, feed, loser_feed)
+		ORDER BY (host, slot, feed, loser_feed)
 	`, db))
 	require.NoError(t, err)
 	err = api.DB.Exec(ctx, fmt.Sprintf(`
@@ -112,8 +112,8 @@ func insertEdgeScoreboardTestData(t *testing.T, api *handlers.API) {
 	// slot1: all 3 feeds (dz, turbine, jito) for both nodes — DZ wins most shreds (DZ-leader slot)
 	// slot2: only turbine + jito (no DZ) — tests completeness calculation
 	err = api.DB.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.slot_feed_races
-			(event_ts, node_id, feed_type, epoch, slot, feed, loser_feed, total_shreds, shreds_won)
+		INSERT INTO %s.slot_feed_race_summary
+			(event_ts, host, feed_type, epoch, slot, feed, loser_feed, total_shreds, shreds_won)
 		VALUES
 			(now(), 'slc-qa-bm1', 'shred', %[2]d, %[3]d, 'dz',      '', 100, 80),
 			(now(), 'slc-qa-bm1', 'shred', %[2]d, %[3]d, 'turbine',  '', 100, 15),
@@ -131,8 +131,8 @@ func insertEdgeScoreboardTestData(t *testing.T, api *handlers.API) {
 	// Insert lead-time rows (loser_feed != '') — pairwise: winner vs specific loser
 	// For slot1 on slc-qa-bm1: dz beat turbine and jito
 	err = api.DB.Exec(ctx, fmt.Sprintf(`
-		INSERT INTO %s.slot_feed_races
-			(event_ts, node_id, feed_type, epoch, slot, feed, loser_feed, lead_time_p50_ms, lead_time_p95_ms)
+		INSERT INTO %s.slot_feed_race_summary
+			(event_ts, host, feed_type, epoch, slot, feed, loser_feed, lead_time_p50_ms, lead_time_p95_ms)
 		VALUES
 			(now(), 'slc-qa-bm1', 'shred', %[2]d, %[3]d, 'dz', 'turbine', 1.5, 3.0),
 			(now(), 'slc-qa-bm1', 'shred', %[2]d, %[3]d, 'dz', 'jito',    2.0, 4.0),
@@ -157,7 +157,7 @@ func TestGetEdgeScoreboard_Empty(t *testing.T) {
 	err := json.NewDecoder(rr.Body).Decode(&resp)
 	require.NoError(t, err)
 	assert.Empty(t, resp.Nodes)
-	assert.Equal(t, "24h", resp.Window)
+	assert.Equal(t, "1h", resp.Window)
 }
 
 func TestGetEdgeScoreboard_WithData(t *testing.T) {
@@ -175,20 +175,20 @@ func TestGetEdgeScoreboard_WithData(t *testing.T) {
 	err := json.NewDecoder(rr.Body).Decode(&resp)
 	require.NoError(t, err)
 
-	assert.Equal(t, "24h", resp.Window)
+	assert.Equal(t, "1h", resp.Window)
 	assert.Equal(t, uint64(800), resp.CurrentEpoch)
 	assert.Len(t, resp.Nodes, 2)
 
-	// Each node has 2 total slots (100 and 200) and 1 DZ slot (100)
-	// Total across both nodes: 4 total slots, 2 DZ slots => 50% completeness
+	// 2 unique slots total (100, 200), 1 is a DZ-leader slot => completeness = 50%.
 	assert.Equal(t, uint64(4), resp.TotalSlots)
 	assert.Equal(t, uint64(2), resp.DZSlots)
-	assert.Equal(t, 50.0, resp.CompletenessPct)
+	assert.Equal(t, uint64(1), resp.TotalDZLeaderSlots)
+	assert.InDelta(t, 50.0, resp.CompletenessPct, 0.01)
 
 	// Find nodes by ID
 	nodeMap := make(map[string]handlers.EdgeScoreboardNode)
 	for _, n := range resp.Nodes {
-		nodeMap[n.NodeID] = n
+		nodeMap[n.Host] = n
 	}
 
 	// Check SLC node
@@ -275,5 +275,5 @@ func TestGetEdgeScoreboard_InvalidWindow(t *testing.T) {
 	var resp handlers.EdgeScoreboardResponse
 	err := json.NewDecoder(rr.Body).Decode(&resp)
 	require.NoError(t, err)
-	assert.Equal(t, "24h", resp.Window)
+	assert.Equal(t, "1h", resp.Window)
 }
