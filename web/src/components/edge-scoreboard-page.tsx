@@ -1,7 +1,10 @@
 import { useState, useMemo, useRef, useEffect } from 'react'
+import { createPortal } from 'react-dom'
+import { useDrag } from '@use-gesture/react'
+import { inertia } from 'popmotion'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams, Link } from 'react-router-dom'
-import { Trophy, Loader2 } from 'lucide-react'
+import { Trophy, Loader2, ChevronsRight } from 'lucide-react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 
@@ -394,14 +397,25 @@ function BucketedNodeChart({ data, feeds, bucketSize }: { data: Array<Record<str
   )
 }
 
+// Module-level ref: only one chart instance can own hover at a time.
+// When a chart gets a valid setCursor, it claims ownership. The scroll-restore
+// effect only fires for the owner, so moving to another row clears the previous one.
+let activeChartId: string | null = null
+
 function SlotRaceNodeChart({
   slotData,
   feeds,
   slotLeaders,
+  animated = true,
+  dragging = false,
+  liveScrollOffset = 0,
 }: {
   slotData: Array<Record<string, number | null>>
   feeds: string[]
   slotLeaders?: Record<string, EdgeScoreboardLeader>
+  animated?: boolean
+  dragging?: boolean
+  liveScrollOffset?: number
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -413,19 +427,45 @@ function SlotRaceNodeChart({
   const hoveredIdxRef = useRef<number | null>(null)
   const animOffsetRef = useRef(0)
   const rafRef = useRef<number | null>(null)
-  const isFirstDataRef = useRef(true)
+  const animatedRef = useRef(animated)
+  animatedRef.current = animated
+  const prevRightSlotRef = useRef<number | null>(null)
+  // Track cursor position so we can recompute the hovered idx as the chart scrolls
+  // under a stationary mouse (translateX moves the canvas, uPlot doesn't re-fire setCursor).
+  const lastCursorLeftRef = useRef<number | null>(null)
+  const scrollOffsetAtLastCursorRef = useRef(0)
+  const liveScrollOffsetRef = useRef(liveScrollOffset)
+  liveScrollOffsetRef.current = liveScrollOffset
+  // Viewport coords from last real mousemove — kept across mouseleave so we can restore hover
+  // when translateX temporarily moves u.over away from the cursor (browsers don't re-fire
+  // mousemove for a stationary pointer when an element slides back under it).
+  const lastHoverVxRef = useRef<number | null>(null)
+  const lastHoverVyRef = useRef<number | null>(null)
+  // Stable id for this chart instance — used to claim/check activeChartId ownership.
+  const chartIdRef = useRef(`chart-${Math.random()}`)
 
   const [hover, setHover] = useState<{ idx: number; vx: number; vy: number } | null>(null)
-  setHoverRef.current = (idx, vx, vy) => setHover(idx == null ? null : { idx, vx, vy })
+  setHoverRef.current = (idx, vx, vy) => {
+    if (idx == null) {
+      setHover(null)
+      // Don't clear lastHoverVx/Vy or release ownership here — translateX may have briefly
+      // moved u.over away from the cursor. The scroll effect will restore hover as long as
+      // this chart still owns activeChartId.
+    } else {
+      activeChartId = chartIdRef.current  // claim ownership
+      lastHoverVxRef.current = vx
+      lastHoverVyRef.current = vy
+      setHover({ idx, vx, vy })
+    }
+  }
 
-  // Re-initialize uPlot only when slot count or feeds change (not on every data refresh).
+  // Re-initialize uPlot only when feeds change. Slot count is always LIVE_BUFFER_SIZE so
+  // the scale is fixed — draw hook reads slotDataRef.current directly and handles any count.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!containerRef.current || !slotData.length) return
 
-    isFirstDataRef.current = true
-
-    const n = slotData.length
+    const n = LIVE_BUFFER_SIZE
     const height = NODE_CHART_HEIGHT
 
     const xData = Float64Array.from({ length: n }, (_, i) => i)
@@ -505,6 +545,8 @@ function SlotRaceNodeChart({
             }
             hoveredIdxRef.current = idx
             u.redraw(false)
+            lastCursorLeftRef.current = u.cursor.left ?? null
+            scrollOffsetAtLastCursorRef.current = liveScrollOffsetRef.current
             const rect = u.over.getBoundingClientRect()
             const vx = rect.left + (u.cursor.left ?? 0)
             const vy = rect.top + (u.cursor.top ?? 0)
@@ -530,18 +572,27 @@ function SlotRaceNodeChart({
       plotRef.current?.destroy()
       plotRef.current = null
     }
-  }, [slotData.length, feeds])
+  }, [feeds])
 
   // Animate bars sliding in from the right on data refresh.
   useEffect(() => {
-    if (isFirstDataRef.current) {
-      isFirstDataRef.current = false
-      return
-    }
     const plot = plotRef.current
     if (!plot || !slotData.length) return
 
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+
+    // Only animate when the rightmost slot actually changes (a real new slot arrived).
+    const rightSlot = slotData.at(-1)?.['slot'] as number | undefined ?? null
+    const rightSlotChanged = rightSlot !== prevRightSlotRef.current
+    prevRightSlotRef.current = rightSlot
+
+    // In live tailing mode the outer drain translateX handles all movement — skip the
+    // inner canvas animation to avoid the two animations fighting each other.
+    if (!animatedRef.current || !rightSlotChanged) {
+      animOffsetRef.current = 0
+      plot.redraw(false)
+      return
+    }
 
     // Slide-in offset: use one slot-width, but cap at 4px so bucketed mode
     // (fewer, wider buckets) doesn't animate a large gap on the left.
@@ -572,6 +623,55 @@ function SlotRaceNodeChart({
     }
   }, [slotData])
 
+  // When the chart scrolls (translateX shifts the canvas left), a stationary mouse effectively
+  // moves right in canvas coordinates. Recompute the hovered idx so the tooltip tracks the bar
+  // that is visually under the cursor without requiring the user to move the mouse.
+  // Also restores hover if translateX briefly pushed u.over's edge past the cursor (mouseleave
+  // fires but mousemove does NOT re-fire when the element slides back — browser limitation).
+  useEffect(() => {
+    const plot = plotRef.current
+    // Only restore hover if this chart still owns the active hover slot.
+    // If another chart got a valid setCursor (user moved to another row), activeChartId
+    // changed and we stop restoring — preventing multiple tooltips from showing at once.
+    if (!plot || lastCursorLeftRef.current === null || lastHoverVxRef.current === null) return
+    if (activeChartId !== chartIdRef.current) {
+      // Lost ownership — clear stored state so we don't restore on future ticks
+      lastHoverVxRef.current = null
+      lastCursorLeftRef.current = null
+      return
+    }
+    const delta = liveScrollOffset - scrollOffsetAtLastCursorRef.current
+    const adjustedLeft = lastCursorLeftRef.current + delta
+    const xVal = plot.posToVal(adjustedLeft, 'x')
+    const idx = Math.round(xVal)
+    if (idx < 0 || idx >= slotDataRef.current.length) return
+    // Dead zone: stay on the current bar unless the cursor has clearly moved past 40% of a
+    // bar width from the current center. Prevents flickering at bar boundaries.
+    const currentIdx = hoveredIdxRef.current
+    if (currentIdx !== null && Math.abs(xVal - currentIdx) < 0.4) return
+    hoveredIdxRef.current = idx
+    plot.redraw(false)
+    setHover(prev =>
+      prev && prev.idx === idx ? prev  // avoid spurious re-render when nothing changed
+        : { idx, vx: lastHoverVxRef.current!, vy: lastHoverVyRef.current! }
+    )
+  }, [liveScrollOffset])
+
+  // Release ownership and clear hover when mouse moves to an element outside this chart.
+  useEffect(() => {
+    const onDocMove = (e: MouseEvent) => {
+      if (activeChartId !== chartIdRef.current || !containerRef.current) return
+      if (!containerRef.current.contains(e.target as Node)) {
+        activeChartId = null
+        lastHoverVxRef.current = null
+        lastCursorLeftRef.current = null
+        setHover(null)
+      }
+    }
+    document.addEventListener('mousemove', onDocMove, { passive: true })
+    return () => document.removeEventListener('mousemove', onDocMove)
+  }, [])
+
   const hoveredSlot = hover != null ? slotData[hover.idx] : null
   const hoveredLeader = hoveredSlot ? slotLeadersRef.current?.[String(hoveredSlot['slot'])] : undefined
   const xPos = hover != null && hover.vx + 10 + 180 > window.innerWidth ? hover.vx - 190 : (hover?.vx ?? 0) + 10
@@ -579,7 +679,7 @@ function SlotRaceNodeChart({
   return (
     <div className="relative flex-1 min-w-0 overflow-hidden rounded">
       <div ref={containerRef} />
-      {hover && hoveredSlot && (
+      {hover && hoveredSlot && !dragging && createPortal(
         <div
           className="fixed z-50 bg-[#1a1a2e] border border-[#333] rounded-md px-3 py-2 text-xs shadow-lg pointer-events-none"
           style={{ left: xPos, top: Math.max(0, hover.vy - 60) }}
@@ -616,10 +716,36 @@ function SlotRaceNodeChart({
               ))}
             </tbody>
           </table>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   )
+}
+
+const LIVE_BUFFER_SIZE = 200
+const MAX_BUFFER_SLOTS = 2000
+
+// Returns the LIVE_BUFFER_SIZE slots whose right edge is at `endSlot`.
+// When endSlot is null, uses `liveEdge` as the anchor (the drain-controlled live edge).
+// liveEdge=0 means "no anchor" — uses the buffer's newest slot (non-live mode).
+function computeViewByEnd(
+  buffer: EdgeScoreboardSlotRace[],
+  endSlot: number | null,
+  liveEdge?: number,
+  extraLeft: number = 0,
+): EdgeScoreboardSlotRace[] {
+  const slotNums = [...new Set(buffer.map(r => r.slot))].sort((a, b) => a - b)
+  if (!slotNums.length) return []
+  // liveEdge=0 is treated as unset (use buffer newest).
+  const anchor = endSlot ?? (liveEdge || null)
+  let rightIdx = slotNums.length - 1
+  if (anchor != null) {
+    while (rightIdx > 0 && slotNums[rightIdx] > anchor) rightIdx--
+  }
+  const leftIdx = Math.max(0, rightIdx - LIVE_BUFFER_SIZE + 1 - extraLeft)
+  const keep = new Set(slotNums.slice(leftIdx, rightIdx + 1))
+  return buffer.filter(r => keep.has(r.slot))
 }
 
 function RecentSlotsChart({
@@ -632,6 +758,8 @@ function RecentSlotsChart({
   window,
   bucketed,
   setBucketed,
+  live,
+  setLive,
 }: {
   slots: EdgeScoreboardSlotRace[]
   nodes: EdgeScoreboardNode[]
@@ -642,14 +770,442 @@ function RecentSlotsChart({
   window?: TimeWindow
   bucketed: boolean
   setBucketed: (v: boolean) => void
+  live: boolean
+  setLive: (v: boolean) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
 
+  // Live mode: fetch 300 slots on activate (show first 100 immediately, queue
+  // the rest for animation), then poll every 5s with a since_slot cursor so
+  // only new slots are fetched. A sliding window keeps slot count fixed at
+  // LIVE_BUFFER_SIZE so uPlot never re-initialises and the slide animation fires.
+  const liveMaxSlotRef = useRef(0)
+  const liveQueueRef = useRef<EdgeScoreboardSlotRace[][]>([])
+  // liveEdge: the slot number drain considers the right edge of the live window.
+  // Only advances via drain, so computeViewByEnd(buf, null, liveEdge) and
+  // scrollToLive both target the same value — eliminating the jump on transition.
+  const [liveEdge, setLiveEdge] = useState<number>(0)
+  const liveEdgeRef = useRef<number>(0)
+  const [liveLeaders, setLiveLeaders] = useState<Record<string, EdgeScoreboardLeader> | undefined>(undefined)
+  const slotBufferRef = useRef<EdgeScoreboardSlotRace[]>([])
+  // viewEndSlot: the slot number anchoring the right edge of the visible window.
+  // null = live (show up to liveEdge). Absolute slot number means the view is
+  // stable when the buffer grows on either end — no offset math needed.
+  const [viewEndSlot, setViewEndSlot] = useState<number | null>(null)
+  const viewEndSlotRef = useRef<number | null>(null)
+
+  useEffect(() => {
+    if (!live || bucketed) {
+      liveMaxSlotRef.current = 0
+      liveQueueRef.current = []
+      liveEdgeRef.current = 0
+      setLiveEdge(0)
+      setLiveLeaders(undefined)
+      viewEndSlotRef.current = null
+      setViewEndSlot(null)
+      prefetchedBoundariesRef.current = new Set()
+      return
+    }
+
+    let cancelled = false
+
+    // Group races by slot, preserving order.
+    const bySlotOrdered = (races: EdgeScoreboardSlotRace[]) => {
+      const map = new Map<number, EdgeScoreboardSlotRace[]>()
+      const nums: number[] = []
+      for (const r of races) {
+        if (!map.has(r.slot)) { map.set(r.slot, []); nums.push(r.slot) }
+        map.get(r.slot)!.push(r)
+      }
+      return { map, nums: nums.sort((a, b) => a - b) }
+    }
+
+    // Initial fetch: uses the page cache (no custom params). The cache stores 1000 slots,
+    // giving ~500 slots of drain animation (~3.5 min) before the queue could run dry.
+    // INITIAL_QUEUE_SLOTS × 400ms/slot must cover at least one full cache refresh cycle (30s).
+    const INITIAL_QUEUE_SLOTS = 500
+    const loadSlots = (data: Awaited<ReturnType<typeof fetchEdgeScoreboard>>, prevMax: number) => {
+      const { map, nums } = bySlotOrdered(data.recent_slots)
+      const newNums = prevMax > 0 ? nums.filter(n => n > prevMax) : nums
+      if (!newNums.length) return
+      liveMaxSlotRef.current = nums.at(-1) ?? liveMaxSlotRef.current
+      liveQueueRef.current.push(...newNums.map(s => map.get(s)!))
+      if (data.slot_leaders) setLiveLeaders(prev => ({ ...prev, ...data.slot_leaders }))
+    }
+    fetchEdgeScoreboard(window, leadersOnly).then(data => {
+      if (cancelled) return
+      const { map, nums } = bySlotOrdered(data.recent_slots)
+      liveMaxSlotRef.current = nums.at(-1) ?? 0
+      const splitIdx = Math.max(LIVE_BUFFER_SIZE, nums.length - INITIAL_QUEUE_SLOTS)
+      const immediate = nums.slice(0, splitIdx)
+      const toQueue = nums.slice(splitIdx)
+      const immediateSlot = immediate.at(-1) ?? 0
+      slotBufferRef.current = immediate.flatMap(s => map.get(s)!)
+      liveEdgeRef.current = immediateSlot
+      setLiveEdge(immediateSlot)
+      liveQueueRef.current = toQueue.map(s => map.get(s)!)
+      if (data.slot_leaders) setLiveLeaders(data.slot_leaders)
+    }).catch(() => {})
+
+    // Poll the page cache every 10s. The cache refreshes every 30s so most polls
+    // are instant cache hits; when the cache updates we get ~75 new slots to queue.
+    const poll = () => {
+      const prevMax = liveMaxSlotRef.current
+      fetchEdgeScoreboard(window, leadersOnly).then(data => {
+        if (cancelled) return
+        loadSlots(data, prevMax)
+      }).catch(() => {})
+    }
+    const pollInterval = setInterval(poll, 10_000)
+
+    // Single rAF loop drives both the scroll animation and the drain.
+    // scrollOffset advances at slotPx/400ms (constant velocity). When it rolls over
+    // slotPx, we pop the next slot from the queue and call setLiveEdge + setScrollOffset
+    // in the same rAF callback — React 18 auto-batches them into one render so the
+    // rollover is seamless: old slot exits at screen -slotPx, new slot appears at
+    // screen 199*slotPx (right mask fade zone), all positions continuous.
+    let scrollOff = 0
+    let drainTimer = 0
+    let lastTime: number | null = null
+    let drainRafId = 0
+    const tick = (now: number) => {
+      if (cancelled) return
+      // Cap dt to one slot interval so a long background-tab pause doesn't cause a
+      // burst of rapid drains on return (rAF is throttled in background tabs).
+      const dt = lastTime === null ? 0 : Math.min(now - lastTime, 400)
+      lastTime = now
+      const slotPx = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / LIVE_BUFFER_SIZE)
+      const inTail = !isDraggingRef.current && viewEndSlotRef.current === null
+      if (inTail) {
+        scrollOff += (slotPx / 400) * dt
+        if (scrollOff >= slotPx) {
+          const races = liveQueueRef.current.shift()
+          if (races) {
+            const newBuf = [...slotBufferRef.current, ...races]
+            const bufNums = [...new Set(newBuf.map(r => r.slot))].sort((a, b) => a - b)
+            const keepBuf = new Set(bufNums.slice(-MAX_BUFFER_SLOTS))
+            slotBufferRef.current = newBuf.filter(r => keepBuf.has(r.slot))
+            const slotNum = races[0]?.slot
+            scrollOff -= slotPx
+            if (slotNum) { liveEdgeRef.current = slotNum; setLiveEdge(slotNum) }
+          } else {
+            scrollOff = 0  // queue empty — hold position
+          }
+        }
+        setScrollOffset(scrollOff)
+      } else {
+        if (scrollOff !== 0) { scrollOff = 0; setScrollOffset(0) }
+        // Still drain queue at 400ms pace so liveEdge stays current even when frozen/dragging.
+        // This ensures clicking Live/>> after a drag returns to the actual head, not a frozen slot.
+        drainTimer += dt
+        if (drainTimer >= 400) {
+          drainTimer -= 400
+          const races = liveQueueRef.current.shift()
+          if (races) {
+            const newBuf = [...slotBufferRef.current, ...races]
+            const bufNums = [...new Set(newBuf.map(r => r.slot))].sort((a, b) => a - b)
+            const keepBuf = new Set(bufNums.slice(-MAX_BUFFER_SLOTS))
+            slotBufferRef.current = newBuf.filter(r => keepBuf.has(r.slot))
+            const slotNum = races[0]?.slot
+            if (slotNum) { liveEdgeRef.current = slotNum }
+          }
+        }
+      }
+      drainRafId = requestAnimationFrame(tick)
+    }
+    drainRafId = requestAnimationFrame(tick)
+
+    return () => {
+      cancelled = true
+      clearInterval(pollInterval)
+      cancelAnimationFrame(drainRafId)
+      liveMaxSlotRef.current = 0
+      liveQueueRef.current = []
+      // Don't clear the buffer — non-live mode will overwrite it with slots next render.
+      liveEdgeRef.current = 0
+    }
+  }, [live, bucketed, window, leadersOnly])
+
+  // In non-live per-slot mode, keep the buffer in sync with the query result so
+  // the scroll system works the same way as live mode.
+  if (!live && !bucketed) {
+    slotBufferRef.current = slots
+  }
+
+  // Drag-to-scroll: click/touch and drag left/right to navigate the timeline with momentum.
+  const momentumStopRef = useRef<{ stop: () => void } | null>(null)
+  const liveRef = useRef(live)
+  liveRef.current = live
+  const [isDragging, setIsDragging] = useState(false)
+  const isDraggingRef = useRef(isDragging)
+  isDraggingRef.current = isDragging
+  const [overscrollPx, setOverscrollPx] = useState(0)
+  // scrollOffset: 0→slotPx at constant velocity, driven by a single rAF loop that also
+  // pops the drain queue at rollover. Both setScrollOffset+setLiveEdge fire in the same
+  // rAF callback so React batches them into one render — the rollover is seamless.
+  const [scrollOffset, setScrollOffset] = useState(0)
+
+
+  const prefetchingRef = useRef(false)
+  const [isPrefetching, setIsPrefetching] = useState(false)
+  const prefetchedBoundariesRef = useRef(new Set<number>())
+
+  // Animate smoothly to the live edge, then snap to tailing mode.
+  // Handles two cases:
+  //   1. liveEdge already known (already live, or re-enabling): animate immediately.
+  //   2. liveEdge unknown (first activation): pin current position, start live mode,
+  //      then wait for drain to set liveEdgeRef before starting the tween.
+  const scrollToLiveAnimRef = useRef<number | null>(null)
+  const scrollToLive = () => {
+    momentumStopRef.current?.stop()
+    momentumStopRef.current = null
+
+    if (scrollToLiveAnimRef.current !== null) {
+      cancelAnimationFrame(scrollToLiveAnimRef.current)
+      scrollToLiveAnimRef.current = null
+    }
+
+    const slotNums = [...new Set(slotBufferRef.current.map(r => r.slot))].sort((a, b) => a - b)
+
+    // Effective start: use pinned position if available, else the buffer's newest slot.
+    // This gives us a concrete starting slot even when viewEndSlot is null (tailing state).
+    const effectiveStart = viewEndSlotRef.current ?? slotNums.at(-1) ?? null
+
+    // Sync liveEdge state with ref before transitioning to tailing so activeSlots
+    // doesn't anchor to a stale state value (ref is kept current by non-tail drain).
+    const syncLiveEdge = () => {
+      if (liveEdgeRef.current > 0) setLiveEdge(liveEdgeRef.current)
+    }
+
+    if (effectiveStart === null) {
+      // No data at all — just snap.
+      viewEndSlotRef.current = null
+      syncLiveEdge()
+      setViewEndSlot(null)
+      if (!liveRef.current) setLive(true)
+      return
+    }
+
+    // Pin the current view BEFORE activating live mode so the content doesn't jump
+    // when the drain first fires and liveEdge advances past the current buffer head.
+    if (viewEndSlotRef.current !== effectiveStart) {
+      viewEndSlotRef.current = effectiveStart
+      setViewEndSlot(effectiveStart)
+    }
+
+    // Start live mode (no-op if already live) so drain + SSE begin.
+    if (!liveRef.current) setLive(true)
+
+    // If liveEdge is already known and we're already at it, snap and done.
+    if (liveEdgeRef.current > 0 && effectiveStart >= liveEdgeRef.current) {
+      viewEndSlotRef.current = null
+      syncLiveEdge()
+      setViewEndSlot(null)
+      return
+    }
+
+    const startSlot = effectiveStart
+    // If liveEdge is known, we can set the target now; otherwise we wait in the rAF loop.
+    let targetSlot: number | null = liveEdgeRef.current > 0 ? liveEdgeRef.current : null
+    let animStartTime: number | null = targetSlot !== null ? performance.now() : null
+    const waitStart = performance.now()
+    const WAIT_TIMEOUT_MS = 2000
+
+    const tick = (now: number) => {
+      if (targetSlot === null) {
+        // Waiting for drain to produce the first liveEdge value.
+        const liveEdge = liveEdgeRef.current
+        if (liveEdge > 0) {
+          if (startSlot >= liveEdge) {
+            // Already at target, done.
+            scrollToLiveAnimRef.current = null
+            viewEndSlotRef.current = null
+            syncLiveEdge()
+            setViewEndSlot(null)
+            return
+          }
+          targetSlot = liveEdge
+          animStartTime = now
+        } else if (now - waitStart > WAIT_TIMEOUT_MS) {
+          // Timed out — snap to live.
+          scrollToLiveAnimRef.current = null
+          viewEndSlotRef.current = null
+          syncLiveEdge()
+          setViewEndSlot(null)
+          return
+        } else {
+          scrollToLiveAnimRef.current = requestAnimationFrame(tick)
+          return
+        }
+      }
+
+      const distance = targetSlot - startSlot
+      // Scale duration by distance; clamp so short hops feel snappy, long ones stay smooth.
+      const duration = Math.min(700, Math.max(200, distance * 8))
+      const t = Math.min(1, (now - animStartTime!) / duration)
+      // Ease-out cubic: fast start, smooth deceleration.
+      const eased = 1 - Math.pow(1 - t, 3)
+      const current = startSlot + distance * eased
+
+      if (t < 1) {
+        viewEndSlotRef.current = current
+        setViewEndSlot(current)
+        scrollToLiveAnimRef.current = requestAnimationFrame(tick)
+      } else {
+        scrollToLiveAnimRef.current = null
+        viewEndSlotRef.current = null
+        syncLiveEdge()
+        setViewEndSlot(null)
+      }
+    }
+
+    scrollToLiveAnimRef.current = requestAnimationFrame(tick)
+  }
+
+  // Captured at the start of each drag gesture so we can compute position from
+  // cumulative movement rather than accumulating per-frame incremental deltas.
+  const dragStartSlotRef = useRef<number>(0)
+
+  useDrag(
+    ({ movement: [mx], velocity: [vx], direction: [dirX], first, last, active }) => {
+      const slotNums = () => [...new Set(slotBufferRef.current.map(r => r.slot))].sort((a, b) => a - b)
+      const px = () => Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / LIVE_BUFFER_SIZE)
+
+      if (active) {
+        momentumStopRef.current?.stop()
+        momentumStopRef.current = null
+
+        const nums = slotNums()
+        const liveEdge = liveEdgeRef.current || (nums.at(-1) ?? 0)
+        const oldestSlot = nums[0] ?? 0
+        const minEnd = oldestSlot + LIVE_BUFFER_SIZE - 1
+
+        if (first) {
+          // Capture the slot position at drag start so rawEnd = startSlot - totalMovement/px.
+          // This makes overscroll accumulate correctly — delta-based math resets each frame
+          // when viewEndSlotRef is frozen at minEnd during overscroll.
+          dragStartSlotRef.current = viewEndSlotRef.current ?? liveEdge
+        }
+
+        // Use cumulative movement from gesture start, not incremental delta.
+        // drag right (mx > 0) = back in time = rawEnd decreases
+        const rawEnd = dragStartSlotRef.current - mx / px()
+
+        if (rawEnd < minEnd) {
+          // Past the left edge: anchor data at minEnd (no content change), grow CSS transform.
+          const rawOverflowPx = (minEnd - rawEnd) * px()
+          setOverscrollPx(Math.min(80, rawOverflowPx * 0.3))
+          viewEndSlotRef.current = minEnd
+          setViewEndSlot(minEnd)
+        } else {
+          setOverscrollPx(0)
+          const newEnd = Math.min(liveEdge, rawEnd)
+          viewEndSlotRef.current = newEnd
+          setViewEndSlot(newEnd)
+        }
+        setIsDragging(true)
+      }
+
+      if (last) {
+        setIsDragging(false)
+        setOverscrollPx(0)  // CSS transition snaps back
+
+        const nums = slotNums()
+        const liveEdge = liveEdgeRef.current || (nums.at(-1) ?? 0)
+        const oldestSlot = nums[0] ?? 0
+        const minEnd = oldestSlot + LIVE_BUFFER_SIZE - 1
+        const currentEnd = viewEndSlotRef.current ?? liveEdge
+
+        // If the user released at/past the live edge, animate smoothly into live.
+        if (currentEnd >= liveEdge) {
+          scrollToLive()
+          return
+        }
+
+        // velocity[0] = px/ms magnitude, direction[0] = sign.
+        // drag right → slot decreases → inertia velocity is negative
+        const slotVelocityPerSecond = -(vx * dirX) / px() * 1000
+
+        if (Math.abs(slotVelocityPerSecond) > 1) {
+          momentumStopRef.current = inertia({
+            from: currentEnd,
+            velocity: slotVelocityPerSecond,
+            power: 0.8,
+            timeConstant: 600,
+            restDelta: 0.5,
+            min: minEnd,
+            max: liveEdge,
+            // No bounce — inertia decelerates cleanly to the boundary.
+            // The CSS elastic during drag already provides the tactile edge feel.
+            modifyTarget: (t: number) => Math.max(minEnd, Math.min(liveEdge, t)),
+            onUpdate: (value: number) => {
+              const clamped = Math.max(minEnd, Math.min(liveEdge, value))
+              viewEndSlotRef.current = clamped
+              setViewEndSlot(clamped)
+            },
+            onComplete: () => {
+              momentumStopRef.current = null
+              // If inertia landed at the live edge, transition smoothly to live.
+              if (viewEndSlotRef.current !== null && viewEndSlotRef.current >= liveEdgeRef.current - 1) {
+                scrollToLive()
+              }
+            },
+          })
+        }
+      }
+    },
+    {
+      target: containerRef,
+      axis: 'x',
+      pointer: { capture: true, touch: true },
+      filterTaps: true,
+      enabled: !bucketed,
+    }
+  )
+
+  // Prefetch older slots when user scrolls near the buffer start (infinite scroll backwards).
+  useEffect(() => {
+    if (bucketed || prefetchingRef.current || viewEndSlot === null) return
+    const buffer = slotBufferRef.current
+    if (!buffer.length) return
+    const slotNums = [...new Set(buffer.map(r => r.slot))].sort((a, b) => a - b)
+    const oldestSlot = slotNums[0]
+    // Trigger when the left edge of the view is within 150 slots of the oldest data
+    if (viewEndSlot > oldestSlot + LIVE_BUFFER_SIZE + 150) return
+    if (prefetchedBoundariesRef.current.has(oldestSlot)) return
+    prefetchingRef.current = true
+    setIsPrefetching(true)
+    prefetchedBoundariesRef.current.add(oldestSlot)
+    fetchEdgeScoreboard(window, leadersOnly, { beforeSlot: oldestSlot, limit: 500 }).then(data => {
+      if (!data.recent_slots.length) return
+      // Prepend older slots. viewEndSlot is an absolute slot number so the view
+      // is unaffected by buffer growth — no offset adjustment needed.
+      const existingSlots = new Set(slotBufferRef.current.map(r => r.slot))
+      const newRaces = data.recent_slots.filter((r: EdgeScoreboardSlotRace) => !existingSlots.has(r.slot))
+      if (newRaces.length) slotBufferRef.current = [...newRaces, ...slotBufferRef.current]
+    }).catch(() => {
+      prefetchedBoundariesRef.current.delete(oldestSlot)
+    }).finally(() => {
+      prefetchingRef.current = false
+      setIsPrefetching(false)
+    })
+  }, [viewEndSlot, bucketed, window, leadersOnly])
+
+  // Memoized on liveEdge/viewEndSlot so 60fps scrollOffset re-renders don't recompute it.
+  // slotBufferRef is a ref that only changes when liveEdge advances, so this is correct.
+  const activeSlots = useMemo(() => {
+    if (bucketed) return slots
+    const buf = slotBufferRef.current
+    if (!buf.length) return live ? [] : slots
+    return computeViewByEnd(buf, viewEndSlot, liveEdge)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bucketed, liveEdge, viewEndSlot, live, slots])
+
   const chartData = useMemo(() => {
-    if (!slots.length || !nodes.length) return { nodeCharts: [], feeds: [] as string[], slotCount: 0 }
+    if (!activeSlots.length || !nodes.length) return { nodeCharts: [], feeds: [] as string[], slotCount: 0 }
 
     const validNodeIds = new Set(nodes.map((n) => n.host))
-    const filtered = slots.filter((s) => validNodeIds.has(s.host))
+    const filtered = activeSlots.filter((s) => validNodeIds.has(s.host))
 
     const feedSet = new Set<string>()
     for (const s of filtered) feedSet.add(s.feed)
@@ -670,14 +1226,18 @@ function RecentSlotsChart({
       row[s.feed] = s.win_pct
     }
 
-    const slotNumbers = [...new Set(filtered.map((s) => s.slot))].sort((a, b) => a - b)
+    // Use all slots from activeSlots as the shared x-axis so every node's data array
+    // has the same length as the canvas (LIVE_BUFFER_SIZE). Nodes with no data for a
+    // given slot get zeros, which draw no bars. This ensures uPlot cursor.idx always
+    // maps to a valid slotData entry, so hover/tooltip works across the full canvas.
+    const allSlotNumbers = [...new Set(activeSlots.map((s) => s.slot))].sort((a, b) => a - b)
     const sortedNodes = [...nodes].sort((a, b) => a.host.localeCompare(b.host))
 
     const nodeCharts = sortedNodes
       .filter((n) => byNode.has(n.host))
       .map((n) => {
         const slotMap = byNode.get(n.host)!
-        const data = slotNumbers.map((slot, idx) => {
+        const data = allSlotNumbers.map((slot, idx) => {
           const feedPcts = slotMap.get(slot) ?? {}
           const row: Record<string, number> = { idx, slot }
           for (const f of feeds) row[f] = feedPcts[f] ?? 0
@@ -685,9 +1245,10 @@ function RecentSlotsChart({
         })
         return { node: n, data }
       })
+    const slotNumbers = allSlotNumbers
 
     return { nodeCharts, feeds, slotCount: slotNumbers.length }
-  }, [slots, nodes])
+  }, [activeSlots, nodes])
 
   const bucketedChartData = useMemo(() => {
     if (!slotBuckets || !slotBuckets.length || !nodes.length) {
@@ -774,31 +1335,113 @@ function RecentSlotsChart({
   const activeBucketSize = bucketed ? bucketedChartData.bucketSize : undefined
 
   return (
-    <div ref={containerRef} className="rounded-lg border border-border bg-card p-4">
+    <div
+      ref={containerRef}
+      className="rounded-lg border border-border bg-card p-4"
+      style={{
+        touchAction: bucketed ? undefined : 'pan-y',
+        cursor: bucketed ? undefined : isDragging ? 'grabbing' : 'grab',
+      }}
+      onPointerDown={bucketed ? undefined : (e) => {
+        // Only capture for drag intent — skip interactive children so their click events fire normally.
+        if (!(e.target as Element).closest('button, a, input, select, [role="button"]')) {
+          e.currentTarget.setPointerCapture(e.pointerId)
+        }
+      }}
+    >
       <div className="mb-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">
+          <h3 className="text-sm font-medium flex items-center gap-2">
             {bucketed ? 'Win Rate Trend' : 'Win Rate per Slot'}
+            {live && !bucketed && (
+              <span className="relative flex items-center">
+                {isPrefetching ? (
+                  <Loader2 size={12} className="animate-spin text-emerald-500/50" />
+                ) : viewEndSlot === null ? (
+                  <>
+                    <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </>
+                ) : (
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500/30" />
+                )}
+              </span>
+            )}
+            {!bucketed && (() => {
+              const visibleNums = [...new Set(activeSlots.map(r => r.slot))].sort((a, b) => a - b)
+              const minSlot = visibleNums[0]
+              const maxSlot = visibleNums.at(-1)
+              const liveSlot = liveMaxSlotRef.current || maxSlot
+              const fmtSlot = (s: number) => s.toLocaleString()
+              const fmtAgo = (slotDelta: number) => {
+                const sec = Math.round(slotDelta / 2.5)
+                return sec < 5 ? 'now' : sec < 60 ? `~${sec}s ago` : `~${Math.round(sec / 60)}m ago`
+              }
+              const slotRange = minSlot && maxSlot && minSlot !== maxSlot
+                ? `${fmtSlot(minSlot)} – ${fmtSlot(maxSlot)}`
+                : minSlot ? `${fmtSlot(minSlot)}` : null
+              const timeNote = liveSlot && maxSlot
+                ? viewEndSlot !== null
+                  ? `${fmtAgo(liveSlot - minSlot)} – ${fmtAgo(liveSlot - maxSlot)}`
+                  : fmtAgo(liveSlot - maxSlot)
+                : null
+              if (!slotRange) return null
+              return (
+                <span className="text-xs font-normal text-muted-foreground">
+                  {slotRange}{timeNote ? <span className="text-[#555] ml-1">· {timeNote}</span> : null}
+                </span>
+              )
+            })()}
           </h3>
-          <div className="inline-flex rounded-md border border-border overflow-hidden text-xs h-[26px] -mt-2">
-            <button
-              onClick={() => setBucketed(false)}
-              className={cn(
-                'px-2.5 transition-colors',
-                !bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              Per Slot
-            </button>
-            <button
-              onClick={() => setBucketed(true)}
-              className={cn(
-                'px-2.5 transition-colors border-l border-border',
-                bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              Trend
-            </button>
+          <div className="flex items-center gap-2 -mt-2">
+            {!bucketed && live && viewEndSlot !== null && (
+              <button
+                onClick={scrollToLive}
+                className="text-emerald-400 hover:text-emerald-300 transition-colors"
+              >
+                <ChevronsRight size={16} />
+              </button>
+            )}
+            {!bucketed && (
+              <button
+                onClick={() => {
+                  if (viewEndSlot === null) {
+                    viewEndSlotRef.current = liveEdgeRef.current
+                    setViewEndSlot(liveEdgeRef.current)
+                  } else {
+                    scrollToLive()
+                  }
+                }}
+                className={cn(
+                  'text-xs px-2.5 h-[26px] rounded-md border transition-colors',
+                  live && viewEndSlot === null
+                    ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                    : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                Live
+              </button>
+            )}
+            <div className="inline-flex rounded-md border border-border overflow-hidden text-xs h-[26px]">
+              <button
+                onClick={() => { setBucketed(false); setLive(false) }}
+                className={cn(
+                  'px-2.5 transition-colors',
+                  !bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                Per Slot
+              </button>
+              <button
+                onClick={() => { setBucketed(true); setLive(false) }}
+                className={cn(
+                  'px-2.5 transition-colors border-l border-border',
+                  bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                Trend
+              </button>
+            </div>
           </div>
         </div>
         <div className="flex items-center justify-end gap-3 mt-1">
@@ -810,28 +1453,52 @@ function RecentSlotsChart({
           ))}
         </div>
       </div>
-      {nodeCharts.map((nc) => (
-        <div key={nc.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center">
-          <NodeLabel node={nc.node} label={nodeDisplayLabel(nc.node, nodes)} />
-          {bucketed
-            ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
-            : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={slotLeaders} />}
-        </div>
-      ))}
-      <div className="text-xs text-muted-foreground text-center mt-1">
-        {bucketed
-          ? (() => {
-              const totalSlots = slotCount * (activeBucketSize ?? 1)
-              const sec = Math.round(totalSlots / 2.5)
-              const timeEst = sec < 60 ? `~${sec}s` : sec < 3600 ? `~${Math.round(sec / 60)}m` : `~${Math.round(sec / 3600)}h`
-              return `~${totalSlots.toLocaleString()} slots · ${timeEst} · last ${window ?? 'all'}`
-            })()
-          : (() => {
-              const sec = Math.round(slotCount / 2.5)
-              const timeEst = sec < 60 ? `~${sec}s` : `~${Math.round(sec / 60)}m`
-              return `${slotCount} most recent ${leadersOnly ? 'Edge leader ' : ''}slots · ${timeEst}`
-            })()}
+      <div className="relative">
+        {/* Left-edge indicator: fixed at the chart boundary, shows while overscrolling or fetching */}
+        {!bucketed && (overscrollPx > 0 || isPrefetching) && (
+          <div className="absolute left-[130px] inset-y-0 flex items-center pointer-events-none z-10">
+            {isPrefetching
+              ? <Loader2 size={14} className="animate-spin text-muted-foreground/60" />
+              : <ChevronsRight size={14} className="text-muted-foreground/40 rotate-180" />
+            }
+          </div>
+        )}
+        {nodeCharts.map((nc) => (
+          <div key={nc.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center overflow-hidden">
+            {/* Label stays fixed */}
+            <NodeLabel node={nc.node} label={nodeDisplayLabel(nc.node, nodes)} />
+            {/* Mask wrapper stays fixed — fade zones always at the visual edges */}
+            <div
+              className="flex-1 min-w-0 overflow-hidden"
+              style={{ maskImage: 'linear-gradient(to right, transparent 0%, black 1%, black 99%, transparent 100%)' }}
+            >
+            {/* Chart area: overscroll from drag + smooth scroll offset from rAF drain */}
+            <div
+              className="flex"
+              style={{
+                transform: `translateX(${overscrollPx - (live && viewEndSlot === null && !isDragging ? scrollOffset : 0)}px)`,
+                transition: (isDragging || (live && viewEndSlot === null)) ? undefined : 'transform 0.15s cubic-bezier(0.2, 0, 0, 1)',
+                willChange: 'transform',
+              }}
+            >
+              {bucketed
+                ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
+                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} />}
+            </div>
+            </div>{/* end mask wrapper */}
+          </div>
+        ))}
       </div>
+      {bucketed && (
+        <div className="text-xs text-muted-foreground text-center mt-1">
+          {(() => {
+            const totalSlots = slotCount * (activeBucketSize ?? 1)
+            const sec = Math.round(totalSlots / 2.5)
+            const timeEst = sec < 60 ? `~${sec}s` : sec < 3600 ? `~${Math.round(sec / 60)}m` : `~${Math.round(sec / 3600)}h`
+            return `~${totalSlots.toLocaleString()} slots · ${timeEst} · last ${window ?? 'all'}`
+          })()}
+        </div>
+      )}
     </div>
   )
 }
@@ -941,6 +1608,8 @@ export function EdgeScoreboardPage() {
       return p
     })
   }
+
+  const [live, setLive] = useState(true)
 
   const [showLoader, setShowLoader] = useState(false)
   const [showShimmer, setShowShimmer] = useState(false)
@@ -1227,7 +1896,7 @@ export function EdgeScoreboardPage() {
         {data?.nodes && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
             <WinRateChart nodes={data.nodes} />
-            <RecentSlotsChart slots={stableRecent?.slots ?? data.recent_slots ?? []} nodes={data.nodes} slotLeaders={stableRecent?.leaders} leadersOnly={leadersOnly} slotBuckets={data.slot_buckets} slotBucketSize={data.slot_bucket_size} window={activeWindow} bucketed={bucketed} setBucketed={setBucketed} />
+            <RecentSlotsChart slots={stableRecent?.slots ?? data.recent_slots ?? []} nodes={data.nodes} slotLeaders={stableRecent?.leaders} leadersOnly={leadersOnly} slotBuckets={data.slot_buckets} slotBucketSize={data.slot_bucket_size} window={activeWindow} bucketed={bucketed} setBucketed={setBucketed} live={live} setLive={setLive} />
           </div>
         )}
 
