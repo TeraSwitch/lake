@@ -19,8 +19,8 @@ interface WalletProviderWrapperProps {
   children: ReactNode
 }
 
-// Using Solana mainnet-beta for production
-const SOLANA_RPC_ENDPOINT = 'https://api.mainnet-beta.solana.com'
+const SOLANA_RPC_ENDPOINT =
+  import.meta.env.VITE_SOLANA_RPC_URL ?? 'https://api.mainnet-beta.solana.com'
 
 export function WalletProviderWrapper({ children }: WalletProviderWrapperProps) {
   // Initialize wallet adapters

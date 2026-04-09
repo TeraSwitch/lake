@@ -366,7 +366,7 @@ export function ShredsSubscribePage() {
     }
     try {
       // Extract the JSON array — find [ at the start of a line to skip command echoes
-      // like `doublezero latency --json | jq ".[0:5]"` which also contain [
+      // e.g. `doublezero latency --json | jq ".[0:5]"` echoes a line containing [
       const arrayMatch = text.match(/(?:^|\n)(\[[\s\S]*\])/)
       if (!arrayMatch) throw new Error('No JSON array found')
       const entries = JSON.parse(arrayMatch[1]) as LatencyEntry[]
@@ -421,7 +421,7 @@ export function ShredsSubscribePage() {
   }, [latencyResults, pricing, selectedDevice])
 
   const handleCopyCommand = useCallback(() => {
-    navigator.clipboard.writeText('doublezero latency --json | jq "[group_by(.device_pk)[] | min_by(.avg_latency_ns)] | sort_by(.avg_latency_ns) | .[0:5]"').then(() => {
+    navigator.clipboard.writeText('doublezero latency --json | jq ".[0:5]"').then(() => {
       setCopied(true)
       setTimeout(() => setCopied(false), 2000)
     })
@@ -570,7 +570,7 @@ export function ShredsSubscribePage() {
                 </p>
                 <div className="flex items-center gap-2 mb-3">
                   <code className="flex-1 px-3 py-2 text-sm bg-muted rounded-lg font-mono border border-border">
-                    {'doublezero latency --json | jq "[group_by(.device_pk)[] | min_by(.avg_latency_ns)] | sort_by(.avg_latency_ns) | .[0:5]"'}
+                    {'doublezero latency --json | jq ".[0:5]"'}
                   </code>
                   <button
                     onClick={handleCopyCommand}

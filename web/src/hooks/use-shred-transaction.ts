@@ -136,8 +136,17 @@ export function useShredTransaction(): UseShredTransactionResult {
           const logs = result.value.logs ?? []
           console.error('[simulate] err:', result.value.err)
           console.error('[simulate] logs:', logs)
-          const errLog = [...logs].reverse().find((l: string) => l.includes('Error') || l.includes('failed'))
-          setError(errLog ?? JSON.stringify(result.value.err))
+          // Prefer "Program log: <msg>" lines — they contain the actual program error text.
+          // Fall back to any line with Error/failed, then the raw RPC error object.
+          const programLogErr = logs
+            .filter((l: string) => l.startsWith('Program log:'))
+            .reverse()
+            .find((l: string) => /error|invalid|failed|closed/i.test(l))
+          const fallbackErr = [...logs].reverse().find((l: string) => /Error|failed/.test(l))
+          const errMsg = programLogErr
+            ? programLogErr.replace(/^Program log:\s*/, '')
+            : (fallbackErr ?? JSON.stringify(result.value.err))
+          setError(errMsg)
           setStatus('error')
           return
         }
