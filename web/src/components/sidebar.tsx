@@ -503,7 +503,7 @@ export function Sidebar() {
                   Activity
                 </Link>
                 <Link to="/dz/shreds/pay" className={subNavItemClass(isShredsPayRoute)}>
-                  Pay for Subscription
+                  Subscribe to Edge Shreds
                 </Link>
                 {isInternalUser && (
                   <Link to="/dz/shreds/scoreboard" className={subNavItemClass(isScoreboardRoute)}>

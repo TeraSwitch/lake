@@ -134,6 +134,8 @@ export function useShredTransaction(): UseShredTransactionResult {
         if (result.value.err) {
           // Surface the most useful log line (last "Program log: Error" or the raw error)
           const logs = result.value.logs ?? []
+          console.error('[simulate] err:', result.value.err)
+          console.error('[simulate] logs:', logs)
           const errLog = [...logs].reverse().find((l: string) => l.includes('Error') || l.includes('failed'))
           setError(errLog ?? JSON.stringify(result.value.err))
           setStatus('error')

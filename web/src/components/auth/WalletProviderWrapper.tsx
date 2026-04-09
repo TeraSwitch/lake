@@ -2,7 +2,15 @@ import { useMemo } from 'react'
 import type { ReactNode } from 'react'
 import { ConnectionProvider, WalletProvider } from '@solana/wallet-adapter-react'
 import { WalletModalProvider } from '@solana/wallet-adapter-react-ui'
-import { PhantomWalletAdapter, SolflareWalletAdapter } from '@solana/wallet-adapter-wallets'
+import {
+  PhantomWalletAdapter,
+  SolflareWalletAdapter,
+  CoinbaseWalletAdapter,
+  LedgerWalletAdapter,
+  TrustWalletAdapter,
+  NightlyWalletAdapter,
+  BitgetWalletAdapter,
+} from '@solana/wallet-adapter-wallets'
 
 // Import wallet adapter styles
 import '@solana/wallet-adapter-react-ui/styles.css'
@@ -20,6 +28,11 @@ export function WalletProviderWrapper({ children }: WalletProviderWrapperProps) 
     () => [
       new PhantomWalletAdapter(),
       new SolflareWalletAdapter(),
+      new CoinbaseWalletAdapter(),
+      new LedgerWalletAdapter(),
+      new TrustWalletAdapter(),
+      new NightlyWalletAdapter(),
+      new BitgetWalletAdapter(),
     ],
     []
   )

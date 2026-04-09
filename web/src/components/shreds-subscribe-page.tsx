@@ -6,6 +6,7 @@ import { PublicKey } from '@solana/web3.js'
 import { Link, useSearchParams } from 'react-router-dom'
 import {
   Coins,
+  Copy,
   Loader2,
   AlertCircle,
   Check,
@@ -29,6 +30,28 @@ import { useShredAccounts, useUsdcBalance } from '@/hooks/use-shred-accounts'
 import { useShredTransaction, type TransactionStatus } from '@/hooks/use-shred-transaction'
 import { useEpochInfo } from '@/hooks/use-epoch-info'
 import { useDocumentTitle } from '@/hooks/use-document-title'
+
+// ---------------------------------------------------------------------------
+// Latency types (from doublezero latency --json output)
+// ---------------------------------------------------------------------------
+
+interface LatencyEntry {
+  device_pk: string
+  device_code: string
+  device_ip: string
+  min_latency_ns: number
+  max_latency_ns: number
+  avg_latency_ns: number
+  reachable: boolean
+}
+
+// Grouped by device_pk — best (min) avg latency across all IPs for that device
+interface DeviceLatency {
+  device_pk: string
+  device_code: string
+  avg_latency_ns: number
+  reachable: boolean
+}
 
 // ---------------------------------------------------------------------------
 // Status indicator component
@@ -97,22 +120,52 @@ function DevicePicker({
   devices,
   selected,
   onSelect,
+  latencyMap,
 }: {
   devices: ShredDevice[]
   selected: ShredDevice | null
   onSelect: (d: ShredDevice) => void
+  latencyMap?: Map<string, DeviceLatency>
 }) {
   const [search, setSearch] = useState('')
 
+  const sortedDevices = useMemo(() => {
+    if (!latencyMap) return devices
+    return [...devices].sort((a, b) => {
+      const la = latencyMap.get(a.device_key)
+      const lb = latencyMap.get(b.device_key)
+      const aReachable = la?.reachable ?? false
+      const bReachable = lb?.reachable ?? false
+      if (aReachable && !bReachable) return -1
+      if (!aReachable && bReachable) return 1
+      if (aReachable && bReachable) return la!.avg_latency_ns - lb!.avg_latency_ns
+      return 0
+    })
+  }, [devices, latencyMap])
+
+  // Top 5 reachable devices: first = "recommended", rest = "next-best"
+  const latencyRanks = useMemo(() => {
+    if (!latencyMap) return null
+    const ranks = new Map<string, 'recommended' | 'next-best'>()
+    let count = 0
+    for (const d of sortedDevices) {
+      if (latencyMap.get(d.device_key)?.reachable) {
+        ranks.set(d.device_key, count === 0 ? 'recommended' : 'next-best')
+        ++count
+      }
+    }
+    return ranks
+  }, [sortedDevices, latencyMap])
+
   const filtered = useMemo(() => {
-    if (!search) return devices
+    if (!search) return sortedDevices
     const needle = search.toLowerCase()
-    return devices.filter(
+    return sortedDevices.filter(
       d =>
         d.device_code.toLowerCase().includes(needle) ||
         d.metro_code.toLowerCase().includes(needle),
     )
-  }, [devices, search])
+  }, [sortedDevices, search])
 
   return (
     <div>
@@ -129,6 +182,7 @@ function DevicePicker({
             <tr className="text-xs text-left text-muted-foreground border-b border-border">
               <th className="px-4 py-2.5 font-medium">Device</th>
               <th className="px-4 py-2.5 font-medium">Metro</th>
+              {latencyMap && <th className="px-4 py-2.5 font-medium text-right">Latency</th>}
               <th className="px-4 py-2.5 font-medium text-right">Price / Epoch</th>
               <th className="px-4 py-2.5 font-medium text-right">Available Seats</th>
             </tr>
@@ -137,6 +191,8 @@ function DevicePicker({
             {filtered.map(d => {
               const isSelected = selected?.device_key === d.device_key
               const hasSeats = d.available_seats > 0
+              const latency = latencyMap?.get(d.device_key)
+              const rank = latencyRanks?.get(d.device_key)
               return (
                 <tr
                   key={d.device_key}
@@ -149,8 +205,30 @@ function DevicePicker({
                         : 'opacity-50'
                   }`}
                 >
-                  <td className="px-4 py-2.5 text-sm font-mono">{d.device_code || d.device_key.slice(0, 8)}</td>
+                  <td className="px-4 py-2.5 text-sm font-mono">
+                    <span>{d.device_code || d.device_key.slice(0, 8)}</span>
+                    {rank === 'recommended' && (
+                      <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-green-500/15 text-green-600 dark:text-green-400">
+                        Recommended
+                      </span>
+                    )}
+                    {rank === 'next-best' && (
+                      <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-xs font-medium bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                        Next best
+                      </span>
+                    )}
+                  </td>
                   <td className="px-4 py-2.5 text-sm">{d.metro_code}</td>
+                  {latencyMap && (
+                    <td className="px-4 py-2.5 text-sm tabular-nums text-right">
+                      {latency?.reachable
+                        ? <span>{(latency.avg_latency_ns / 1e6).toFixed(3)}ms</span>
+                        : latency
+                          ? <span className="text-red-400 text-xs">unreachable</span>
+                          : <span className="text-muted-foreground">—</span>
+                      }
+                    </td>
+                  )}
                   <td className="px-4 py-2.5 text-sm tabular-nums text-right">
                     ${d.total_price_dollars}
                   </td>
@@ -166,7 +244,7 @@ function DevicePicker({
             })}
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-4 py-8 text-center text-muted-foreground text-sm">
+                <td colSpan={latencyMap ? 5 : 4} className="px-4 py-8 text-center text-muted-foreground text-sm">
                   No devices found
                 </td>
               </tr>
@@ -267,6 +345,88 @@ export function ShredsSubscribePage() {
       if (match) setSelectedDevice(match)
     }
   }, [deviceParam, pricing, selectedDevice])
+
+  // Latency state
+  const [latencyPaste, setLatencyPaste] = useState('')
+  const [latencyResults, setLatencyResults] = useState<DeviceLatency[] | null>(null)
+  const [latencyError, setLatencyError] = useState<string | null>(null)
+  const [copied, setCopied] = useState(false)
+
+  const latencyMap = useMemo<Map<string, DeviceLatency> | undefined>(() => {
+    if (!latencyResults) return undefined
+    return new Map(latencyResults.map(r => [r.device_pk, r]))
+  }, [latencyResults])
+
+  const handleLatencyPaste = useCallback((text: string) => {
+    setLatencyPaste(text)
+    if (!text.trim()) {
+      setLatencyResults(null)
+      setLatencyError(null)
+      return
+    }
+    try {
+      // Extract the JSON array — find [ at the start of a line to skip command echoes
+      // like `doublezero latency --json | jq ".[0:5]"` which also contain [
+      const arrayMatch = text.match(/(?:^|\n)(\[[\s\S]*\])/)
+      if (!arrayMatch) throw new Error('No JSON array found')
+      const entries = JSON.parse(arrayMatch[1]) as LatencyEntry[]
+      if (!Array.isArray(entries)) throw new Error('Expected a JSON array')
+
+      // Group by device_pk — take best (min) avg latency from reachable IPs.
+      // A device may appear multiple times (once per measured IP).
+      const grouped = new Map<string, DeviceLatency>()
+      for (const entry of entries) {
+        const existing = grouped.get(entry.device_pk)
+        if (!existing) {
+          grouped.set(entry.device_pk, {
+            device_pk: entry.device_pk,
+            device_code: entry.device_code,
+            avg_latency_ns: entry.reachable ? entry.avg_latency_ns : Number.MAX_SAFE_INTEGER,
+            reachable: entry.reachable,
+          })
+        } else {
+          grouped.set(entry.device_pk, {
+            ...existing,
+            avg_latency_ns: entry.reachable
+              ? (existing.reachable
+                ? Math.min(existing.avg_latency_ns, entry.avg_latency_ns)
+                : entry.avg_latency_ns)
+              : existing.avg_latency_ns,
+            reachable: existing.reachable || entry.reachable,
+          })
+        }
+      }
+
+      const results = [...grouped.values()].sort((a, b) => {
+        if (a.reachable && !b.reachable) return -1
+        if (!a.reachable && b.reachable) return 1
+        return a.avg_latency_ns - b.avg_latency_ns
+      })
+
+      setLatencyResults(results)
+      setLatencyError(null)
+    } catch {
+      setLatencyResults(null)
+      setLatencyError('Paste valid JSON output from: doublezero latency --json')
+    }
+  }, [])
+
+  // Auto-select top latency device when results arrive and no device is selected yet
+  useEffect(() => {
+    if (!latencyResults || !pricing || selectedDevice) return
+    const top = latencyResults.find(r => r.reachable && pricing.some(d => d.device_key === r.device_pk))
+    if (!top) return
+    const match = pricing.find(d => d.device_key === top.device_pk)
+    if (match) setSelectedDevice(match)
+  }, [latencyResults, pricing, selectedDevice])
+
+  const handleCopyCommand = useCallback(() => {
+    navigator.clipboard.writeText('doublezero latency --json | jq "[group_by(.device_pk)[] | min_by(.avg_latency_ns)] | sort_by(.avg_latency_ns) | .[0:5]"').then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 2000)
+    })
+  }, [])
+
   const [clientIp, setClientIp] = useState('')
   const [amountStr, setAmountStr] = useState('')
   const ipValid = clientIp === '' || isValidIpv4(clientIp)
@@ -379,6 +539,11 @@ export function ShredsSubscribePage() {
 
   const devices = pricing ?? []
 
+  // Latency summary for Step 1 display
+  const reachableCount = latencyResults?.filter(r => r.reachable).length ?? 0
+  const topMatch = latencyResults?.find(r => r.reachable && devices.some(d => d.device_key === r.device_pk))
+  const topMatchDevice = topMatch ? devices.find(d => d.device_key === topMatch.device_pk) : null
+
   return (
     <div className="flex-1 overflow-auto">
       <div className="max-w-4xl mx-auto px-4 sm:px-8 py-8">
@@ -394,23 +559,70 @@ export function ShredsSubscribePage() {
         </div>
 
         <div className="space-y-8">
-          {/* Step 1: Select Device */}
+          {/* Step 1: Device Recommendation */}
           <section>
             <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
-              1. Select a Device
+              1. Get a Device Recommendation <span className="normal-case font-normal text-muted-foreground">(optional)</span>
+            </h2>
+            <div className="border border-border rounded-lg bg-card p-6">
+              <p className="text-xs text-muted-foreground mb-3">
+                  Run this on your server to measure latency to the nearest devices, then paste the output below.
+                </p>
+                <div className="flex items-center gap-2 mb-3">
+                  <code className="flex-1 px-3 py-2 text-sm bg-muted rounded-lg font-mono border border-border">
+                    {'doublezero latency --json | jq "[group_by(.device_pk)[] | min_by(.avg_latency_ns)] | sort_by(.avg_latency_ns) | .[0:5]"'}
+                  </code>
+                  <button
+                    onClick={handleCopyCommand}
+                    className="flex items-center gap-1.5 px-3 py-2 text-sm border border-border rounded-lg hover:bg-muted transition-colors text-muted-foreground hover:text-foreground"
+                    title="Copy command"
+                  >
+                    {copied
+                      ? <Check className="h-3.5 w-3.5 text-green-500" />
+                      : <Copy className="h-3.5 w-3.5" />
+                    }
+                    {copied ? 'Copied' : 'Copy'}
+                  </button>
+                </div>
+                <textarea
+                  value={latencyPaste}
+                  onChange={e => handleLatencyPaste(e.target.value)}
+                  placeholder="Paste JSON output here..."
+                  rows={6}
+                  className="w-full px-3 py-2 text-xs border border-border rounded-lg bg-background focus:outline-none focus:ring-2 focus:ring-primary/50 font-mono resize-none"
+                />
+                {latencyError && (
+                  <p className="text-xs text-red-500 mt-1">{latencyError}</p>
+                )}
+                {latencyResults && !latencyError && topMatch && topMatchDevice && (
+                  <p className="text-xs text-green-600 dark:text-green-400 mt-1 flex items-center gap-1">
+                    <Check className="h-3 w-3 shrink-0" />
+                    Found {reachableCount} reachable device{reachableCount !== 1 ? 's' : ''} — top match:{' '}
+                    <span className="font-mono font-medium">{topMatchDevice.device_code}</span>
+                    {' '}({(topMatch.avg_latency_ns / 1e6).toFixed(3)}ms)
+                  </p>
+                )}
+            </div>
+          </section>
+
+          {/* Step 2: Select Device */}
+          <section>
+            <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
+              2. Select a Device
             </h2>
             <DevicePicker
               devices={devices}
               selected={selectedDevice}
               onSelect={handleDeviceSelect}
+              latencyMap={latencyMap}
             />
           </section>
 
-          {/* Step 2: Configure */}
+          {/* Step 3: Configure */}
           {selectedDevice && (
             <section ref={configRef}>
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
-                2. Configure Subscription
+                3. Configure Subscription
               </h2>
 
               <div className="border border-border rounded-lg bg-card p-6 space-y-5">
@@ -520,11 +732,11 @@ export function ShredsSubscribePage() {
             </section>
           )}
 
-          {/* Step 3: Subscribe */}
+          {/* Step 4: Subscribe */}
           {selectedDevice && (
             <section>
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
-                3. Subscribe
+                4. Subscribe
               </h2>
 
               {simulateMode && (
