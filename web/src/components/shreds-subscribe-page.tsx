@@ -27,6 +27,7 @@ import {
 } from '@/lib/shred-transactions'
 import { useShredAccounts, useUsdcBalance } from '@/hooks/use-shred-accounts'
 import { useShredTransaction, type TransactionStatus } from '@/hooks/use-shred-transaction'
+import { useEpochInfo } from '@/hooks/use-epoch-info'
 import { useDocumentTitle } from '@/hooks/use-document-title'
 
 // ---------------------------------------------------------------------------
@@ -178,6 +179,50 @@ function DevicePicker({
 }
 
 // ---------------------------------------------------------------------------
+// Epoch progress counter
+// ---------------------------------------------------------------------------
+
+function formatEta(ms: number): string {
+  const totalSeconds = Math.round(ms / 1000)
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+  if (hours > 0) return `${hours}h ${minutes}m`
+  if (minutes > 0) return `${minutes}m ${seconds}s`
+  return `${seconds}s`
+}
+
+function EpochProgress({
+  epoch,
+  progressPct,
+  remainingMs,
+}: {
+  epoch: number
+  progressPct: number
+  remainingMs: number
+}) {
+  const nearEnd = progressPct >= 90
+  return (
+    <div className={`flex items-center gap-3 px-3 py-2 rounded-lg border text-sm ${
+      nearEnd
+        ? 'bg-amber-500/10 border-amber-500/20 text-amber-600 dark:text-amber-400'
+        : 'bg-muted/50 border-border text-muted-foreground'
+    }`}>
+      <span className="font-medium text-foreground shrink-0">Epoch {epoch}</span>
+      <div className="flex-1 relative h-1.5 bg-border rounded-full overflow-hidden min-w-0">
+        <div
+          className={`absolute inset-y-0 left-0 rounded-full ${nearEnd ? 'bg-amber-500' : 'bg-primary'}`}
+          style={{ width: `${Math.min(progressPct, 100).toFixed(2)}%` }}
+        />
+      </div>
+      <span className="tabular-nums text-xs shrink-0">{progressPct.toFixed(0)}%</span>
+      <span className="text-xs shrink-0">ETA {formatEta(remainingMs)}</span>
+      <span className="text-xs text-muted-foreground shrink-0">→ {epoch + 1}</span>
+    </div>
+  )
+}
+
+// ---------------------------------------------------------------------------
 // Main page
 // ---------------------------------------------------------------------------
 
@@ -195,6 +240,8 @@ export function ShredsSubscribePage() {
     select: (data) => data.items,
     refetchInterval: 30_000,
   })
+
+  const { data: epochInfo } = useEpochInfo()
 
   const { data: overview } = useQuery({
     queryKey: ['shreds-overview'],
@@ -230,7 +277,10 @@ export function ShredsSubscribePage() {
   const { balance: usdcBalance } = useUsdcBalance()
 
   // Transaction
-  const { status: txStatus, txSignature, error: txError, execute, reset: resetTx } = useShredTransaction()
+  const { status: txStatus, txSignature, error: txError, execute, simulate, reset: resetTx } = useShredTransaction()
+
+  // Simulate mode: dev-only, activated via ?simulate=true in the URL
+  const simulateMode = import.meta.env.DEV && searchParams.get('simulate') === 'true'
 
   // Derived calculations
   const pricePerEpoch = selectedDevice ? selectedDevice.total_price_dollars : 0
@@ -247,7 +297,7 @@ export function ShredsSubscribePage() {
     isValidIpv4(clientIp) &&
     amountValid &&
     !amountBelowMin &&
-    !insufficientBalance &&
+    (!insufficientBalance || simulateMode) &&
     txStatus === 'idle'
 
   const handleSubscribe = useCallback(async () => {
@@ -274,6 +324,31 @@ export function ShredsSubscribePage() {
 
     await execute(instructions)
   }, [canSubmit, wallet, selectedDevice, devicePubkey, clientIp, amountMicro, shredState, execute])
+
+  const handleSimulate = useCallback(async () => {
+    if (!canSubmit || !wallet || !selectedDevice || !devicePubkey) return
+
+    const clientIpBits = ipv4ToU32(clientIp)
+
+    const accounts = deriveShredAccounts({
+      device: devicePubkey,
+      metroExchange: new PublicKey(selectedDevice.metro_exchange_key),
+      clientIpBits,
+      wallet,
+    })
+
+    const instructions = buildSubscribeInstructions({
+      accounts,
+      wallet,
+      clientIpBits,
+      amountMicro,
+      seatExists: shredState.seatExists,
+      escrowExists: shredState.escrowExists,
+      seatActive: shredState.seatActive,
+    })
+
+    await simulate(instructions)
+  }, [canSubmit, wallet, selectedDevice, devicePubkey, clientIp, amountMicro, shredState, simulate])
 
   // Loading & error states
   if (pricingLoading) {
@@ -422,6 +497,15 @@ export function ShredsSubscribePage() {
                   </div>
                 )}
 
+                {/* Epoch progress counter */}
+                {epochInfo && (
+                  <EpochProgress
+                    epoch={epochInfo.epoch}
+                    progressPct={epochInfo.progressPct}
+                    remainingMs={epochInfo.remainingMs}
+                  />
+                )}
+
                 {/* Epoch warning */}
                 {overview && overview.current_solana_epoch > 0 && !shredState.seatActive && (
                   <EpochWarning currentEpoch={overview.current_solana_epoch} />
@@ -436,6 +520,13 @@ export function ShredsSubscribePage() {
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
                 3. Subscribe
               </h2>
+
+              {simulateMode && (
+                <div className="flex items-center gap-2 text-xs text-amber-600 dark:text-amber-400 mb-3 px-1">
+                  <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                  Simulate mode — transactions will not be submitted
+                </div>
+              )}
 
               <div className="border border-border rounded-lg bg-card p-6">
                 {!connected ? (
@@ -455,7 +546,20 @@ export function ShredsSubscribePage() {
                       <WalletMultiButton />
                     </div>
 
-                    {txStatus === 'confirmed' ? (
+                    {txStatus === 'simulated' ? (
+                      <div className="space-y-3">
+                        <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
+                          <Check className="h-5 w-5" />
+                          <span className="font-medium">Simulation passed — transaction is valid. No funds spent.</span>
+                        </div>
+                        <button
+                          onClick={resetTx}
+                          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+                        >
+                          Try again
+                        </button>
+                      </div>
+                    ) : txStatus === 'confirmed' ? (
                       <div className="space-y-4">
                         <div className="flex items-center gap-2 text-green-600 dark:text-green-400">
                           <Check className="h-5 w-5" />
@@ -486,7 +590,9 @@ export function ShredsSubscribePage() {
                       <div className="space-y-3">
                         <div className="flex items-center gap-2 text-red-500">
                           <AlertCircle className="h-5 w-5" />
-                          <span className="text-sm">{txError}</span>
+                          <span className="text-sm">
+                            {simulateMode ? 'Simulation error: ' : ''}{txError}
+                          </span>
                         </div>
                         {txSignature && (
                           <TransactionProgress status={txStatus} txSignature={txSignature} />
@@ -498,8 +604,24 @@ export function ShredsSubscribePage() {
                           Try again
                         </button>
                       </div>
+                    ) : txStatus === 'simulating' ? (
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                        Simulating on-chain...
+                      </div>
                     ) : txStatus !== 'idle' ? (
                       <TransactionProgress status={txStatus} txSignature={txSignature} />
+                    ) : simulateMode ? (
+                      <button
+                        onClick={handleSimulate}
+                        disabled={!canSubmit}
+                        className="inline-flex items-center gap-2 px-5 py-2.5 rounded-lg bg-amber-600 text-white font-medium text-sm hover:bg-amber-500 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        <Coins className="h-4 w-4" />
+                        {amountValid
+                          ? `Simulate — $${amount.toFixed(2)} USDC (no funds sent)`
+                          : 'Simulate'}
+                      </button>
                     ) : (
                       <button
                         onClick={handleSubscribe}

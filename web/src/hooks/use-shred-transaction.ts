@@ -9,6 +9,8 @@ export type TransactionStatus =
   | 'sending'
   | 'confirming'
   | 'confirmed'
+  | 'simulating'
+  | 'simulated'
   | 'error'
 
 export interface UseShredTransactionResult {
@@ -16,6 +18,7 @@ export interface UseShredTransactionResult {
   txSignature: string | null
   error: string | null
   execute: (instructions: TransactionInstruction[]) => Promise<string | null>
+  simulate: (instructions: TransactionInstruction[]) => Promise<void>
   reset: () => void
 }
 
@@ -107,5 +110,44 @@ export function useShredTransaction(): UseShredTransactionResult {
     [wallet, signTransaction, connection],
   )
 
-  return { status, txSignature, error, execute, reset }
+  const simulate = useCallback(
+    async (instructions: TransactionInstruction[]): Promise<void> => {
+      if (!wallet) {
+        setError('Wallet not connected')
+        setStatus('error')
+        return
+      }
+
+      try {
+        setStatus('simulating')
+        setError(null)
+        setTxSignature(null)
+
+        const tx = new Transaction()
+        tx.add(...instructions)
+        tx.feePayer = wallet
+        // recentBlockhash intentionally omitted — simulateTransaction fetches it automatically
+        // when no signers are passed, which also sets sigVerify: false on the RPC call
+
+        const result = await connection.simulateTransaction(tx)
+
+        if (result.value.err) {
+          // Surface the most useful log line (last "Program log: Error" or the raw error)
+          const logs = result.value.logs ?? []
+          const errLog = [...logs].reverse().find((l: string) => l.includes('Error') || l.includes('failed'))
+          setError(errLog ?? JSON.stringify(result.value.err))
+          setStatus('error')
+          return
+        }
+
+        setStatus('simulated')
+      } catch (err: unknown) {
+        setError(err instanceof Error ? err.message : 'Simulation error')
+        setStatus('error')
+      }
+    },
+    [wallet, connection],
+  )
+
+  return { status, txSignature, error, execute, simulate, reset }
 }

@@ -54,6 +54,7 @@ import { ContributorDetailPage } from '@/components/contributor-detail-page'
 import { UserDetailPage } from '@/components/user-detail-page'
 import { MulticastGroupsPage } from '@/components/multicast-groups-page'
 import { ShredsSeatsPage, ShredsFundersPage, ShredsDevicesPage, ShredsEscrowEventsPage } from '@/components/shreds-page'
+import { ShredsSubscribePage } from '@/components/shreds-subscribe-page'
 import { PublisherCheckPage } from './components/publisher-check-page'
 import { EdgeScoreboardPage } from './components/edge-scoreboard-page'
 import { MulticastGroupDetailPage } from '@/components/multicast-group-detail-page'
@@ -708,7 +709,7 @@ function AppContent() {
             <Route path="/dz/shreds/funders" element={<ShredsFundersPage />} />
             <Route path="/dz/shreds/devices" element={<ShredsDevicesPage />} />
             <Route path="/dz/shreds/activity" element={<ShredsEscrowEventsPage />} />
-            {/* Subscribe page hidden for now — see shreds-subscribe-page.tsx */}
+            <Route path="/dz/shreds/pay" element={<ShredsSubscribePage />} />
             <Route path="/dz/publisher-check" element={<PublisherCheckPage />} />
             <Route path="/dz/shreds/scoreboard" element={<InternalOnly><EdgeScoreboardPage /></InternalOnly>} />
             <Route path="/dz/edge/scoreboard" element={<Navigate to="/dz/shreds/scoreboard" replace />} />
