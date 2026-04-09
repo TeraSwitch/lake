@@ -5008,6 +5008,8 @@ export interface EdgeScoreboardResponse {
   completeness_pct: number
   nodes: EdgeScoreboardNode[]
   recent_slots: EdgeScoreboardSlotRace[]
+  slot_buckets?: EdgeScoreboardSlotBucket[]
+  slot_bucket_size?: number
   slot_leaders?: Record<string, EdgeScoreboardLeader>
 }
 
@@ -5026,6 +5028,14 @@ export interface EdgeScoreboardSlotRace {
   feed: string
   shreds_won: number
   win_pct: number
+}
+
+export interface EdgeScoreboardSlotBucket {
+  host: string
+  slot_bucket: number
+  feed: string
+  feed_won: number    // sum of shreds_won for this feed in bucket (integer)
+  bucket_total: number // sum of shreds_won across all feeds in bucket (integer)
 }
 
 export async function fetchEdgeScoreboard(window: string = '1h', leadersOnly: boolean = true): Promise<EdgeScoreboardResponse> {

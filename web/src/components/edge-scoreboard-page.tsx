@@ -4,17 +4,26 @@ import { useSearchParams, Link } from 'react-router-dom'
 import { Trophy, Loader2 } from 'lucide-react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
+
 import maplibregl from 'maplibre-gl'
 import 'maplibre-gl/dist/maplibre-gl.css'
 import {
   fetchEdgeScoreboard,
   type EdgeScoreboardNode,
   type EdgeScoreboardSlotRace,
+  type EdgeScoreboardSlotBucket,
   type EdgeScoreboardLeader,
 } from '@/lib/api'
 import { cn } from '@/lib/utils'
 import { useTheme } from '@/hooks/use-theme'
 import { PageHeader } from './page-header'
+
+const VALID_WINDOWS = ['1h', '24h', '7d', '30d', 'all'] as const
+type TimeWindow = (typeof VALID_WINDOWS)[number]
+
+function isValidWindow(v: string | null): v is TimeWindow {
+  return v !== null && (VALID_WINDOWS as readonly string[]).includes(v)
+}
 
 function formatPct(v: number): string {
   return `${v.toFixed(1)}%`
@@ -171,6 +180,7 @@ function WinRateBar({
 
 /** Height per node row shared between Win Rate and Recent Slots charts. */
 const NODE_ROW_HEIGHT = 72
+const NODE_CHART_HEIGHT = 56 // matches WinRateBar h-14, leaving 8px top/bottom padding
 
 function NodeLabel({ node, label }: { node: EdgeScoreboardNode; label: string }) {
   const [show, setShow] = useState(false)
@@ -189,16 +199,17 @@ function NodeLabel({ node, label }: { node: EdgeScoreboardNode; label: string })
       ) : (
         label
       )}
-      {show && (node.name || node.gossip_ip || node.asn_org) && (
+      {show && (
         <div className="absolute left-full top-1/2 -translate-y-1/2 ml-2 z-20 bg-popover border border-border rounded-lg shadow-lg p-3 text-xs whitespace-nowrap text-left text-foreground">
-          {node.name && (
-            <div className="font-medium mb-1">{node.name}</div>
+          {node.metro_name && (
+            <div className="font-medium mb-1">{node.metro_name}</div>
           )}
+          <div className="flex gap-2"><span className="text-muted-foreground">Host</span><span className="font-mono">{node.host}</span></div>
           {node.gossip_ip && (
             <div className="flex gap-2"><span className="text-muted-foreground">IP</span><span className="font-mono">{node.gossip_ip}</span></div>
           )}
           {node.asn_org && (
-            <div className="flex gap-2"><span className="text-muted-foreground">Host</span><span>{node.asn_org}</span></div>
+            <div className="flex gap-2"><span className="text-muted-foreground">Org</span><span>{node.asn_org}</span></div>
           )}
           {node.asn != null && node.asn > 0 && (
             <div className="flex gap-2"><span className="text-muted-foreground">ASN</span><span>AS{node.asn}</span></div>
@@ -284,12 +295,111 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
   )
 }
 
+function BucketedNodeChart({ data, feeds, bucketSize }: { data: Array<Record<string, number | null>>; feeds: string[]; bucketSize?: number }) {
+  const height = NODE_CHART_HEIGHT
+  const [hover, setHover] = useState<{ idx: number; x: number; y: number } | null>(null)
+  const n = data.length
+
+  // viewBox coords: x = 0..n-1, y = 0..100 (0 = top = 100% win rate)
+  const paths = useMemo(() => {
+    if (!n) return []
+    const cumulative = new Array(n).fill(0)
+
+    return feeds.map(feed => {
+      const color = FEED_COLORS[feed] ?? '#6b7280'
+      type Seg = { i: number; top: number; bot: number }[]
+      const segments: Seg[] = []
+      let cur: Seg = []
+      for (let i = 0; i < n; i++) {
+        const val = data[i][feed] as number | null
+        if (val != null && val > 0) {
+          cur.push({ i, top: cumulative[i] + val, bot: cumulative[i] })
+        } else {
+          if (cur.length) { segments.push(cur); cur = [] }
+        }
+      }
+      if (cur.length) segments.push(cur)
+      for (let i = 0; i < n; i++) cumulative[i] += (data[i][feed] as number | null) ?? 0
+
+      const svgPaths = segments.map(seg => {
+        const top = seg.map(p => `${p.i},${(100 - p.top).toFixed(2)}`).join(' L')
+        const bot = [...seg].reverse().map(p => `${p.i},${(100 - p.bot).toFixed(2)}`).join(' L')
+        return `M${top} L${bot} Z`
+      })
+      const strokePaths = segments.map(seg =>
+        'M' + seg.map(p => `${p.i},${(100 - p.top).toFixed(2)}`).join(' L')
+      )
+      return { feed, color, svgPaths, strokePaths }
+    })
+  }, [data, feeds, n])
+
+  const hovered = hover != null ? data[hover.idx] : null
+  const hoveredSlot = hovered?.slot as number | undefined
+  const vbWidth = Math.max(1, n - 1)
+
+  return (
+    <div className="flex-1 min-w-0 relative rounded overflow-hidden">
+      <svg
+        width="100%"
+        height={height}
+        viewBox={`0 0 ${vbWidth} 100`}
+        preserveAspectRatio="none"
+        style={{ display: 'block' }}
+        onMouseMove={(e) => {
+          const rect = e.currentTarget.getBoundingClientRect()
+          const mx = e.clientX - rect.left
+          const idx = Math.max(0, Math.min(n - 1, Math.round((mx / rect.width) * (n - 1))))
+          setHover({ idx, x: e.clientX, y: e.clientY })
+        }}
+        onMouseLeave={() => setHover(null)}
+      >
+        {paths.map(({ feed, color, svgPaths, strokePaths }) => (
+          <g key={feed}>
+            {svgPaths.map((d, i) => <path key={i} d={d} fill={color} />)}
+            {strokePaths.map((d, i) => <path key={i} d={d} fill="none" stroke={color} strokeWidth={1.5} strokeLinejoin="round" vectorEffect="non-scaling-stroke" />)}
+          </g>
+        ))}
+        {hover != null && (
+          <line
+            x1={hover.idx} x2={hover.idx}
+            y1={0} y2={100}
+            stroke="rgba(255,255,255,0.4)" strokeWidth={1} strokeDasharray="3 3" vectorEffect="non-scaling-stroke"
+          />
+        )}
+      </svg>
+      {hover && hovered && (
+        <div
+          className="fixed z-50 bg-[#1a1a2e] border border-[#333] rounded-md px-3 py-2 text-xs shadow-lg pointer-events-none"
+          style={{ left: hover.x + 10, top: hover.y - 60 }}
+        >
+          {hoveredSlot != null && (
+            <div className="font-mono font-semibold text-[#e5e5e5] mb-1.5">
+              {bucketSize
+                ? `Slots ${hoveredSlot.toLocaleString()} – ${(hoveredSlot + bucketSize - 1).toLocaleString()}`
+                : `Slot ${hoveredSlot.toLocaleString()}`}
+            </div>
+          )}
+          {[...feeds].reverse().map(f => {
+            const val = hovered[f] as number | null
+            return val != null ? (
+              <div key={f} className="flex justify-between gap-4">
+                <span style={{ color: FEED_COLORS[f] }}>{FEED_LABELS[f] ?? f}</span>
+                <span className="text-[#e5e5e5] font-mono">{val.toFixed(1)}%</span>
+              </div>
+            ) : null
+          })}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function SlotRaceNodeChart({
   slotData,
   feeds,
   slotLeaders,
 }: {
-  slotData: Array<Record<string, number>>
+  slotData: Array<Record<string, number | null>>
   feeds: string[]
   slotLeaders?: Record<string, EdgeScoreboardLeader>
 }) {
@@ -301,15 +411,22 @@ function SlotRaceNodeChart({
   slotLeadersRef.current = slotLeaders
   const setHoverRef = useRef<((idx: number | null, vx: number, vy: number) => void) | null>(null)
   const hoveredIdxRef = useRef<number | null>(null)
+  const animOffsetRef = useRef(0)
+  const rafRef = useRef<number | null>(null)
+  const isFirstDataRef = useRef(true)
 
   const [hover, setHover] = useState<{ idx: number; vx: number; vy: number } | null>(null)
   setHoverRef.current = (idx, vx, vy) => setHover(idx == null ? null : { idx, vx, vy })
 
+  // Re-initialize uPlot only when slot count or feeds change (not on every data refresh).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!containerRef.current || !slotData.length) return
 
+    isFirstDataRef.current = true
+
     const n = slotData.length
-    const height = NODE_ROW_HEIGHT - 4
+    const height = NODE_CHART_HEIGHT
 
     const xData = Float64Array.from({ length: n }, (_, i) => i)
     const yDummy = new Float64Array(n)
@@ -324,43 +441,55 @@ function SlotRaceNodeChart({
         y: { range: () => [0, 100] },
       },
       axes: [{ show: false }, { show: false }],
-      padding: [2, 2, 2, 2],
-      cursor: { points: { show: false } },
+      padding: [0, 0, 0, 0],
+      cursor: { points: { show: false }, x: false, y: false },
       legend: { show: false },
       hooks: {
         draw: [
           (u) => {
             const ctx = u.ctx
             ctx.save()
-            const cumulative = new Float64Array(n)
-            for (const feed of feeds) {
-              ctx.fillStyle = FEED_COLORS[feed] ?? '#6b7280'
-              for (let i = 0; i < n; i++) {
-                const val = slotDataRef.current[i][feed] ?? 0
-                if (!val) continue
-                const prev = cumulative[i]
-                const x1 = Math.round(u.valToPos(i - 0.4, 'x', true))
-                const x2 = Math.round(u.valToPos(i + 0.4, 'x', true))
-                const y1 = Math.round(u.valToPos(prev + val, 'y', true))
-                const y2 = Math.round(u.valToPos(prev, 'y', true))
-                if (y2 > y1 && x2 > x1) ctx.fillRect(x1, y1, x2 - x1, y2 - y1)
-                cumulative[i] += val
+            // Clip to the plot area so animated bars don't overflow
+            ctx.beginPath()
+            ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height)
+            ctx.clip()
+            // Apply slide-in offset during data refresh animation
+            ctx.translate(animOffsetRef.current, 0)
+            const currentData = slotDataRef.current
+            const currentN = currentData.length
+            const cumulative = new Float64Array(currentN)
+
+            {
+              // Stacked bar chart for individual slot mode
+              for (const feed of feeds) {
+                ctx.fillStyle = FEED_COLORS[feed] ?? '#6b7280'
+                for (let i = 0; i < currentN; i++) {
+                  const val = currentData[i][feed] ?? 0
+                  if (!val) continue
+                  const prev = cumulative[i]
+                  const x1 = Math.round(u.valToPos(i - 0.5, 'x', true))
+                  const x2 = Math.round(u.valToPos(i + 0.5, 'x', true))
+                  const y1 = Math.round(u.valToPos(prev + val, 'y', true))
+                  const y2 = Math.round(u.valToPos(prev, 'y', true))
+                  if (y2 > y1 && x2 > x1) ctx.fillRect(x1, y1, x2 - x1, y2 - y1)
+                  cumulative[i] += val
+                }
               }
-            }
-            // Highlight hovered column
-            const hIdx = hoveredIdxRef.current
-            if (hIdx != null && hIdx >= 0 && hIdx < n) {
-              const x1 = Math.round(u.valToPos(hIdx - 0.4, 'x', true))
-              const x2 = Math.round(u.valToPos(hIdx + 0.4, 'x', true))
-              const y1 = Math.round(u.valToPos(100, 'y', true))
-              const y2 = Math.round(u.valToPos(0, 'y', true))
-              const w = x2 - x1
-              const h = y2 - y1
-              ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
-              ctx.fillRect(x1, y1, w, h)
-              ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'
-              ctx.lineWidth = 1
-              ctx.strokeRect(x1 + 0.5, y1 + 0.5, w - 1, h - 1)
+              // Highlight hovered column
+              const hIdx = hoveredIdxRef.current
+              if (hIdx != null && hIdx >= 0 && hIdx < currentN) {
+                const x1 = Math.round(u.valToPos(hIdx - 0.5, 'x', true))
+                const x2 = Math.round(u.valToPos(hIdx + 0.5, 'x', true))
+                const y1 = Math.round(u.valToPos(100, 'y', true))
+                const y2 = Math.round(u.valToPos(0, 'y', true))
+                const w = x2 - x1
+                const h = y2 - y1
+                ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
+                ctx.fillRect(x1, y1, w, h)
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.4)'
+                ctx.lineWidth = 1
+                ctx.strokeRect(x1 + 0.5, y1 + 0.5, w - 1, h - 1)
+              }
             }
             ctx.restore()
           },
@@ -388,6 +517,9 @@ function SlotRaceNodeChart({
     plotRef.current?.destroy()
     plotRef.current = new uPlot(opts, uData, containerRef.current)
 
+    const canvas = containerRef.current.querySelector('canvas')
+    if (canvas) canvas.style.borderRadius = '4px'
+
     const ro = new ResizeObserver((entries) => {
       if (plotRef.current) plotRef.current.setSize({ width: entries[0].contentRect.width, height })
     })
@@ -398,14 +530,54 @@ function SlotRaceNodeChart({
       plotRef.current?.destroy()
       plotRef.current = null
     }
-  }, [slotData, feeds])
+  }, [slotData.length, feeds])
+
+  // Animate bars sliding in from the right on data refresh.
+  useEffect(() => {
+    if (isFirstDataRef.current) {
+      isFirstDataRef.current = false
+      return
+    }
+    const plot = plotRef.current
+    if (!plot || !slotData.length) return
+
+    if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+
+    // Slide-in offset: use one slot-width, but cap at 4px so bucketed mode
+    // (fewer, wider buckets) doesn't animate a large gap on the left.
+    const slotPx = Math.min(plot.valToPos(1, 'x', true) - plot.valToPos(0, 'x', true), 4)
+    const duration = 350
+    const startTime = performance.now()
+    animOffsetRef.current = slotPx
+
+    const tick = (now: number) => {
+      const t = Math.min((now - startTime) / duration, 1)
+      const eased = 1 - (1 - t) ** 3  // cubic ease-out
+      animOffsetRef.current = slotPx * (1 - eased)
+      plot.redraw(false)
+      if (t < 1) {
+        rafRef.current = requestAnimationFrame(tick)
+      } else {
+        animOffsetRef.current = 0
+        rafRef.current = null
+      }
+    }
+    rafRef.current = requestAnimationFrame(tick)
+
+    return () => {
+      if (rafRef.current != null) {
+        cancelAnimationFrame(rafRef.current)
+        rafRef.current = null
+      }
+    }
+  }, [slotData])
 
   const hoveredSlot = hover != null ? slotData[hover.idx] : null
   const hoveredLeader = hoveredSlot ? slotLeadersRef.current?.[String(hoveredSlot['slot'])] : undefined
   const xPos = hover != null && hover.vx + 10 + 180 > window.innerWidth ? hover.vx - 190 : (hover?.vx ?? 0) + 10
 
   return (
-    <div className="relative flex-1 h-full min-w-0 overflow-hidden">
+    <div className="relative flex-1 min-w-0 overflow-hidden rounded">
       <div ref={containerRef} />
       {hover && hoveredSlot && (
         <div
@@ -413,7 +585,7 @@ function SlotRaceNodeChart({
           style={{ left: xPos, top: Math.max(0, hover.vy - 60) }}
         >
           <div className="font-mono font-semibold text-[#e5e5e5] mb-1.5">
-            Slot {Number(hoveredSlot['slot']).toLocaleString()}
+            {`Slot ${Number(hoveredSlot['slot']).toLocaleString()}`}
           </div>
           {hoveredLeader && (
             <div className="mb-1.5 pb-1.5 border-b border-[#333] text-[#999]">
@@ -454,11 +626,25 @@ function RecentSlotsChart({
   slots,
   nodes,
   slotLeaders,
+  leadersOnly,
+  slotBuckets,
+  slotBucketSize,
+  window,
+  bucketed,
+  setBucketed,
 }: {
   slots: EdgeScoreboardSlotRace[]
   nodes: EdgeScoreboardNode[]
   slotLeaders?: Record<string, EdgeScoreboardLeader>
+  leadersOnly?: boolean
+  slotBuckets?: EdgeScoreboardSlotBucket[]
+  slotBucketSize?: number
+  window?: TimeWindow
+  bucketed: boolean
+  setBucketed: (v: boolean) => void
 }) {
+  const containerRef = useRef<HTMLDivElement>(null)
+
   const chartData = useMemo(() => {
     if (!slots.length || !nodes.length) return { nodeCharts: [], feeds: [] as string[], slotCount: 0 }
 
@@ -503,6 +689,78 @@ function RecentSlotsChart({
     return { nodeCharts, feeds, slotCount: slotNumbers.length }
   }, [slots, nodes])
 
+  const bucketedChartData = useMemo(() => {
+    if (!slotBuckets || !slotBuckets.length || !nodes.length) {
+      return { nodeCharts: [], feeds: [] as string[], slotCount: 0, bucketSize: 0 }
+    }
+
+    const validNodeIds = new Set(nodes.map((n) => n.host))
+    const filtered = slotBuckets.filter((b) => validNodeIds.has(b.host))
+
+    const feedSet = new Set<string>()
+    for (const b of filtered) feedSet.add(b.feed)
+    const feeds = [...feedSet].sort((a, b) => (a === 'dz' ? -1 : b === 'dz' ? 1 : a.localeCompare(b)))
+
+    // Use the actual API-returned buckets as the x-axis. No theoretical range computation —
+    // the window filter on the API side already scopes the data. Aggregating to at most 200
+    // display buckets keeps the chart readable for long windows.
+    const maxDisplayBuckets = 200
+
+    const allRawBuckets = [...new Set(filtered.map((b) => b.slot_bucket))].sort((a, b) => a - b)
+    const apiBucketSize = slotBucketSize ?? (allRawBuckets.length >= 2 ? allRawBuckets[1] - allRawBuckets[0] : 1)
+
+    // Clip to the minimum last bucket across all nodes so all charts end at the same point.
+    const perNodeMax = new Map<string, number>()
+    for (const b of filtered) {
+      if (b.slot_bucket > (perNodeMax.get(b.host) ?? 0)) perNodeMax.set(b.host, b.slot_bucket)
+    }
+    const minLastBucket = Math.min(...perNodeMax.values())
+    const rawBuckets = allRawBuckets.filter(b => b <= minLastBucket)
+
+    const groupSize = Math.max(1, Math.ceil(rawBuckets.length / maxDisplayBuckets))
+    const displayBucketSize = groupSize * apiBucketSize
+    const displayBucketStarts = rawBuckets.filter((_, i) => i % groupSize === 0)
+    const apiBucketIndex = new Map(rawBuckets.map((slot, i) => [slot, i]))
+
+    const sortedNodes = [...nodes].sort((a, b) => a.host.localeCompare(b.host))
+
+    const bucketedNodeCharts = sortedNodes
+      .filter((n) => filtered.some((b) => b.host === n.host))
+      .map((n) => {
+        // Aggregate raw counts per display bucket per feed
+        const displayData = new Map<number, { feedWon: Map<string, number>; bucketTotal: number }>()
+        for (const b of filtered) {
+          if (b.host !== n.host) continue
+          // Skip buckets outside our computed range to avoid polluting the wrong display bucket
+          const apiIdx = apiBucketIndex.get(b.slot_bucket)
+          if (apiIdx === undefined) continue
+          const displayStart = rawBuckets[Math.floor(apiIdx / groupSize) * groupSize]
+          let agg = displayData.get(displayStart)
+          if (!agg) {
+            agg = { feedWon: new Map(), bucketTotal: 0 }
+            displayData.set(displayStart, agg)
+          }
+          agg.feedWon.set(b.feed, (agg.feedWon.get(b.feed) ?? 0) + b.feed_won)
+          agg.bucketTotal += b.feed_won // bucket_total = sum of all feed_won across feeds
+        }
+
+        const data = displayBucketStarts.map((slot, idx) => {
+          const agg = displayData.get(slot)
+          const total = agg?.bucketTotal ?? 0
+          const row: Record<string, number | null> = { idx, slot }
+          for (const f of feeds) {
+            const feedWon = agg?.feedWon.get(f) ?? 0
+            const pct = total > 0 ? Math.round((feedWon / total) * 1000) / 10 : 0
+            row[f] = pct > 0 ? pct : null
+          }
+          return row
+        })
+        return { node: n, data }
+      })
+
+    return { nodeCharts: bucketedNodeCharts, feeds, slotCount: displayBucketStarts.length, bucketSize: displayBucketSize }
+  }, [slotBuckets, slotBucketSize, nodes, window])
+
   if (!slots.length)
     return (
       <div className="rounded-lg border border-border bg-card p-4">
@@ -511,12 +769,38 @@ function RecentSlotsChart({
       </div>
     )
 
-  const { nodeCharts, feeds, slotCount } = chartData
+  const activeData = bucketed ? bucketedChartData : chartData
+  const { nodeCharts, feeds, slotCount } = activeData
+  const activeBucketSize = bucketed ? bucketedChartData.bucketSize : undefined
 
   return (
-    <div className="rounded-lg border border-border bg-card p-4">
+    <div ref={containerRef} className="rounded-lg border border-border bg-card p-4">
       <div className="mb-4">
-        <h3 className="text-sm font-medium">Recent Edge Leader Slots — Win Rate per Slot</h3>
+        <div className="flex items-center justify-between">
+          <h3 className="text-sm font-medium">
+            {bucketed ? 'Win Rate Trend' : 'Win Rate per Slot'}
+          </h3>
+          <div className="inline-flex rounded-md border border-border overflow-hidden text-xs h-[26px] -mt-2">
+            <button
+              onClick={() => setBucketed(false)}
+              className={cn(
+                'px-2.5 transition-colors',
+                !bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              Per Slot
+            </button>
+            <button
+              onClick={() => setBucketed(true)}
+              className={cn(
+                'px-2.5 transition-colors border-l border-border',
+                bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+              )}
+            >
+              Trend
+            </button>
+          </div>
+        </div>
         <div className="flex items-center justify-end gap-3 mt-1">
           {feeds.map((f) => (
             <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
@@ -529,11 +813,24 @@ function RecentSlotsChart({
       {nodeCharts.map((nc) => (
         <div key={nc.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center">
           <NodeLabel node={nc.node} label={nodeDisplayLabel(nc.node, nodes)} />
-          <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={slotLeaders} />
+          {bucketed
+            ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
+            : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={slotLeaders} />}
         </div>
       ))}
       <div className="text-xs text-muted-foreground text-center mt-1">
-        {slotCount} most recent Edge leader slots
+        {bucketed
+          ? (() => {
+              const totalSlots = slotCount * (activeBucketSize ?? 1)
+              const sec = Math.round(totalSlots / 2.5)
+              const timeEst = sec < 60 ? `~${sec}s` : sec < 3600 ? `~${Math.round(sec / 60)}m` : `~${Math.round(sec / 3600)}h`
+              return `~${totalSlots.toLocaleString()} slots · ${timeEst} · last ${window ?? 'all'}`
+            })()
+          : (() => {
+              const sec = Math.round(slotCount / 2.5)
+              const timeEst = sec < 60 ? `~${sec}s` : `~${Math.round(sec / 60)}m`
+              return `${slotCount} most recent ${leadersOnly ? 'Edge leader ' : ''}slots · ${timeEst}`
+            })()}
       </div>
     </div>
   )
@@ -631,7 +928,19 @@ function NodeMap({ nodes }: { nodes: EdgeScoreboardNode[] }) {
 export function EdgeScoreboardPage() {
   const [searchParams, setSearchParams] = useSearchParams()
 
+  const rawWindow = searchParams.get('window')
+  const activeWindow: TimeWindow = isValidWindow(rawWindow) ? rawWindow : '1h'
+
   const leadersOnly = searchParams.get('leaders_only') === 'true'
+  const bucketed = searchParams.get('trend') === '1'
+  const setBucketed = (v: boolean) => {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      if (v) p.set('trend', '1')
+      else p.delete('trend')
+      return p
+    })
+  }
 
   const [showLoader, setShowLoader] = useState(false)
   const [showShimmer, setShowShimmer] = useState(false)
@@ -645,12 +954,36 @@ export function EdgeScoreboardPage() {
   const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['edge-scoreboard', leadersOnly],
-    queryFn: () => fetchEdgeScoreboard('1h', leadersOnly),
+    queryKey: ['edge-scoreboard', activeWindow, leadersOnly],
+    queryFn: () => fetchEdgeScoreboard(activeWindow, leadersOnly),
     refetchInterval: 30_000,
     staleTime: 15_000,
     placeholderData: keepPreviousData,
   })
+
+  // Keep recent slots stable across window changes: only update when a newer
+  // response arrives (by generated_at), so switching 1h↔24h doesn't flip the chart.
+  type RecentSlotsSnapshot = {
+    generatedAt: string
+    slots: EdgeScoreboardSlotRace[]
+    leaders: Record<string, EdgeScoreboardLeader> | undefined
+  }
+  const latestRecentRef = useRef<RecentSlotsSnapshot | null>(null)
+  const [stableRecent, setStableRecent] = useState<RecentSlotsSnapshot | null>(null)
+  // Reset snapshot when leadersOnly changes so the chart reflects the new filter immediately.
+  useEffect(() => {
+    latestRecentRef.current = null
+    setStableRecent(null)
+  }, [leadersOnly])
+  useEffect(() => {
+    if (!data?.generated_at || !data.recent_slots?.length) return
+    const prev = latestRecentRef.current
+    if (!prev || new Date(data.generated_at) >= new Date(prev.generatedAt)) {
+      const snap: RecentSlotsSnapshot = { generatedAt: data.generated_at, slots: data.recent_slots, leaders: data.slot_leaders }
+      latestRecentRef.current = snap
+      setStableRecent(snap)
+    }
+  }, [data])
 
   const freshness = useMemo(() => {
     if (!data?.generated_at) return null
@@ -660,11 +993,14 @@ export function EdgeScoreboardPage() {
     return `${Math.round(ageSec / 60)}m ago`
   }, [data?.generated_at, now])
 
-  const slotDuration = useMemo(() => {
-    if (!data?.global_total_slots) return null
-    const m = Math.round(data.global_total_slots * 0.4 / 60)
-    return m < 1 ? '~<1m' : `~${m}m`
-  }, [data?.global_total_slots])
+  const setWindow = (w: TimeWindow) => {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      if (w === '1h') p.delete('window')
+      else p.set('window', w)
+      return p
+    })
+  }
 
   const setLeadersOnly = (v: boolean) => {
     setSearchParams((prev) => {
@@ -766,7 +1102,7 @@ export function EdgeScoreboardPage() {
       if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null }
       setShowShimmer(false)
     }
-  }, [leadersOnly, window])
+  }, [activeWindow, leadersOnly])
 
   // Cancel the debounce if data arrives before the 200ms threshold.
   useEffect(() => {
@@ -804,12 +1140,29 @@ export function EdgeScoreboardPage() {
           subtitle={
             data && freshness ? (
               <span className="text-sm text-muted-foreground">
-                {data.global_total_slots.toLocaleString()} slots ({slotDuration}) · updated {freshness}
+                {data.global_total_slots.toLocaleString()} slots · updated {freshness}
               </span>
             ) : undefined
           }
           actions={
             <div className="flex items-center gap-3">
+              <div className="flex items-center rounded-md border border-border text-sm">
+                {VALID_WINDOWS.map((w) => (
+                  <button
+                    key={w}
+                    type="button"
+                    onClick={() => setWindow(w)}
+                    className={cn(
+                      'px-3 py-1.5 transition-colors',
+                      activeWindow === w
+                        ? 'bg-primary text-primary-foreground'
+                        : 'hover:bg-muted'
+                    )}
+                  >
+                    {w === 'all' ? 'All' : w}
+                  </button>
+                ))}
+              </div>
               <div className="flex items-center rounded-md border border-border text-sm">
                 {([
                   [false, 'All Slots'] as const,
@@ -874,7 +1227,7 @@ export function EdgeScoreboardPage() {
         {data?.nodes && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
             <WinRateChart nodes={data.nodes} />
-            <RecentSlotsChart slots={data.recent_slots ?? []} nodes={data.nodes} slotLeaders={data.slot_leaders} />
+            <RecentSlotsChart slots={stableRecent?.slots ?? data.recent_slots ?? []} nodes={data.nodes} slotLeaders={stableRecent?.leaders} leadersOnly={leadersOnly} slotBuckets={data.slot_buckets} slotBucketSize={data.slot_bucket_size} window={activeWindow} bucketed={bucketed} setBucketed={setBucketed} />
           </div>
         )}
 
