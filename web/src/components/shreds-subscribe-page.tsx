@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback, useEffect } from 'react'
+import { useState, useMemo, useCallback, useEffect, useRef } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { useWallet } from '@solana/wallet-adapter-react'
 import { WalletMultiButton } from '@solana/wallet-adapter-react-ui'
@@ -251,6 +251,12 @@ export function ShredsSubscribePage() {
 
   // Form state
   const [selectedDevice, setSelectedDevice] = useState<ShredDevice | null>(null)
+  const configRef = useRef<HTMLElement>(null)
+
+  const handleDeviceSelect = useCallback((device: ShredDevice) => {
+    setSelectedDevice(device)
+    setTimeout(() => configRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50)
+  }, [])
 
   // Auto-select device from ?device= query param
   useEffect(() => {
@@ -396,13 +402,13 @@ export function ShredsSubscribePage() {
             <DevicePicker
               devices={devices}
               selected={selectedDevice}
-              onSelect={setSelectedDevice}
+              onSelect={handleDeviceSelect}
             />
           </section>
 
           {/* Step 2: Configure */}
           {selectedDevice && (
-            <section>
+            <section ref={configRef}>
               <h2 className="text-sm font-medium text-muted-foreground uppercase tracking-wider mb-3">
                 2. Configure Subscription
               </h2>
