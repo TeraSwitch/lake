@@ -768,17 +768,22 @@ function SlotRaceNodeChart({
     notifyHover(idx)
   }, [liveScrollOffset])  // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Release ownership and clear hover when mouse moves to an element outside this chart.
+  // Clear hover when mouse moves outside this chart's container.
+  // Note: do NOT guard on activeChartId here — when moving row-to-row, the new row
+  // claims activeChartId before this handler fires, causing the old row's highlight
+  // to get stuck. Always clear if mouse is genuinely outside this chart.
   useEffect(() => {
     const onDocMove = (e: MouseEvent) => {
-      if (activeChartId !== chartIdRef.current || !containerRef.current) return
+      if (!containerRef.current) return
       if (!containerRef.current.contains(e.target as Node)) {
-        activeChartId = null
-        lastHoverVxRef.current = null
-        lastNotifiedSlotRef.current = null
-        lastNotifiedFeedRef.current = undefined
-        hoveredIdxRef.current = null
-        plotRef.current?.redraw(false)
+        if (activeChartId === chartIdRef.current) activeChartId = null
+        if (hoveredIdxRef.current !== null) {
+          lastHoverVxRef.current = null
+          lastNotifiedSlotRef.current = null
+          lastNotifiedFeedRef.current = undefined
+          hoveredIdxRef.current = null
+          plotRef.current?.redraw(false)
+        }
       }
     }
     document.addEventListener('mousemove', onDocMove, { passive: true })
