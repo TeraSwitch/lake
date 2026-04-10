@@ -1622,10 +1622,12 @@ function RecentSlotsChart({
             {!bucketed && (
               <button
                 onClick={() => {
-                  if (viewEndSlot === null) {
+                  if (live && viewEndSlot === null) {
+                    // Currently live-tailing → pause
                     viewEndSlotRef.current = liveEdgeRef.current
                     setViewEndSlot(liveEdgeRef.current)
                   } else {
+                    // Not tailing (paused, or coming back from Trend) → start/resume
                     scrollToLive()
                   }
                 }}
