@@ -940,40 +940,34 @@ function RecentSlotsChart({
   const liveRef = useRef(live)
   liveRef.current = live
   // Info bar DOM refs — updated directly to avoid React re-render flicker.
+  // Info bar: 2 lines, always visible, zero layout shift.
+  // Line 1 (feeds): color swatch + label + live % — replaces the standalone legend.
+  // Line 2 (slot): slot number (fixed) + single leader text span (variable content, no show/hide).
+  // When null is passed (mouse left), fall back to defaultInfoRef (most-recent slot).
   const infoSlotRef = useRef<HTMLSpanElement>(null)
-  const infoNameRef = useRef<HTMLSpanElement>(null)
-  const infoPubkeyRef = useRef<HTMLSpanElement>(null)
-  const infoIpRef = useRef<HTMLSpanElement>(null)
-  const infoAsnRef = useRef<HTMLSpanElement>(null)
-  const infoLocRef = useRef<HTMLSpanElement>(null)
-  const infoFeedContainerRef = useRef<HTMLSpanElement>(null)
-  const infoPlaceholderRef = useRef<HTMLSpanElement>(null)
+  const infoLeaderRef = useRef<HTMLSpanElement>(null)
   const infoFeedValueRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+  const defaultInfoRef = useRef<SlotHoverInfo | null>(null)
+
+  const applyInfoBar = useCallback((info: SlotHoverInfo | null) => {
+    if (!info) return
+    if (infoSlotRef.current) infoSlotRef.current.textContent = `Slot ${info.slot.toLocaleString()}`
+    if (infoLeaderRef.current) {
+      const l = info.leader
+      const parts: string[] = []
+      if (l?.name) parts.push(l.name)
+      if (l) parts.push(`${l.pubkey.slice(0, 8)}…${l.pubkey.slice(-4)}`)
+      if (l?.ip) parts.push(l.ip)
+      if (l?.asn_org) parts.push(l.asn_org)
+      if (l?.city) parts.push(`${l.city}${l.country ? `, ${l.country}` : ''}`)
+      infoLeaderRef.current.textContent = parts.join('  ·  ')
+    }
+    for (const [f, span] of infoFeedValueRefs.current) span.textContent = `${(info.feedData[f] ?? 0).toFixed(1)}%`
+  }, [])
 
   const updateInfoBar = useCallback((info: SlotHoverInfo | null) => {
-    const show = (el: HTMLElement | null, text?: string) => {
-      if (!el) return
-      if (text !== undefined) el.textContent = text
-      el.style.display = ''
-    }
-    const hide = (el: HTMLElement | null) => { if (el) el.style.display = 'none' }
-    if (info) {
-      hide(infoPlaceholderRef.current)
-      show(infoSlotRef.current, `Slot ${info.slot.toLocaleString()}`)
-      info.leader?.name ? show(infoNameRef.current, info.leader.name) : hide(infoNameRef.current)
-      info.leader ? show(infoPubkeyRef.current, `${info.leader.pubkey.slice(0, 8)}…${info.leader.pubkey.slice(-4)}`) : hide(infoPubkeyRef.current)
-      info.leader?.ip ? show(infoIpRef.current, info.leader.ip) : hide(infoIpRef.current)
-      info.leader?.asn_org ? show(infoAsnRef.current, info.leader.asn_org) : hide(infoAsnRef.current)
-      info.leader?.city ? show(infoLocRef.current, `${info.leader.city}${info.leader.country ? `, ${info.leader.country}` : ''}`) : hide(infoLocRef.current)
-      for (const [f, span] of infoFeedValueRefs.current) span.textContent = `${(info.feedData[f] ?? 0).toFixed(1)}%`
-      show(infoFeedContainerRef.current)
-    } else {
-      hide(infoSlotRef.current); hide(infoNameRef.current); hide(infoPubkeyRef.current)
-      hide(infoIpRef.current); hide(infoAsnRef.current); hide(infoLocRef.current)
-      hide(infoFeedContainerRef.current)
-      show(infoPlaceholderRef.current)
-    }
-  }, [])
+    applyInfoBar(info ?? defaultInfoRef.current)
+  }, [applyInfoBar])
 
   // Ref to the chart rows container — used to clear hover info when mouse leaves the area.
   const chartRowsRef = useRef<HTMLDivElement>(null)
@@ -1390,6 +1384,30 @@ function RecentSlotsChart({
   const { nodeCharts, feeds, slotCount } = activeData
   const activeBucketSize = bucketed ? bucketedChartData.bucketSize : undefined
 
+  // Keep defaultInfoRef up-to-date with the most-recent visible slot so the
+  // info bar always shows live data even when nothing is hovered.
+  useEffect(() => {
+    if (bucketed || !activeSlots.length) return
+    const lastSlot = activeSlots.at(-1)
+    if (!lastSlot) return
+    const slotNum = lastSlot.slot
+    const slotRaces = activeSlots.filter(s => s.slot === slotNum)
+    // Average win_pct per feed across all nodes for the latest slot.
+    const feedTotals: Record<string, { sum: number; count: number }> = {}
+    for (const r of slotRaces) {
+      if (!feedTotals[r.feed]) feedTotals[r.feed] = { sum: 0, count: 0 }
+      feedTotals[r.feed].sum += r.win_pct
+      feedTotals[r.feed].count++
+    }
+    const feedData: Record<string, number | null> = {}
+    for (const f of feeds) feedData[f] = feedTotals[f] ? feedTotals[f].sum / feedTotals[f].count : 0
+    const leaders = live ? (liveLeaders ?? slotLeaders) : slotLeaders
+    const leader = leaders?.[String(slotNum)]
+    const info: SlotHoverInfo = { slot: slotNum, leader, feedData }
+    defaultInfoRef.current = info
+    applyInfoBar(info)
+  }, [activeSlots, feeds, slotLeaders, liveLeaders, live, bucketed, applyInfoBar])
+
   return (
     <div
       ref={containerRef}
@@ -1500,33 +1518,33 @@ function RecentSlotsChart({
             </div>
           </div>
         </div>
-        <div className="flex items-center justify-end gap-3 mt-1">
-          {feeds.map((f) => (
-            <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
-              {FEED_LABELS[f] ?? f}
-            </div>
-          ))}
-        </div>
-      </div>
-      {/* Slot hover info bar — DOM-managed directly to avoid React re-render flicker */}
-      {!bucketed && (
-        <div className="h-7 flex items-center gap-3 px-1 text-xs text-muted-foreground overflow-hidden">
-          <span ref={infoSlotRef} className="font-mono text-foreground shrink-0" style={{ display: 'none' }} />
-          <span ref={infoNameRef} className="text-foreground/80 shrink-0" style={{ display: 'none' }} />
-          <span ref={infoPubkeyRef} className="font-mono text-muted-foreground/60 shrink-0" style={{ display: 'none' }} />
-          <span ref={infoIpRef} className="font-mono shrink-0" style={{ display: 'none' }} />
-          <span ref={infoAsnRef} className="shrink-0" style={{ display: 'none' }} />
-          <span ref={infoLocRef} className="shrink-0" style={{ display: 'none' }} />
-          <span ref={infoFeedContainerRef} className="flex items-center gap-2 ml-auto shrink-0" style={{ display: 'none' }}>
-            {feeds.map(f => (
-              <span key={f} className="flex items-center gap-1">
-                <span className="font-semibold" style={{ color: FEED_COLORS[f] ?? '#6b7280' }}>{FEED_LABELS[f] ?? f}</span>
-                <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground">—</span>
-              </span>
+        {!bucketed && (
+          <div className="flex items-center justify-end gap-3 mt-1 text-[10px] text-muted-foreground">
+            {feeds.map((f) => (
+              <div key={f} className="flex items-center gap-1">
+                <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
+                {FEED_LABELS[f] ?? f}
+                <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5">—</span>
+              </div>
             ))}
-          </span>
-          <span ref={infoPlaceholderRef} className="text-muted-foreground/30 text-[10px]">Hover a slot to see details</span>
+          </div>
+        )}
+        {bucketed && (
+          <div className="flex items-center justify-end gap-3 mt-1">
+            {feeds.map((f) => (
+              <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
+                {FEED_LABELS[f] ?? f}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+      {/* Slot info bar — always visible, DOM-managed to avoid re-render flicker */}
+      {!bucketed && (
+        <div className="h-5 flex items-center gap-2 px-1 text-[10px] overflow-hidden mt-0.5 justify-end">
+          <span ref={infoLeaderRef} className="text-muted-foreground truncate" />
+          <span ref={infoSlotRef} className="font-mono text-foreground/80 shrink-0" />
         </div>
       )}
       <div ref={chartRowsRef} className="relative">
