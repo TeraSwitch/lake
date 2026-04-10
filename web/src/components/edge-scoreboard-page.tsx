@@ -592,7 +592,7 @@ function SlotRaceNodeChart({
       },
       axes: [{ show: false }, { show: false }],
       padding: [0, 0, 0, 0],
-      cursor: { points: { show: false }, x: false, y: false },
+      cursor: { show: false, points: { show: false }, x: false, y: false },
       select: { show: false, left: 0, top: 0, width: 0, height: 0 },
       legend: { show: false },
       hooks: {
@@ -626,9 +626,9 @@ function SlotRaceNodeChart({
                   cumulative[i] += val
                 }
               }
-              // Highlight hovered column
+              // Highlight hovered column (skip during drag — position is misleading while translating)
               const hIdx = hoveredIdxRef.current
-              if (hIdx != null && hIdx >= 0 && hIdx < currentN) {
+              if (!draggingRef.current && hIdx != null && hIdx >= 0 && hIdx < currentN) {
                 const x1 = Math.floor(u.valToPos(hIdx - 0.5, 'x', true))
                 const x2 = Math.ceil(u.valToPos(hIdx + 0.5, 'x', true))
                 const y1 = Math.floor(u.valToPos(100, 'y', true))
@@ -1558,6 +1558,7 @@ function RecentSlotsChart({
       style={{
         touchAction: bucketed ? undefined : 'pan-y',
         cursor: bucketed ? undefined : isDragging ? 'grabbing' : 'grab',
+        userSelect: 'none',
       }}
       onPointerDown={bucketed ? undefined : (e) => {
         // Only capture for drag intent — skip interactive children so their click events fire normally.
@@ -1714,7 +1715,7 @@ function RecentSlotsChart({
             >
               {bucketed
                 ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
-                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} onHover={updateInfoBar} />}
+                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging || isInertia} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} onHover={updateInfoBar} />}
             </div>
             </div>{/* end mask wrapper */}
           </div>
