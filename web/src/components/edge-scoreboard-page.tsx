@@ -1053,9 +1053,9 @@ function RecentSlotsChart({
         el.style.fontWeight = ''
       } else if (f === hf) {
         el.style.opacity = '1'
-        el.style.fontWeight = '600'
+        el.style.fontWeight = '500'
       } else {
-        el.style.opacity = '0.4'
+        el.style.opacity = '0.55'
         el.style.fontWeight = ''
       }
     }
