@@ -1,7 +1,8 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
+import { useDrag } from '@use-gesture/react'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams, Link } from 'react-router-dom'
-import { Trophy, Loader2 } from 'lucide-react'
+import { Trophy, Loader2, ChevronsRight } from 'lucide-react'
 import uPlot from 'uplot'
 import 'uplot/dist/uPlot.min.css'
 
@@ -26,7 +27,7 @@ function isValidWindow(v: string | null): v is TimeWindow {
 }
 
 function formatPct(v: number): string {
-  return `${v.toFixed(1)}%`
+  return v >= 100 ? '100%' : `${v.toFixed(1)}%`
 }
 
 function formatMs(v: number): string {
@@ -104,18 +105,19 @@ function WinRateBar({
   node,
   feeds,
   data,
+  onHover,
 }: {
   node: EdgeScoreboardNode
   feeds: string[]
   data: Record<string, string | number>
+  onHover?: (data: Record<string, string | number> | null, feed?: string | null) => void
 }) {
-  const [hoveredFeed, setHoveredFeed] = useState<string | null>(null)
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
 
   return (
     <div
       className="relative flex-1 h-14"
-      onMouseLeave={() => { setMousePos(null); setHoveredFeed(null) }}
+      onMouseLeave={() => { setMousePos(null); onHover?.(null, null) }}
       onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
     >
       <div className="relative flex h-full rounded overflow-hidden">
@@ -128,15 +130,15 @@ function WinRateBar({
               key={f}
               style={{ width: `${pct}%`, backgroundColor: FEED_COLORS[f] ?? '#6b7280', minWidth: 0 }}
               className="relative flex items-center justify-center overflow-hidden"
-              onMouseEnter={() => setHoveredFeed(f)}
+              onMouseEnter={() => onHover?.(data, f)}
             >
               {(f === 'dz' || f === 'dz_rebop') && raw >= 2 && (
                 <span className="text-white text-xs font-semibold whitespace-nowrap select-none">
                   {raw.toFixed(1)}%
                 </span>
               )}
-              {hoveredFeed === f && (
-                <div className="absolute inset-0 bg-white/15 ring-1 ring-inset ring-white/40 pointer-events-none" />
+              {mousePos && (
+                <div className="absolute inset-0 bg-white/10 pointer-events-none" />
               )}
             </div>
           )
@@ -237,6 +239,10 @@ function nodeDisplayLabel(node: EdgeScoreboardNode, nodes: EdgeScoreboardNode[])
 }
 
 function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
+  const legendValueRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+  const legendDefaultsRef = useRef<Map<string, string>>(new Map())
+  const legendItemRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+
   const chartData = useMemo(() => {
     const feedSet = new Set<string>()
     for (const n of nodes) {
@@ -262,7 +268,14 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
         return { node: n, data: row }
       })
 
-    return { nodeRows, feeds }
+    // Aggregate raw win_rate_pct per feed across all nodes (simple average).
+    const feedAgg: Record<string, number> = {}
+    for (const f of feeds) {
+      const vals = nodes.map(n => n.feeds[f]?.win_rate_pct ?? 0).filter(v => v > 0)
+      feedAgg[f] = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0
+    }
+
+    return { nodeRows, feeds, feedAgg }
   }, [nodes])
 
   if (chartData.nodeRows.length === 0) return null
@@ -271,19 +284,56 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="mb-4">
         <h3 className="text-sm font-medium">Win Rate by Node</h3>
-        <div className="flex items-center justify-end gap-3 mt-1">
-          {chartData.feeds.map((f) => (
-            <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
-              {FEED_LABELS[f] ?? f}
-            </div>
-          ))}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-3">
+          {chartData.feeds.map((f) => {
+            const defaultVal = formatPct(chartData.feedAgg[f])
+            legendDefaultsRef.current.set(f, defaultVal)
+            return (
+              <div key={f} ref={el => { if (el) legendItemRefs.current.set(f, el) }} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
+                {FEED_LABELS[f] ?? f}
+                <span
+                  ref={el => { if (el) legendValueRefs.current.set(f, el) }}
+                  className="font-mono text-foreground ml-0.5 inline-block w-[4ch] text-right"
+                >{defaultVal}</span>
+              </div>
+            )
+          })}
         </div>
       </div>
+      {/* Spacer matching the slot chart's info bar height so rows align horizontally */}
+      <div className="h-4" />
       {chartData.nodeRows.map((nr) => (
         <div key={nr.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center">
           <NodeLabel node={nr.node} label={nodeDisplayLabel(nr.node, nodes)} />
-          <WinRateBar node={nr.node} feeds={chartData.feeds} data={nr.data} />
+          <WinRateBar
+            node={nr.node}
+            feeds={chartData.feeds}
+            data={nr.data}
+            onHover={(hovered, feed) => {
+              for (const f of chartData.feeds) {
+                const valEl = legendValueRefs.current.get(f)
+                if (valEl) {
+                  valEl.textContent = hovered
+                    ? `${Number(hovered[`${f}_raw`] ?? 0).toFixed(1)}%`
+                    : (legendDefaultsRef.current.get(f) ?? '')
+                }
+                const itemEl = legendItemRefs.current.get(f)
+                if (itemEl) {
+                  if (!hovered || feed == null) {
+                    itemEl.style.opacity = ''
+                    itemEl.style.fontWeight = ''
+                  } else if (f === feed) {
+                    itemEl.style.opacity = '1'
+                    itemEl.style.fontWeight = '600'
+                  } else {
+                    itemEl.style.opacity = '0.55'
+                    itemEl.style.fontWeight = ''
+                  }
+                }
+              }
+            }}
+          />
         </div>
       ))}
       <div className="flex items-center" style={{ paddingLeft: 48 }}>
@@ -394,14 +444,36 @@ function BucketedNodeChart({ data, feeds, bucketSize }: { data: Array<Record<str
   )
 }
 
+type SlotHoverInfo = {
+  slot: number
+  leader?: EdgeScoreboardLeader
+  feedData: Record<string, number | null>
+  hoveredFeed?: string | null
+}
+
+// Module-level ref: only one chart instance can own hover at a time.
+// When a chart gets a valid setCursor, it claims ownership. The scroll-restore
+// effect only fires for the owner, so moving to another row clears the previous one.
+let activeChartId: string | null = null
+
 function SlotRaceNodeChart({
   slotData,
   feeds,
   slotLeaders,
+  animated = true,
+  dragging = false,
+  liveScrollOffset = 0,
+  viewSlotCount,
+  onHover,
 }: {
   slotData: Array<Record<string, number | null>>
   feeds: string[]
   slotLeaders?: Record<string, EdgeScoreboardLeader>
+  animated?: boolean
+  dragging?: boolean
+  liveScrollOffset?: number
+  viewSlotCount: number
+  onHover?: (info: SlotHoverInfo | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -409,23 +481,101 @@ function SlotRaceNodeChart({
   slotDataRef.current = slotData
   const slotLeadersRef = useRef(slotLeaders)
   slotLeadersRef.current = slotLeaders
+  const feedsRef = useRef(feeds)
+  feedsRef.current = feeds
   const setHoverRef = useRef<((idx: number | null, vx: number, vy: number) => void) | null>(null)
   const hoveredIdxRef = useRef<number | null>(null)
   const animOffsetRef = useRef(0)
   const rafRef = useRef<number | null>(null)
-  const isFirstDataRef = useRef(true)
+  const animatedRef = useRef(animated)
+  animatedRef.current = animated
+  const draggingRef = useRef(dragging)
+  draggingRef.current = dragging
+  const prevRightSlotRef = useRef<number | null>(null)
+  // Track cursor position so we can recompute the hovered idx as the chart scrolls
+  // under a stationary mouse (translateX moves the canvas, uPlot doesn't re-fire setCursor).
+  const liveScrollOffsetRef = useRef(liveScrollOffset)
+  liveScrollOffsetRef.current = liveScrollOffset
+  const lastHoverVxRef = useRef<number | null>(null)
+  const lastHoverVyRef = useRef<number | null>(null)
+  // Stable id for this chart instance — used to claim/check activeChartId ownership.
+  const chartIdRef = useRef(`chart-${Math.random()}`)
+  const lastNotifiedSlotRef = useRef<number | null>(null)
+  const lastNotifiedFeedRef = useRef<string | null | undefined>(undefined)
 
-  const [hover, setHover] = useState<{ idx: number; vx: number; vy: number } | null>(null)
-  setHoverRef.current = (idx, vx, vy) => setHover(idx == null ? null : { idx, vx, vy })
+  const onHoverRef = useRef(onHover)
+  onHoverRef.current = onHover
 
-  // Re-initialize uPlot only when slot count or feeds change (not on every data refresh).
+  // Coalesce notifyHover calls within a single rAF frame so competing paths
+  // (setCursor and scroll-restore) don't race each other with different indices.
+  // Only the last scheduled index per frame reaches updateInfoBar.
+  const pendingNotifyIdxRef = useRef<number | null>(null)
+  const notifyRafRef = useRef<number | null>(null)
+  const notifyHover = (idx: number) => {
+    pendingNotifyIdxRef.current = idx
+    if (notifyRafRef.current !== null) return  // already scheduled; last write wins
+    notifyRafRef.current = requestAnimationFrame(() => {
+      notifyRafRef.current = null
+      const pendingIdx = pendingNotifyIdxRef.current
+      pendingNotifyIdxRef.current = null
+      if (pendingIdx === null) return
+      const slot = slotDataRef.current[pendingIdx]
+      if (!slot) return
+      const slotNum = Number(slot['slot'])
+      const leader = slotLeadersRef.current?.[String(slot['slot'])]
+      const feedData: Record<string, number | null> = {}
+      for (const key of Object.keys(slot)) {
+        if (key !== 'slot') feedData[key] = slot[key] as number | null
+      }
+
+      // Compute which feed segment is under the cursor from Y position
+      let hoveredFeed: string | null = null
+      const plot = plotRef.current
+      if (plot && lastHoverVyRef.current !== null) {
+        const rect = plot.over.getBoundingClientRect()
+        const canvasY = lastHoverVyRef.current - rect.top
+        if (canvasY >= 0 && canvasY <= rect.height) {
+          const yVal = plot.posToVal(canvasY, 'y')
+          let cumulative = 0
+          for (const f of feedsRef.current) {
+            const val = (slot[f] as number | null) ?? 0
+            cumulative += val
+            if (yVal <= cumulative) {
+              hoveredFeed = f
+              break
+            }
+          }
+        }
+      }
+
+      // Skip if both slot and hovered feed are unchanged
+      if (slotNum === lastNotifiedSlotRef.current && hoveredFeed === lastNotifiedFeedRef.current) return
+      lastNotifiedSlotRef.current = slotNum
+      lastNotifiedFeedRef.current = hoveredFeed
+
+      onHoverRef.current?.({ slot: slotNum, leader, feedData, hoveredFeed })
+    })
+  }
+
+  setHoverRef.current = (idx, vx, vy) => {
+    if (idx == null) {
+      // Don't clear here — phantom mouseleave events resolve immediately.
+    } else {
+      activeChartId = chartIdRef.current  // claim ownership
+      lastHoverVxRef.current = vx
+      lastHoverVyRef.current = vy
+      hoveredIdxRef.current = idx
+      notifyHover(idx)
+    }
+  }
+
+  // Re-initialize uPlot when feeds or viewSlotCount change. The scale is fixed to viewSlotCount
+  // slots — draw hook reads slotDataRef.current directly and handles any count.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!containerRef.current || !slotData.length) return
 
-    isFirstDataRef.current = true
-
-    const n = slotData.length
+    const n = viewSlotCount
     const height = NODE_CHART_HEIGHT
 
     const xData = Float64Array.from({ length: n }, (_, i) => i)
@@ -443,6 +593,7 @@ function SlotRaceNodeChart({
       axes: [{ show: false }, { show: false }],
       padding: [0, 0, 0, 0],
       cursor: { points: { show: false }, x: false, y: false },
+      select: { show: false, left: 0, top: 0, width: 0, height: 0 },
       legend: { show: false },
       hooks: {
         draw: [
@@ -467,21 +618,21 @@ function SlotRaceNodeChart({
                   const val = currentData[i][feed] ?? 0
                   if (!val) continue
                   const prev = cumulative[i]
-                  const x1 = Math.round(u.valToPos(i - 0.5, 'x', true))
-                  const x2 = Math.round(u.valToPos(i + 0.5, 'x', true))
-                  const y1 = Math.round(u.valToPos(prev + val, 'y', true))
-                  const y2 = Math.round(u.valToPos(prev, 'y', true))
+                  const x1 = Math.floor(u.valToPos(i - 0.5, 'x', true))
+                  const x2 = Math.ceil(u.valToPos(i + 0.5, 'x', true))
+                  const y1 = Math.floor(u.valToPos(prev + val, 'y', true))
+                  const y2 = Math.ceil(u.valToPos(prev, 'y', true))
                   if (y2 > y1 && x2 > x1) ctx.fillRect(x1, y1, x2 - x1, y2 - y1)
                   cumulative[i] += val
                 }
               }
-              // Highlight hovered column
+              // Highlight hovered column (skip during drag — position is misleading while translating)
               const hIdx = hoveredIdxRef.current
-              if (hIdx != null && hIdx >= 0 && hIdx < currentN) {
-                const x1 = Math.round(u.valToPos(hIdx - 0.5, 'x', true))
-                const x2 = Math.round(u.valToPos(hIdx + 0.5, 'x', true))
-                const y1 = Math.round(u.valToPos(100, 'y', true))
-                const y2 = Math.round(u.valToPos(0, 'y', true))
+              if (!draggingRef.current && hIdx != null && hIdx >= 0 && hIdx < currentN) {
+                const x1 = Math.floor(u.valToPos(hIdx - 0.5, 'x', true))
+                const x2 = Math.ceil(u.valToPos(hIdx + 0.5, 'x', true))
+                const y1 = Math.floor(u.valToPos(100, 'y', true))
+                const y2 = Math.ceil(u.valToPos(0, 'y', true))
                 const w = x2 - x1
                 const h = y2 - y1
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
@@ -505,10 +656,7 @@ function SlotRaceNodeChart({
             }
             hoveredIdxRef.current = idx
             u.redraw(false)
-            const rect = u.over.getBoundingClientRect()
-            const vx = rect.left + (u.cursor.left ?? 0)
-            const vy = rect.top + (u.cursor.top ?? 0)
-            setHoverRef.current?.(idx, vx, vy)
+            setHoverRef.current?.(idx, 0, 0)
           },
         ],
       },
@@ -517,8 +665,14 @@ function SlotRaceNodeChart({
     plotRef.current?.destroy()
     plotRef.current = new uPlot(opts, uData, containerRef.current)
 
-    const canvas = containerRef.current.querySelector('canvas')
-    if (canvas) canvas.style.borderRadius = '4px'
+    const onOverMove = (e: MouseEvent) => {
+      lastHoverVxRef.current = e.clientX
+      lastHoverVyRef.current = e.clientY
+    }
+    plotRef.current.over.addEventListener('mousemove', onOverMove)
+
+    // Don't set borderRadius on the canvas — the parent div's overflow-hidden+rounded
+    // already clips the corners, and canvas borderRadius causes GPU compositing seams.
 
     const ro = new ResizeObserver((entries) => {
       if (plotRef.current) plotRef.current.setSize({ width: entries[0].contentRect.width, height })
@@ -530,18 +684,31 @@ function SlotRaceNodeChart({
       plotRef.current?.destroy()
       plotRef.current = null
     }
-  }, [slotData.length, feeds])
+  }, [feeds, viewSlotCount])
 
   // Animate bars sliding in from the right on data refresh.
-  useEffect(() => {
-    if (isFirstDataRef.current) {
-      isFirstDataRef.current = false
-      return
-    }
+  // useLayoutEffect so the canvas redraws synchronously with the DOM before the browser paints.
+  // Without this, translateX (from scrollOffset state) updates in one frame and the canvas
+  // content updates in the next (useEffect fires after paint), causing a one-frame jitter that
+  // is especially visible with narrow bars (high slot counts like 200 or 300).
+  useLayoutEffect(() => {
     const plot = plotRef.current
     if (!plot || !slotData.length) return
 
     if (rafRef.current != null) cancelAnimationFrame(rafRef.current)
+
+    // Only animate when the rightmost slot actually changes (a real new slot arrived).
+    const rightSlot = slotData.at(-1)?.['slot'] as number | undefined ?? null
+    const rightSlotChanged = rightSlot !== prevRightSlotRef.current
+    prevRightSlotRef.current = rightSlot
+
+    // Skip canvas slide animation during drag (the outer translateX handles position)
+    // and in live tailing mode (the drain translateX handles movement).
+    if (!animatedRef.current || !rightSlotChanged || draggingRef.current) {
+      animOffsetRef.current = 0
+      plot.redraw(false)
+      return
+    }
 
     // Slide-in offset: use one slot-width, but cap at 4px so bucketed mode
     // (fewer, wider buckets) doesn't animate a large gap on the left.
@@ -572,54 +739,88 @@ function SlotRaceNodeChart({
     }
   }, [slotData])
 
-  const hoveredSlot = hover != null ? slotData[hover.idx] : null
-  const hoveredLeader = hoveredSlot ? slotLeadersRef.current?.[String(hoveredSlot['slot'])] : undefined
-  const xPos = hover != null && hover.vx + 10 + 180 > window.innerWidth ? hover.vx - 190 : (hover?.vx ?? 0) + 10
+  // When the chart scrolls (translateX shifts the canvas left), a stationary mouse effectively
+  // moves right in canvas coordinates. Recompute the hovered idx from the current screen position
+  // of u.over so the tooltip tracks the bar that is visually under the cursor.
+  useEffect(() => {
+    const plot = plotRef.current
+    if (!plot || lastHoverVxRef.current === null) return
+    if (activeChartId !== chartIdRef.current) {
+      if (hoveredIdxRef.current !== null) {
+        hoveredIdxRef.current = null
+        plot.redraw(false)
+      }
+      lastHoverVxRef.current = null
+      return
+    }
+    // Compute canvas-relative x directly from clientX + live bounding rect.
+    // This is always exact regardless of drain events or scroll delta accumulation.
+    const rect = plot.over.getBoundingClientRect()
+    const canvasX = lastHoverVxRef.current - rect.left
+    if (canvasX < 0 || canvasX > rect.width) return
+    const xVal = plot.posToVal(canvasX, 'x')
+    const idx = Math.round(xVal)
+    if (idx < 0 || idx >= slotDataRef.current.length) return
+    // Only redraw when the bar index actually changes — no floating-point oscillation possible.
+    if (idx === hoveredIdxRef.current) return
+    hoveredIdxRef.current = idx
+    plot.redraw(false)
+    notifyHover(idx)
+  }, [liveScrollOffset])  // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Clear hover when mouse moves outside this chart's container.
+  // Note: do NOT guard on activeChartId here — when moving row-to-row, the new row
+  // claims activeChartId before this handler fires, causing the old row's highlight
+  // to get stuck. Always clear if mouse is genuinely outside this chart.
+  useEffect(() => {
+    const onDocMove = (e: MouseEvent) => {
+      if (!containerRef.current) return
+      if (!containerRef.current.contains(e.target as Node)) {
+        if (activeChartId === chartIdRef.current) activeChartId = null
+        if (hoveredIdxRef.current !== null) {
+          lastHoverVxRef.current = null
+          lastNotifiedSlotRef.current = null
+          lastNotifiedFeedRef.current = undefined
+          hoveredIdxRef.current = null
+          plotRef.current?.redraw(false)
+        }
+      }
+    }
+    document.addEventListener('mousemove', onDocMove, { passive: true })
+    return () => document.removeEventListener('mousemove', onDocMove)
+  }, [])
 
   return (
     <div className="relative flex-1 min-w-0 overflow-hidden rounded">
       <div ref={containerRef} />
-      {hover && hoveredSlot && (
-        <div
-          className="fixed z-50 bg-[#1a1a2e] border border-[#333] rounded-md px-3 py-2 text-xs shadow-lg pointer-events-none"
-          style={{ left: xPos, top: Math.max(0, hover.vy - 60) }}
-        >
-          <div className="font-mono font-semibold text-[#e5e5e5] mb-1.5">
-            {`Slot ${Number(hoveredSlot['slot']).toLocaleString()}`}
-          </div>
-          {hoveredLeader && (
-            <div className="mb-1.5 pb-1.5 border-b border-[#333] text-[#999]">
-              {hoveredLeader.name && <div className="text-[#e5e5e5]">{hoveredLeader.name}</div>}
-              <div className="font-mono text-[#aaa]">{hoveredLeader.pubkey.slice(0, 8)}...{hoveredLeader.pubkey.slice(-4)}</div>
-              {hoveredLeader.ip && <div><span className="text-[#666]">IP </span><span className="font-mono">{hoveredLeader.ip}</span></div>}
-              {hoveredLeader.asn_org && <div><span className="text-[#666]">Host </span>{hoveredLeader.asn_org}</div>}
-              {hoveredLeader.city && <div><span className="text-[#666]">Loc </span>{hoveredLeader.city}{hoveredLeader.country ? `, ${hoveredLeader.country}` : ''}</div>}
-            </div>
-          )}
-          <table className="border-spacing-0">
-            <thead>
-              <tr className="text-[#777]">
-                <th className="pr-3 py-0.5 text-left font-normal">Feed</th>
-                <th className="py-0.5 text-right font-normal">Win %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {feeds.map((f) => (
-                <tr key={f}>
-                  <td className="pr-3 py-0.5 font-semibold" style={{ color: FEED_COLORS[f] ?? '#6b7280' }}>
-                    {FEED_LABELS[f] ?? f}
-                  </td>
-                  <td className="py-0.5 text-right font-mono text-[#e5e5e5]">
-                    {(hoveredSlot[f] ?? 0).toFixed(1)}%
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
     </div>
   )
+}
+
+const LIVE_BUFFER_SIZE = 200
+const MAX_BUFFER_SLOTS = 2000
+
+// Returns the windowSize slots whose right edge is at `endSlot`.
+// When endSlot is null, uses `liveEdge` as the anchor (the drain-controlled live edge).
+// liveEdge=0 means "no anchor" — uses the buffer's newest slot (non-live mode).
+function computeViewByEnd(
+  buffer: EdgeScoreboardSlotRace[],
+  endSlot: number | null,
+  liveEdge?: number,
+  extraLeft: number = 0,
+  windowSize: number = LIVE_BUFFER_SIZE,
+): EdgeScoreboardSlotRace[] {
+  const slotNums = [...new Set(buffer.map(r => r.slot))].sort((a, b) => a - b)
+  if (!slotNums.length) return []
+  // liveEdge=0 is treated as unset (use buffer newest).
+  const anchor = endSlot ?? (liveEdge || null)
+  let rightIdx = slotNums.length - 1
+  if (anchor != null) {
+    while (rightIdx > 0 && slotNums[rightIdx] > anchor) rightIdx--
+  }
+  const leftIdx = Math.max(0, rightIdx - windowSize + 1 - extraLeft)
+  const keep = new Set(slotNums.slice(leftIdx, rightIdx + 1))
+  return buffer.filter(r => keep.has(r.slot))
 }
 
 function RecentSlotsChart({
@@ -632,6 +833,10 @@ function RecentSlotsChart({
   window,
   bucketed,
   setBucketed,
+  live,
+  setLive,
+  viewSlotCount,
+  setViewSlotCount,
 }: {
   slots: EdgeScoreboardSlotRace[]
   nodes: EdgeScoreboardNode[]
@@ -642,14 +847,604 @@ function RecentSlotsChart({
   window?: TimeWindow
   bucketed: boolean
   setBucketed: (v: boolean) => void
+  live: boolean
+  setLive: (v: boolean) => void
+  viewSlotCount: number
+  setViewSlotCount: (n: number) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const viewSlotCountRef = useRef(viewSlotCount)
+  viewSlotCountRef.current = viewSlotCount
+
+  // Live mode: fetch 300 slots on activate (show first 100 immediately, queue
+  // the rest for animation), then poll every 5s with a since_slot cursor so
+  // only new slots are fetched. A sliding window keeps slot count fixed at
+  // LIVE_BUFFER_SIZE so uPlot never re-initialises and the slide animation fires.
+  const liveMaxSlotRef = useRef(0)
+  const liveQueueRef = useRef<EdgeScoreboardSlotRace[][]>([])
+  // liveEdge: the slot number drain considers the right edge of the live window.
+  // Only advances via drain, so computeViewByEnd(buf, null, liveEdge) and
+  // scrollToLive both target the same value — eliminating the jump on transition.
+  const [liveEdge, setLiveEdge] = useState<number>(0)
+  const liveEdgeRef = useRef<number>(0)
+  const [liveLeaders, setLiveLeaders] = useState<Record<string, EdgeScoreboardLeader> | undefined>(undefined)
+  const slotBufferRef = useRef<EdgeScoreboardSlotRace[]>([])
+  // viewEndSlot: the slot number anchoring the right edge of the visible window.
+  // null = live (show up to liveEdge). Absolute slot number means the view is
+  // stable when the buffer grows on either end — no offset math needed.
+  const [viewEndSlot, setViewEndSlot] = useState<number | null>(null)
+  const viewEndSlotRef = useRef<number | null>(null)
+
+  // Refs so the live effect can read current prop values without re-running.
+  const slotsRef = useRef(slots)
+  slotsRef.current = slots
+  const slotLeadersRef = useRef(slotLeaders)
+  slotLeadersRef.current = slotLeaders
+
+  useEffect(() => {
+    if (!live || bucketed) {
+      liveMaxSlotRef.current = 0
+      liveQueueRef.current = []
+      liveEdgeRef.current = 0
+      setLiveEdge(0)
+      setLiveLeaders(undefined)
+      viewEndSlotRef.current = null
+      setViewEndSlot(null)
+      prefetchedBoundariesRef.current = new Set()
+      return
+    }
+
+    let cancelled = false
+
+    // Group races by slot, preserving order.
+    const bySlotOrdered = (races: EdgeScoreboardSlotRace[]) => {
+      const map = new Map<number, EdgeScoreboardSlotRace[]>()
+      const nums: number[] = []
+      for (const r of races) {
+        if (!map.has(r.slot)) { map.set(r.slot, []); nums.push(r.slot) }
+        map.get(r.slot)!.push(r)
+      }
+      return { map, nums: nums.sort((a, b) => a - b) }
+    }
+
+    // Seed the live buffer from a set of slot races (initial load path).
+    const seedBuffer = (races: EdgeScoreboardSlotRace[], leaders?: Record<string, EdgeScoreboardLeader>) => {
+      const { map, nums } = bySlotOrdered(races)
+      liveMaxSlotRef.current = nums.at(-1) ?? 0
+      // Pre-queue 500 slots (~3 min of drain) so animation continues between polls.
+      const INITIAL_QUEUE_SLOTS = 500
+      const splitIdx = Math.max(viewSlotCount, nums.length - INITIAL_QUEUE_SLOTS)
+      const immediate = nums.slice(0, splitIdx)
+      const toQueue = nums.slice(splitIdx)
+      const immediateSlot = immediate.at(-1) ?? 0
+      slotBufferRef.current = immediate.flatMap(s => map.get(s)!)
+      liveEdgeRef.current = immediateSlot
+      setLiveEdge(immediateSlot)
+      liveQueueRef.current = toQueue.map(s => map.get(s)!)
+      if (leaders) setLiveLeaders(leaders)
+    }
+
+    const loadSlots = (data: Awaited<ReturnType<typeof fetchEdgeScoreboard>>, prevMax: number) => {
+      const { map, nums } = bySlotOrdered(data.recent_slots)
+      const newNums = prevMax > 0 ? nums.filter(n => n > prevMax) : nums
+      if (!newNums.length) return
+      liveMaxSlotRef.current = nums.at(-1) ?? liveMaxSlotRef.current
+      liveQueueRef.current.push(...newNums.map(s => map.get(s)!))
+      if (data.slot_leaders) setLiveLeaders(prev => ({ ...prev, ...data.slot_leaders }))
+    }
+
+    // Seed immediately from the React Query data if already available, otherwise fetch.
+    // This eliminates a duplicate network round-trip on initial load and when re-entering live mode.
+    if (slotsRef.current.length > 0) {
+      seedBuffer(slotsRef.current, slotLeadersRef.current)
+    } else {
+      fetchEdgeScoreboard(window, leadersOnly).then(data => {
+        if (cancelled) return
+        seedBuffer(data.recent_slots, data.slot_leaders ?? undefined)
+      }).catch(() => {})
+    }
+
+    // Poll the page cache every 10s. The cache refreshes every 30s, yielding ~75 new slots
+    // each time. At 400ms/slot drain rate, 75 slots take ~30s — keeping animation continuous
+    // as long as there's always queue depth from the previous batch.
+    const poll = () => {
+      const prevMax = liveMaxSlotRef.current
+      fetchEdgeScoreboard(window, leadersOnly).then(data => {
+        if (cancelled) return
+        loadSlots(data, prevMax)
+      }).catch(() => {})
+    }
+    const pollInterval = setInterval(poll, 10_000)
+
+    // Single rAF loop drives both the scroll animation and the drain.
+    // scrollOffset advances at slotPx/400ms (constant velocity). When it rolls over
+    // slotPx, we pop the next slot from the queue and call setLiveEdge + setScrollOffset
+    // in the same rAF callback — React 18 auto-batches them into one render so the
+    // rollover is seamless: old slot exits at screen -slotPx, new slot appears at
+    // screen 199*slotPx (right mask fade zone), all positions continuous.
+    let scrollOff = 0
+    let drainTimer = 0
+    let lastTime: number | null = null
+    let drainRafId = 0
+    const tick = (now: number) => {
+      if (cancelled) return
+      // Cap dt to one slot interval so a long background-tab pause doesn't cause a
+      // burst of rapid drains on return (rAF is throttled in background tabs).
+      const dt = lastTime === null ? 0 : Math.min(now - lastTime, 400)
+      lastTime = now
+      const slotPx = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCountRef.current)
+      const inTail = !isDraggingRef.current && viewEndSlotRef.current === null
+      if (inTail) {
+        // Only advance when there's something to drain — prevents scroll from oscillating
+        // back to 0 when the queue is empty (e.g. right after init or between polls).
+        if (liveQueueRef.current.length > 0) {
+          scrollOff += (slotPx / 400) * dt
+          if (scrollOff >= slotPx) {
+            const races = liveQueueRef.current.shift()
+            if (races) {
+              const newBuf = [...slotBufferRef.current, ...races]
+              const bufNums = [...new Set(newBuf.map(r => r.slot))].sort((a, b) => a - b)
+              const keepBuf = new Set(bufNums.slice(-MAX_BUFFER_SLOTS))
+              slotBufferRef.current = newBuf.filter(r => keepBuf.has(r.slot))
+              const slotNum = races[0]?.slot
+              scrollOff -= slotPx
+              if (slotNum) { liveEdgeRef.current = slotNum; setLiveEdge(slotNum) }
+            } else {
+              scrollOff = 0
+            }
+          }
+        } else if (scrollOff !== 0) {
+          scrollOff = 0
+        }
+        setScrollOffset(scrollOff)
+      } else {
+        if (scrollOff !== 0) { scrollOff = 0; setScrollOffset(0) }
+        // Still drain queue at 400ms pace so liveEdge stays current even when frozen/dragging.
+        // This ensures clicking Live/>> after a drag returns to the actual head, not a frozen slot.
+        drainTimer += dt
+        if (drainTimer >= 400) {
+          drainTimer -= 400
+          const races = liveQueueRef.current.shift()
+          if (races) {
+            const newBuf = [...slotBufferRef.current, ...races]
+            const bufNums = [...new Set(newBuf.map(r => r.slot))].sort((a, b) => a - b)
+            const keepBuf = new Set(bufNums.slice(-MAX_BUFFER_SLOTS))
+            slotBufferRef.current = newBuf.filter(r => keepBuf.has(r.slot))
+            const slotNum = races[0]?.slot
+            if (slotNum) { liveEdgeRef.current = slotNum }
+          }
+        }
+      }
+      drainRafId = requestAnimationFrame(tick)
+    }
+    drainRafId = requestAnimationFrame(tick)
+
+    return () => {
+      cancelled = true
+      clearInterval(pollInterval)
+      cancelAnimationFrame(drainRafId)
+      liveMaxSlotRef.current = 0
+      liveQueueRef.current = []
+      // Don't clear the buffer — non-live mode will overwrite it with slots next render.
+      liveEdgeRef.current = 0
+    }
+  }, [live, bucketed, window, leadersOnly])
+
+  // If React Query data arrives after the live effect started but the live effect's
+  // own fetch hasn't returned yet, seed the buffer now so the chart isn't blank.
+  useEffect(() => {
+    if (!live || bucketed || !slots.length || slotBufferRef.current.length > 0 || liveEdgeRef.current > 0) return
+    const map = new Map<number, EdgeScoreboardSlotRace[]>()
+    const nums: number[] = []
+    for (const r of slots) {
+      if (!map.has(r.slot)) { map.set(r.slot, []); nums.push(r.slot) }
+      map.get(r.slot)!.push(r)
+    }
+    nums.sort((a, b) => a - b)
+    const INITIAL_QUEUE_SLOTS = 500
+    const splitIdx = Math.max(viewSlotCount, nums.length - INITIAL_QUEUE_SLOTS)
+    const immediate = nums.slice(0, splitIdx)
+    const toQueue = nums.slice(splitIdx)
+    const immediateSlot = immediate.at(-1) ?? 0
+    liveMaxSlotRef.current = nums.at(-1) ?? 0
+    slotBufferRef.current = immediate.flatMap(s => map.get(s)!)
+    liveEdgeRef.current = immediateSlot
+    setLiveEdge(immediateSlot)
+    liveQueueRef.current = toQueue.map(s => map.get(s)!)
+    if (slotLeaders) setLiveLeaders(slotLeaders)
+  }, [slots, live, bucketed, slotLeaders, viewSlotCount])
+
+  // In non-live per-slot mode, keep the buffer in sync with the query result so
+  // the scroll system works the same way as live mode.
+  if (!live && !bucketed) {
+    slotBufferRef.current = slots
+  }
+
+  // Drag-to-scroll: click/touch and drag left/right to navigate the timeline with momentum.
+  const momentumStopRef = useRef<{ stop: () => void } | null>(null)
+  const liveRef = useRef(live)
+  liveRef.current = live
+  // Info bar DOM refs — updated directly to avoid React re-render flicker.
+  // Info bar: 2 lines, always visible, zero layout shift.
+  // Line 1 (feeds): color swatch + label + live % — replaces the standalone legend.
+  // Line 2 (slot): slot number (fixed) + single leader text span (variable content, no show/hide).
+  // When null is passed (mouse left), fall back to defaultInfoRef (most-recent slot).
+  const infoSlotRef = useRef<HTMLSpanElement>(null)
+  const infoLeaderRef = useRef<HTMLSpanElement>(null)
+  const infoFeedValueRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+  const infoFeedLegendItemRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+  const defaultInfoRef = useRef<SlotHoverInfo | null>(null)
+  const isHoveredRef = useRef(false)
+
+  const applyInfoBar = useCallback((info: SlotHoverInfo | null) => {
+    if (!info) return
+    if (infoSlotRef.current) infoSlotRef.current.textContent = `Slot ${info.slot.toLocaleString()}`
+    if (infoLeaderRef.current) {
+      const l = info.leader
+      const parts: string[] = []
+      if (l?.name) parts.push(l.name)
+      if (l) parts.push(`${l.pubkey.slice(0, 8)}…${l.pubkey.slice(-4)}`)
+      if (l?.ip) parts.push(l.ip)
+      if (l?.asn_org) parts.push(l.asn_org)
+      if (l?.city) parts.push(`${l.city}${l.country ? `, ${l.country}` : ''}`)
+      infoLeaderRef.current.textContent = parts.join('  ·  ')
+    }
+    for (const [f, span] of infoFeedValueRefs.current) { const v = info.feedData[f] ?? 0; span.textContent = v >= 100 ? '100%' : `${v.toFixed(1)}%` }
+    // Always emphasize the winning feed (highest value at this slot)
+    const winnerFeed = Object.entries(info.feedData).reduce<string | null>(
+      (best, [f, v]) => (v != null && (best == null || v > (info.feedData[best] ?? 0)) ? f : best), null
+    )
+    for (const [f, el] of infoFeedLegendItemRefs.current) {
+      el.style.opacity = ''
+      el.style.fontWeight = f === winnerFeed ? '500' : ''
+    }
+  }, [])
+
+  const updateInfoBar = useCallback((info: SlotHoverInfo | null) => {
+    if (info) {
+      isHoveredRef.current = true
+      applyInfoBar(info)
+    } else {
+      isHoveredRef.current = false
+      applyInfoBar(defaultInfoRef.current)
+    }
+  }, [applyInfoBar])
+
+  // Ref to the chart rows container — used to clear hover info when mouse leaves the area.
+  const chartRowsRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onDocMove = (e: MouseEvent) => {
+      if (chartRowsRef.current && !chartRowsRef.current.contains(e.target as Node)) {
+        updateInfoBar(null)
+      }
+    }
+    document.addEventListener('mousemove', onDocMove, { passive: true })
+    return () => document.removeEventListener('mousemove', onDocMove)
+  }, [updateInfoBar])
+
+  const [isDragging, setIsDragging] = useState(false)
+  const isDraggingRef = useRef(isDragging)
+  isDraggingRef.current = isDragging
+  const [overscrollPx, setOverscrollPx] = useState(0)
+  // Sub-slot fractional offset applied as CSS translate during inertia so bars glide
+  // smoothly between slot boundaries without triggering activeSlots recomputation.
+  const [inertiaFracPx, setInertiaFracPx] = useState(0)
+  const [isInertia, setIsInertia] = useState(false)
+  const [isScrollingToLive, setIsScrollingToLive] = useState(false)
+  // scrollOffset: 0→slotPx at constant velocity, driven by a single rAF loop that also
+  // pops the drain queue at rollover. Both setScrollOffset+setLiveEdge fire in the same
+  // rAF callback so React batches them into one render — the rollover is seamless.
+  const [scrollOffset, setScrollOffset] = useState(0)
+
+
+  const prefetchingRef = useRef(false)
+  const [isPrefetching, setIsPrefetching] = useState(false)
+  const prefetchedBoundariesRef = useRef(new Set<number>())
+
+  // Animate smoothly to the live edge, then snap to tailing mode.
+  // Handles two cases:
+  //   1. liveEdge already known (already live, or re-enabling): animate immediately.
+  //   2. liveEdge unknown (first activation): pin current position, start live mode,
+  //      then wait for drain to set liveEdgeRef before starting the tween.
+  const scrollToLiveAnimRef = useRef<number | null>(null)
+  const scrollToLive = () => {
+    momentumStopRef.current?.stop()
+    momentumStopRef.current = null
+    setInertiaFracPx(0)
+    setIsInertia(false)
+
+    if (scrollToLiveAnimRef.current !== null) {
+      cancelAnimationFrame(scrollToLiveAnimRef.current)
+      scrollToLiveAnimRef.current = null
+    }
+
+    const slotNums = [...new Set(slotBufferRef.current.map(r => r.slot))].sort((a, b) => a - b)
+
+    // Effective start: use pinned position if available, else the buffer's newest slot.
+    // This gives us a concrete starting slot even when viewEndSlot is null (tailing state).
+    const effectiveStart = viewEndSlotRef.current ?? slotNums.at(-1) ?? null
+
+    // Sync liveEdge state with ref before transitioning to tailing so activeSlots
+    // doesn't anchor to a stale state value (ref is kept current by non-tail drain).
+    const syncLiveEdge = () => {
+      if (liveEdgeRef.current > 0) setLiveEdge(liveEdgeRef.current)
+    }
+
+    if (effectiveStart === null) {
+      // No data at all — just snap.
+      viewEndSlotRef.current = null
+      syncLiveEdge()
+      setViewEndSlot(null)
+      if (!liveRef.current) setLive(true)
+      return
+    }
+
+    setIsScrollingToLive(true)
+
+    // Pin the current view BEFORE activating live mode so the content doesn't jump
+    // when the drain first fires and liveEdge advances past the current buffer head.
+    if (viewEndSlotRef.current !== effectiveStart) {
+      viewEndSlotRef.current = effectiveStart
+      setViewEndSlot(effectiveStart)
+    }
+
+    // Start live mode (no-op if already live) so drain + SSE begin.
+    if (!liveRef.current) setLive(true)
+
+    // If liveEdge is already known and we're already at it, snap and done.
+    if (liveEdgeRef.current > 0 && effectiveStart >= liveEdgeRef.current) {
+      viewEndSlotRef.current = null
+      syncLiveEdge()
+      setViewEndSlot(null)
+      setIsScrollingToLive(false)
+      return
+    }
+
+    const startSlot = effectiveStart
+    // If liveEdge is known, we can set the target now; otherwise we wait in the rAF loop.
+    let targetSlot: number | null = liveEdgeRef.current > 0 ? liveEdgeRef.current : null
+    let animStartTime: number | null = targetSlot !== null ? performance.now() : null
+    const waitStart = performance.now()
+    const WAIT_TIMEOUT_MS = 2000
+
+    const tick = (now: number) => {
+      if (targetSlot === null) {
+        // Waiting for drain to produce the first liveEdge value.
+        const liveEdge = liveEdgeRef.current
+        if (liveEdge > 0) {
+          if (startSlot >= liveEdge) {
+            // Already at target, done.
+            scrollToLiveAnimRef.current = null
+            viewEndSlotRef.current = null
+            syncLiveEdge()
+            setViewEndSlot(null)
+            setIsScrollingToLive(false)
+            return
+          }
+          targetSlot = liveEdge
+          animStartTime = now
+        } else if (now - waitStart > WAIT_TIMEOUT_MS) {
+          // Timed out — snap to live.
+          scrollToLiveAnimRef.current = null
+          viewEndSlotRef.current = null
+          syncLiveEdge()
+          setViewEndSlot(null)
+          setIsScrollingToLive(false)
+          return
+        } else {
+          scrollToLiveAnimRef.current = requestAnimationFrame(tick)
+          return
+        }
+      }
+
+      const distance = targetSlot - startSlot
+      // Scale duration by distance; clamp so short hops feel snappy, long ones stay smooth.
+      const duration = Math.min(700, Math.max(200, distance * 8))
+      const t = Math.min(1, (now - animStartTime!) / duration)
+      // Ease-out cubic: fast start, smooth deceleration.
+      const eased = 1 - Math.pow(1 - t, 3)
+      const current = startSlot + distance * eased
+
+      if (t < 1) {
+        viewEndSlotRef.current = current
+        setViewEndSlot(current)
+        scrollToLiveAnimRef.current = requestAnimationFrame(tick)
+      } else {
+        scrollToLiveAnimRef.current = null
+        viewEndSlotRef.current = null
+        syncLiveEdge()
+        setViewEndSlot(null)
+        setIsScrollingToLive(false)
+      }
+    }
+
+    scrollToLiveAnimRef.current = requestAnimationFrame(tick)
+  }
+
+  // Captured at the start of each drag gesture so we can compute position from
+  // cumulative movement rather than accumulating per-frame incremental deltas.
+  const dragStartSlotRef = useRef<number>(0)
+
+  useDrag(
+    ({ movement: [mx], velocity: [vx], direction: [dirX], first, last, active }) => {
+      const slotNums = () => [...new Set(slotBufferRef.current.map(r => r.slot))].sort((a, b) => a - b)
+      const px = () => Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCountRef.current)
+
+      if (active) {
+        momentumStopRef.current?.stop()
+        momentumStopRef.current = null
+        setInertiaFracPx(0)
+
+        const nums = slotNums()
+        const liveEdge = liveEdgeRef.current || (nums.at(-1) ?? 0)
+        const oldestSlot = nums[0] ?? 0
+        const minEnd = oldestSlot + viewSlotCount - 1
+
+        if (first) {
+          // Capture the slot position at drag start so rawEnd = startSlot - totalMovement/px.
+          // This makes overscroll accumulate correctly — delta-based math resets each frame
+          // when viewEndSlotRef is frozen at minEnd during overscroll.
+          dragStartSlotRef.current = viewEndSlotRef.current ?? liveEdge
+        }
+
+        // Use cumulative movement from gesture start, not incremental delta.
+        // drag right (mx > 0) = back in time = rawEnd decreases
+        const rawEnd = dragStartSlotRef.current - mx / px()
+
+        if (rawEnd < minEnd) {
+          // Past the left edge: anchor data at minEnd (no content change), grow CSS transform.
+          const rawOverflowPx = (minEnd - rawEnd) * px()
+          setOverscrollPx(Math.min(350, rawOverflowPx * 0.35))
+          viewEndSlotRef.current = minEnd
+          setViewEndSlot(minEnd)
+        } else if (rawEnd > liveEdge) {
+          // Past the right (live) edge: anchor at liveEdge, grow CSS transform leftward.
+          const rawOverflowPx = (rawEnd - liveEdge) * px()
+          setOverscrollPx(-Math.min(350, rawOverflowPx * 0.35))
+          viewEndSlotRef.current = liveEdge
+          setViewEndSlot(liveEdge)
+        } else {
+          setOverscrollPx(0)
+          viewEndSlotRef.current = rawEnd
+          setViewEndSlot(rawEnd)
+        }
+        setIsDragging(true)
+      }
+
+      if (last) {
+        setIsDragging(false)
+        setOverscrollPx(0)  // CSS transition snaps back
+
+        const nums = slotNums()
+        const liveEdge = liveEdgeRef.current || (nums.at(-1) ?? 0)
+        const oldestSlot = nums[0] ?? 0
+        const minEnd = oldestSlot + viewSlotCount - 1
+        const currentEnd = viewEndSlotRef.current ?? liveEdge
+
+        // If the user released at/past the live edge, animate smoothly into live.
+        if (currentEnd >= liveEdge) {
+          scrollToLive()
+          return
+        }
+
+        // velocity[0] = px/ms magnitude, direction[0] = sign.
+        // drag right → slot decreases → inertia velocity is negative
+        const slotVelocityPerSecond = -(vx * dirX) / px() * 1000
+
+        if (Math.abs(slotVelocityPerSecond) > 1) {
+          // Custom rAF-based inertia with sub-slot CSS translate for smooth deceleration.
+          // The fractional offset (inertiaFracPx) is updated every frame — since it's not
+          // in activeSlots deps, those re-renders only update the CSS transform (cheap).
+          // setViewEndSlot only fires at slot boundaries (expensive but infrequent).
+          const timeConstant = 600
+          const power = 0.8
+          const target = Math.max(minEnd, Math.min(liveEdge,
+            currentEnd + slotVelocityPerSecond / 1000 * power * timeConstant))
+          const from = currentEnd
+          const startTime = performance.now()
+          let lastCommitted = Math.floor(currentEnd)
+          let rafHandle: number | null = null
+
+          const tick = () => {
+            const elapsed = performance.now() - startTime
+            const decay = Math.exp(-elapsed / timeConstant)
+            const value = target + (from - target) * decay
+            const clamped = Math.max(minEnd, Math.min(liveEdge, value))
+
+            const slotPxNow = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCountRef.current)
+            const committed = Math.floor(clamped)
+            const fracPx = -(clamped - committed) * slotPxNow
+
+            viewEndSlotRef.current = clamped
+
+            // Only re-render with new slot data at boundaries; sub-slot moves use cheap fracPx re-render
+            if (committed !== lastCommitted) {
+              lastCommitted = committed
+              setViewEndSlot(committed)
+            }
+            setInertiaFracPx(fracPx)
+
+            // Stop when close enough to target
+            const remainingSlots = Math.abs(clamped - target)
+            const velocitySlotsSec = Math.abs((from - target) / timeConstant * decay * 1000)
+            if (remainingSlots < 0.5 || velocitySlotsSec < 0.5) {
+              const finalSlot = Math.round(clamped)
+              viewEndSlotRef.current = finalSlot
+              setViewEndSlot(finalSlot)
+              setInertiaFracPx(0)
+              setIsInertia(false)
+              momentumStopRef.current = null
+              if (finalSlot >= liveEdgeRef.current - 1) scrollToLive()
+              return
+            }
+
+            rafHandle = requestAnimationFrame(tick)
+          }
+
+          setIsInertia(true)
+          rafHandle = requestAnimationFrame(tick)
+          momentumStopRef.current = {
+            stop: () => {
+              if (rafHandle !== null) cancelAnimationFrame(rafHandle)
+              setInertiaFracPx(0)
+              setIsInertia(false)
+            }
+          }
+        }
+      }
+    },
+    {
+      target: containerRef,
+      axis: 'x',
+      pointer: { capture: true, touch: true },
+      filterTaps: true,
+      enabled: !bucketed,
+    }
+  )
+
+  // Prefetch older slots when user scrolls near the buffer start (infinite scroll backwards).
+  useEffect(() => {
+    if (bucketed || prefetchingRef.current || viewEndSlot === null) return
+    const buffer = slotBufferRef.current
+    if (!buffer.length) return
+    const slotNums = [...new Set(buffer.map(r => r.slot))].sort((a, b) => a - b)
+    const oldestSlot = slotNums[0]
+    // Trigger when the left edge of the view is within 150 slots of the oldest data
+    if (viewEndSlot > oldestSlot + viewSlotCount + 150) return
+    if (prefetchedBoundariesRef.current.has(oldestSlot)) return
+    prefetchingRef.current = true
+    setIsPrefetching(true)
+    prefetchedBoundariesRef.current.add(oldestSlot)
+    fetchEdgeScoreboard(window, leadersOnly, { beforeSlot: oldestSlot, limit: 500 }).then(data => {
+      if (!data.recent_slots.length) return
+      // Prepend older slots. viewEndSlot is an absolute slot number so the view
+      // is unaffected by buffer growth — no offset adjustment needed.
+      const existingSlots = new Set(slotBufferRef.current.map(r => r.slot))
+      const newRaces = data.recent_slots.filter((r: EdgeScoreboardSlotRace) => !existingSlots.has(r.slot))
+      if (newRaces.length) slotBufferRef.current = [...newRaces, ...slotBufferRef.current]
+    }).catch(() => {
+      prefetchedBoundariesRef.current.delete(oldestSlot)
+    }).finally(() => {
+      prefetchingRef.current = false
+      setIsPrefetching(false)
+    })
+  }, [viewEndSlot, bucketed, window, leadersOnly])
+
+  // Memoized on liveEdge/viewEndSlot so 60fps scrollOffset re-renders don't recompute it.
+  // slotBufferRef is a ref that only changes when liveEdge advances, so this is correct.
+  const activeSlots = useMemo(() => {
+    if (bucketed) return slots
+    const buf = slotBufferRef.current
+    if (!buf.length) return live ? [] : slots
+    return computeViewByEnd(buf, viewEndSlot, liveEdge, 0, viewSlotCount)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bucketed, liveEdge, viewEndSlot, live, slots, viewSlotCount])
 
   const chartData = useMemo(() => {
-    if (!slots.length || !nodes.length) return { nodeCharts: [], feeds: [] as string[], slotCount: 0 }
+    if (!activeSlots.length || !nodes.length) return { nodeCharts: [], feeds: [] as string[], slotCount: 0 }
 
     const validNodeIds = new Set(nodes.map((n) => n.host))
-    const filtered = slots.filter((s) => validNodeIds.has(s.host))
+    const filtered = activeSlots.filter((s) => validNodeIds.has(s.host))
 
     const feedSet = new Set<string>()
     for (const s of filtered) feedSet.add(s.feed)
@@ -670,14 +1465,18 @@ function RecentSlotsChart({
       row[s.feed] = s.win_pct
     }
 
-    const slotNumbers = [...new Set(filtered.map((s) => s.slot))].sort((a, b) => a - b)
+    // Use all slots from activeSlots as the shared x-axis so every node's data array
+    // has the same length as the canvas (LIVE_BUFFER_SIZE). Nodes with no data for a
+    // given slot get zeros, which draw no bars. This ensures uPlot cursor.idx always
+    // maps to a valid slotData entry, so hover/tooltip works across the full canvas.
+    const allSlotNumbers = [...new Set(activeSlots.map((s) => s.slot))].sort((a, b) => a - b)
     const sortedNodes = [...nodes].sort((a, b) => a.host.localeCompare(b.host))
 
     const nodeCharts = sortedNodes
       .filter((n) => byNode.has(n.host))
       .map((n) => {
         const slotMap = byNode.get(n.host)!
-        const data = slotNumbers.map((slot, idx) => {
+        const data = allSlotNumbers.map((slot, idx) => {
           const feedPcts = slotMap.get(slot) ?? {}
           const row: Record<string, number> = { idx, slot }
           for (const f of feeds) row[f] = feedPcts[f] ?? 0
@@ -685,9 +1484,10 @@ function RecentSlotsChart({
         })
         return { node: n, data }
       })
+    const slotNumbers = allSlotNumbers
 
     return { nodeCharts, feeds, slotCount: slotNumbers.length }
-  }, [slots, nodes])
+  }, [activeSlots, nodes])
 
   const bucketedChartData = useMemo(() => {
     if (!slotBuckets || !slotBuckets.length || !nodes.length) {
@@ -761,6 +1561,34 @@ function RecentSlotsChart({
     return { nodeCharts: bucketedNodeCharts, feeds, slotCount: displayBucketStarts.length, bucketSize: displayBucketSize }
   }, [slotBuckets, slotBucketSize, nodes, window])
 
+  const activeData = bucketed ? bucketedChartData : chartData
+  const { nodeCharts, feeds, slotCount } = activeData
+  const activeBucketSize = bucketed ? bucketedChartData.bucketSize : undefined
+
+  // Keep defaultInfoRef up-to-date with the most-recent visible slot so the
+  // info bar always shows live data even when nothing is hovered.
+  useEffect(() => {
+    if (bucketed || !activeSlots.length) return
+    const lastSlot = activeSlots.at(-1)
+    if (!lastSlot) return
+    const slotNum = lastSlot.slot
+    const slotRaces = activeSlots.filter(s => s.slot === slotNum)
+    // Average win_pct per feed across all nodes for the latest slot.
+    const feedTotals: Record<string, { sum: number; count: number }> = {}
+    for (const r of slotRaces) {
+      if (!feedTotals[r.feed]) feedTotals[r.feed] = { sum: 0, count: 0 }
+      feedTotals[r.feed].sum += r.win_pct
+      feedTotals[r.feed].count++
+    }
+    const feedData: Record<string, number | null> = {}
+    for (const f of feeds) feedData[f] = feedTotals[f] ? feedTotals[f].sum / feedTotals[f].count : 0
+    const leaders = live ? (liveLeaders ?? slotLeaders) : slotLeaders
+    const leader = leaders?.[String(slotNum)]
+    const info: SlotHoverInfo = { slot: slotNum, leader, feedData }
+    defaultInfoRef.current = info
+    if (!isHoveredRef.current) applyInfoBar(info)
+  }, [activeSlots, feeds, slotLeaders, liveLeaders, live, bucketed, applyInfoBar])
+
   if (!slots.length)
     return (
       <div className="rounded-lg border border-border bg-card p-4">
@@ -769,69 +1597,205 @@ function RecentSlotsChart({
       </div>
     )
 
-  const activeData = bucketed ? bucketedChartData : chartData
-  const { nodeCharts, feeds, slotCount } = activeData
-  const activeBucketSize = bucketed ? bucketedChartData.bucketSize : undefined
-
   return (
-    <div ref={containerRef} className="rounded-lg border border-border bg-card p-4">
+    <div
+      ref={containerRef}
+      className="rounded-lg border border-border bg-card p-4"
+      style={{
+        touchAction: bucketed ? undefined : 'pan-y',
+        cursor: bucketed ? undefined : isDragging ? 'grabbing' : 'grab',
+        userSelect: 'none',
+      }}
+      onPointerDown={bucketed ? undefined : (e) => {
+        // Only capture for drag intent — skip interactive children so their click events fire normally.
+        if (!(e.target as Element).closest('button, a, input, select, [role="button"]')) {
+          e.currentTarget.setPointerCapture(e.pointerId)
+        }
+      }}
+    >
       <div className="mb-4">
         <div className="flex items-center justify-between">
-          <h3 className="text-sm font-medium">
+          <h3 className="text-sm font-medium flex items-center gap-2">
             {bucketed ? 'Win Rate Trend' : 'Win Rate per Slot'}
+            {live && (
+              <span className="relative flex items-center">
+                {isPrefetching ? (
+                  <Loader2 size={12} className="animate-spin text-emerald-500/50" />
+                ) : viewEndSlot === null ? (
+                  <>
+                    <span className="animate-ping absolute inline-flex h-2 w-2 rounded-full bg-emerald-400 opacity-75" />
+                    <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500" />
+                  </>
+                ) : (
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500/30" />
+                )}
+              </span>
+            )}
+            {(() => {
+              const visibleNums = [...new Set(activeSlots.map(r => r.slot))].sort((a, b) => a - b)
+              const minSlot = visibleNums[0]
+              const maxSlot = visibleNums.at(-1)
+              const liveSlot = liveMaxSlotRef.current || maxSlot
+              const fmtSlot = (s: number) => s.toLocaleString()
+              const fmtAgo = (slotDelta: number) => {
+                const sec = Math.round(slotDelta / 2.5)
+                return sec < 5 ? 'now' : sec < 60 ? `~${sec}s ago` : `~${Math.round(sec / 60)}m ago`
+              }
+              const slotRange = minSlot && maxSlot && minSlot !== maxSlot
+                ? `${fmtSlot(minSlot)} – ${fmtSlot(maxSlot)}`
+                : minSlot ? `${fmtSlot(minSlot)}` : null
+              const timeNote = liveSlot && maxSlot
+                ? viewEndSlot !== null
+                  ? `${fmtAgo(liveSlot - minSlot)} – ${fmtAgo(liveSlot - maxSlot)}`
+                  : fmtAgo(liveSlot - maxSlot)
+                : null
+              if (!slotRange) return null
+              return (
+                <span className="text-xs font-normal text-muted-foreground">
+                  {slotRange}{timeNote ? <span className="text-[#555] ml-1">· {timeNote}</span> : null}
+                </span>
+              )
+            })()}
           </h3>
-          <div className="inline-flex rounded-md border border-border overflow-hidden text-xs h-[26px] -mt-2">
-            <button
-              onClick={() => setBucketed(false)}
-              className={cn(
-                'px-2.5 transition-colors',
-                !bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              Per Slot
-            </button>
-            <button
-              onClick={() => setBucketed(true)}
-              className={cn(
-                'px-2.5 transition-colors border-l border-border',
-                bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
-              )}
-            >
-              Trend
-            </button>
+          <div className="flex items-center gap-2 -mt-2">
+            {!bucketed && live && viewEndSlot !== null && (
+              <button
+                onClick={scrollToLive}
+                className="text-emerald-400 hover:text-emerald-300 transition-colors"
+              >
+                <ChevronsRight size={16} />
+              </button>
+            )}
+            {!bucketed && (
+              <button
+                onClick={() => {
+                  if (live && viewEndSlot === null) {
+                    // Currently live-tailing → pause
+                    viewEndSlotRef.current = liveEdgeRef.current
+                    setViewEndSlot(liveEdgeRef.current)
+                  } else {
+                    // Not tailing (paused, or coming back from Trend) → start/resume
+                    scrollToLive()
+                  }
+                }}
+                className={cn(
+                  'text-xs px-2.5 h-[26px] rounded-md border transition-colors',
+                  live && viewEndSlot === null
+                    ? 'border-emerald-500 bg-emerald-500/10 text-emerald-400 hover:bg-emerald-500/20'
+                    : 'border-border text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                Live
+              </button>
+            )}
+            <div className="inline-flex rounded-md border border-border overflow-hidden text-xs h-[26px]">
+              <button
+                onClick={() => { setBucketed(false); scrollToLive() }}
+                className={cn(
+                  'px-2.5 transition-colors',
+                  !bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                Per Slot
+              </button>
+              <button
+                onClick={() => { setBucketed(true); setLive(false) }}
+                className={cn(
+                  'px-2.5 transition-colors border-l border-border',
+                  bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
+                )}
+              >
+                Trend
+              </button>
+            </div>
           </div>
         </div>
-        <div className="flex items-center justify-end gap-3 mt-1">
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-3 text-[10px] text-muted-foreground">
           {feeds.map((f) => (
-            <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+            <div key={f} ref={el => { if (el) infoFeedLegendItemRefs.current.set(f, el) }} className="flex items-center gap-1">
               <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
               {FEED_LABELS[f] ?? f}
+              <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5 inline-block w-[4ch] text-right">—</span>
             </div>
           ))}
         </div>
+        {bucketed && (
+          /* Spacer matching the slot info bar height so bars align with WinRateChart */
+          <div className="h-1" />
+        )}
       </div>
-      {nodeCharts.map((nc) => (
-        <div key={nc.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center">
-          <NodeLabel node={nc.node} label={nodeDisplayLabel(nc.node, nodes)} />
-          {bucketed
-            ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
-            : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={slotLeaders} />}
+      {/* Slot info bar — always visible, DOM-managed to avoid re-render flicker */}
+      {!bucketed && (
+        <div className="h-4 flex items-center gap-2 px-1 text-[10px] overflow-hidden justify-end">
+          <span ref={infoLeaderRef} className="text-muted-foreground truncate" />
+          <span ref={infoSlotRef} className="font-mono text-foreground/80 shrink-0" />
         </div>
-      ))}
-      <div className="text-xs text-muted-foreground text-center mt-1">
-        {bucketed
-          ? (() => {
-              const totalSlots = slotCount * (activeBucketSize ?? 1)
-              const sec = Math.round(totalSlots / 2.5)
-              const timeEst = sec < 60 ? `~${sec}s` : sec < 3600 ? `~${Math.round(sec / 60)}m` : `~${Math.round(sec / 3600)}h`
-              return `~${totalSlots.toLocaleString()} slots · ${timeEst} · last ${window ?? 'all'}`
-            })()
-          : (() => {
-              const sec = Math.round(slotCount / 2.5)
-              const timeEst = sec < 60 ? `~${sec}s` : `~${Math.round(sec / 60)}m`
-              return `${slotCount} most recent ${leadersOnly ? 'Edge leader ' : ''}slots · ${timeEst}`
-            })()}
+      )}
+      <div ref={chartRowsRef} className="relative">
+        {/* Left-edge indicator: fixed at the chart boundary, shows while overscrolling or fetching */}
+        {!bucketed && (overscrollPx > 0 || isPrefetching) && (
+          <div className="absolute left-[130px] inset-y-0 flex items-center pointer-events-none z-10">
+            {isPrefetching
+              ? <Loader2 size={14} className="animate-spin text-muted-foreground/60" />
+              : <ChevronsRight size={14} className="text-muted-foreground/40 rotate-180" />
+            }
+          </div>
+        )}
+        {nodeCharts.map((nc) => (
+          <div key={nc.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center overflow-hidden">
+            {/* Label stays fixed */}
+            <NodeLabel node={nc.node} label={nodeDisplayLabel(nc.node, nodes)} />
+            {/* Mask wrapper stays fixed — fade zones always at the visual edges */}
+            <div
+              className="flex-1 min-w-0 overflow-hidden"
+              style={{ maskImage: 'linear-gradient(to right, transparent 0%, black 1%, black 99%, transparent 100%)' }}
+            >
+            {/* Chart area: overscroll from drag + smooth scroll offset from rAF drain */}
+            <div
+              className="flex"
+              style={{
+                transform: `translateX(${overscrollPx + inertiaFracPx - (live && viewEndSlot === null && !isDragging ? scrollOffset : 0)}px)`,
+                transition: (isDragging || isInertia || (live && viewEndSlot === null)) ? undefined : 'transform 0.15s cubic-bezier(0.2, 0, 0, 1)',
+                willChange: 'transform',
+              }}
+            >
+              {bucketed
+                ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
+                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging || isInertia || isScrollingToLive} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} onHover={updateInfoBar} />}
+            </div>
+            </div>{/* end mask wrapper */}
+          </div>
+        ))}
       </div>
+      {!bucketed && (
+        <div className="flex items-center justify-end gap-1 mt-1">
+          <span className="text-[10px] text-muted-foreground mr-1">Slots</span>
+          {[50, 100, 200, 300].map(n => (
+            <button
+              key={n}
+              onClick={() => setViewSlotCount(n)}
+              className={cn(
+                'text-[10px] px-1.5 h-[18px] rounded transition-colors',
+                viewSlotCount === n
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+      )}
+      {bucketed && (
+        <div className="text-xs text-muted-foreground text-center mt-1">
+          {(() => {
+            const totalSlots = slotCount * (activeBucketSize ?? 1)
+            const sec = Math.round(totalSlots / 2.5)
+            const timeEst = sec < 60 ? `~${sec}s` : sec < 3600 ? `~${Math.round(sec / 60)}m` : `~${Math.round(sec / 3600)}h`
+            return `~${totalSlots.toLocaleString()} slots · ${timeEst} · last ${window ?? 'all'}`
+          })()}
+        </div>
+      )}
     </div>
   )
 }
@@ -942,6 +1906,19 @@ export function EdgeScoreboardPage() {
     })
   }
 
+  const rawSlotCount = parseInt(searchParams.get('slot_count') ?? '100')
+  const viewSlotCount = [50, 100, 200, 300].includes(rawSlotCount) ? rawSlotCount : 100
+  const setViewSlotCount = (n: number) => {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      if (n === 100) p.delete('slot_count')
+      else p.set('slot_count', String(n))
+      return p
+    })
+  }
+
+  const [live, setLive] = useState(true)
+
   const [showLoader, setShowLoader] = useState(false)
   const [showShimmer, setShowShimmer] = useState(false)
   const [now, setNow] = useState(() => Date.now())
@@ -951,9 +1928,8 @@ export function EdgeScoreboardPage() {
   }, [])
 
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ['edge-scoreboard', activeWindow, leadersOnly],
     queryFn: () => fetchEdgeScoreboard(activeWindow, leadersOnly),
     refetchInterval: 30_000,
@@ -970,11 +1946,13 @@ export function EdgeScoreboardPage() {
   }
   const latestRecentRef = useRef<RecentSlotsSnapshot | null>(null)
   const [stableRecent, setStableRecent] = useState<RecentSlotsSnapshot | null>(null)
-  // Reset snapshot when leadersOnly changes so the chart reflects the new filter immediately.
+  // Reset snapshot when leadersOnly or window changes so the chart reflects the new data immediately.
+  // Without this, the generated_at guard can silently drop updates when cached data for the new
+  // window has an older timestamp than the current snapshot (e.g. switching 1h→24h).
   useEffect(() => {
     latestRecentRef.current = null
     setStableRecent(null)
-  }, [leadersOnly])
+  }, [leadersOnly, activeWindow])
   useEffect(() => {
     if (!data?.generated_at || !data.recent_slots?.length) return
     const prev = latestRecentRef.current
@@ -1086,31 +2064,22 @@ export function EdgeScoreboardPage() {
     return () => clearTimeout(t)
   }, [isLoading])
 
-  // Show shimmer when switching views, but only if data takes >200ms to arrive.
-  // Fast cache hits skip the shimmer entirely.
+  // Show shimmer while fetching, debounced 200ms so instant cache hits skip it entirely.
+  // Shimmer stays on until isFetching clears — no fixed duration.
   useEffect(() => {
+    if (!isFetching) {
+      if (showTimerRef.current) { clearTimeout(showTimerRef.current); showTimerRef.current = null }
+      setShowShimmer(false)
+      return
+    }
     showTimerRef.current = setTimeout(() => {
       showTimerRef.current = null
       setShowShimmer(true)
-      hideTimerRef.current = setTimeout(() => {
-        hideTimerRef.current = null
-        setShowShimmer(false)
-      }, 1500)
     }, 200)
     return () => {
       if (showTimerRef.current) { clearTimeout(showTimerRef.current); showTimerRef.current = null }
-      if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null }
-      setShowShimmer(false)
     }
-  }, [activeWindow, leadersOnly])
-
-  // Cancel the debounce if data arrives before the 200ms threshold.
-  useEffect(() => {
-    if (showTimerRef.current) {
-      clearTimeout(showTimerRef.current)
-      showTimerRef.current = null
-    }
-  }, [data])
+  }, [isFetching])
 
   if (isLoading && showLoader && !data) return (
     <div className="flex-1 flex items-center justify-center bg-background">
@@ -1227,7 +2196,7 @@ export function EdgeScoreboardPage() {
         {data?.nodes && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
             <WinRateChart nodes={data.nodes} />
-            <RecentSlotsChart slots={stableRecent?.slots ?? data.recent_slots ?? []} nodes={data.nodes} slotLeaders={stableRecent?.leaders} leadersOnly={leadersOnly} slotBuckets={data.slot_buckets} slotBucketSize={data.slot_bucket_size} window={activeWindow} bucketed={bucketed} setBucketed={setBucketed} />
+            <RecentSlotsChart slots={stableRecent?.slots ?? data.recent_slots ?? []} nodes={data.nodes} slotLeaders={stableRecent?.leaders} leadersOnly={leadersOnly} slotBuckets={data.slot_buckets} slotBucketSize={data.slot_bucket_size} window={activeWindow} bucketed={bucketed} setBucketed={setBucketed} live={live} setLive={setLive} viewSlotCount={viewSlotCount} setViewSlotCount={setViewSlotCount} />
           </div>
         )}
 

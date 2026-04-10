@@ -5038,12 +5038,18 @@ export interface EdgeScoreboardSlotBucket {
   bucket_total: number // sum of shreds_won across all feeds in bucket (integer)
 }
 
-export async function fetchEdgeScoreboard(window: string = '1h', leadersOnly: boolean = true): Promise<EdgeScoreboardResponse> {
+export async function fetchEdgeScoreboard(
+  window: string = '1h',
+  leadersOnly: boolean = true,
+  opts?: { sinceSlot?: number; limit?: number; beforeSlot?: number }
+): Promise<EdgeScoreboardResponse> {
   const params = new URLSearchParams()
   params.set('window', window)
   if (!leadersOnly) params.set('leaders_only', 'false')
-  const qs = params.toString()
-  const res = await apiFetch(`/api/dz/edge/scoreboard?${qs}`)
+  if (opts?.sinceSlot) params.set('since_slot', String(opts.sinceSlot))
+  if (opts?.beforeSlot) params.set('before_slot', String(opts.beforeSlot))
+  if (opts?.limit) params.set('limit', String(opts.limit))
+  const res = await apiFetch(`/api/dz/edge/scoreboard?${params}`)
   if (!res.ok) {
     throw new Error('Failed to fetch edge scoreboard')
   }
