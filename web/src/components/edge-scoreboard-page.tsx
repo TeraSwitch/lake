@@ -106,18 +106,19 @@ function WinRateBar({
   node,
   feeds,
   data,
+  onHover,
 }: {
   node: EdgeScoreboardNode
   feeds: string[]
   data: Record<string, string | number>
+  onHover?: (data: Record<string, string | number> | null, feed?: string | null) => void
 }) {
-  const [hoveredFeed, setHoveredFeed] = useState<string | null>(null)
   const [mousePos, setMousePos] = useState<{ x: number; y: number } | null>(null)
 
   return (
     <div
       className="relative flex-1 h-14"
-      onMouseLeave={() => { setMousePos(null); setHoveredFeed(null) }}
+      onMouseLeave={() => { setMousePos(null); onHover?.(null, null) }}
       onMouseMove={(e) => setMousePos({ x: e.clientX, y: e.clientY })}
     >
       <div className="relative flex h-full rounded overflow-hidden">
@@ -130,15 +131,15 @@ function WinRateBar({
               key={f}
               style={{ width: `${pct}%`, backgroundColor: FEED_COLORS[f] ?? '#6b7280', minWidth: 0 }}
               className="relative flex items-center justify-center overflow-hidden"
-              onMouseEnter={() => setHoveredFeed(f)}
+              onMouseEnter={() => onHover?.(data, f)}
             >
               {(f === 'dz' || f === 'dz_rebop') && raw >= 2 && (
                 <span className="text-white text-xs font-semibold whitespace-nowrap select-none">
                   {raw.toFixed(1)}%
                 </span>
               )}
-              {hoveredFeed === f && (
-                <div className="absolute inset-0 bg-white/15 ring-1 ring-inset ring-white/40 pointer-events-none" />
+              {mousePos && (
+                <div className="absolute inset-0 bg-white/10 pointer-events-none" />
               )}
             </div>
           )
@@ -239,6 +240,10 @@ function nodeDisplayLabel(node: EdgeScoreboardNode, nodes: EdgeScoreboardNode[])
 }
 
 function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
+  const legendValueRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+  const legendDefaultsRef = useRef<Map<string, string>>(new Map())
+  const legendItemRefs = useRef<Map<string, HTMLDivElement>>(new Map())
+
   const chartData = useMemo(() => {
     const feedSet = new Set<string>()
     for (const n of nodes) {
@@ -264,7 +269,14 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
         return { node: n, data: row }
       })
 
-    return { nodeRows, feeds }
+    // Aggregate raw win_rate_pct per feed across all nodes (simple average).
+    const feedAgg: Record<string, number> = {}
+    for (const f of feeds) {
+      const vals = nodes.map(n => n.feeds[f]?.win_rate_pct ?? 0).filter(v => v > 0)
+      feedAgg[f] = vals.length ? vals.reduce((s, v) => s + v, 0) / vals.length : 0
+    }
+
+    return { nodeRows, feeds, feedAgg }
   }, [nodes])
 
   if (chartData.nodeRows.length === 0) return null
@@ -273,19 +285,56 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="mb-4">
         <h3 className="text-sm font-medium">Win Rate by Node</h3>
-        <div className="flex items-center justify-end gap-3 mt-1">
-          {chartData.feeds.map((f) => (
-            <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-              <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
-              {FEED_LABELS[f] ?? f}
-            </div>
-          ))}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1">
+          {chartData.feeds.map((f) => {
+            const defaultVal = `${chartData.feedAgg[f].toFixed(1)}%`
+            legendDefaultsRef.current.set(f, defaultVal)
+            return (
+              <div key={f} ref={el => { if (el) legendItemRefs.current.set(f, el) }} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
+                {FEED_LABELS[f] ?? f}
+                <span
+                  ref={el => { if (el) legendValueRefs.current.set(f, el) }}
+                  className="font-mono text-foreground ml-0.5"
+                >{defaultVal}</span>
+              </div>
+            )
+          })}
         </div>
       </div>
+      {/* Spacer matching the slot chart's info bar height so rows align horizontally */}
+      <div className="h-5 mt-0.5" />
       {chartData.nodeRows.map((nr) => (
         <div key={nr.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center">
           <NodeLabel node={nr.node} label={nodeDisplayLabel(nr.node, nodes)} />
-          <WinRateBar node={nr.node} feeds={chartData.feeds} data={nr.data} />
+          <WinRateBar
+            node={nr.node}
+            feeds={chartData.feeds}
+            data={nr.data}
+            onHover={(hovered, feed) => {
+              for (const f of chartData.feeds) {
+                const valEl = legendValueRefs.current.get(f)
+                if (valEl) {
+                  valEl.textContent = hovered
+                    ? `${Number(hovered[`${f}_raw`] ?? 0).toFixed(1)}%`
+                    : (legendDefaultsRef.current.get(f) ?? '')
+                }
+                const itemEl = legendItemRefs.current.get(f)
+                if (itemEl) {
+                  if (!hovered || feed == null) {
+                    itemEl.style.opacity = ''
+                    itemEl.style.fontWeight = ''
+                  } else if (f === feed) {
+                    itemEl.style.opacity = '1'
+                    itemEl.style.fontWeight = '600'
+                  } else {
+                    itemEl.style.opacity = '0.4'
+                    itemEl.style.fontWeight = ''
+                  }
+                }
+              }
+            }}
+          />
         </div>
       ))}
       <div className="flex items-center" style={{ paddingLeft: 48 }}>
@@ -400,6 +449,7 @@ type SlotHoverInfo = {
   slot: number
   leader?: EdgeScoreboardLeader
   feedData: Record<string, number | null>
+  hoveredFeed?: string | null
 }
 
 // Module-level ref: only one chart instance can own hover at a time.
@@ -412,7 +462,7 @@ function SlotRaceNodeChart({
   feeds,
   slotLeaders,
   animated = true,
-  dragging = false,
+  dragging: _dragging = false,
   liveScrollOffset = 0,
   viewSlotCount,
   onHover,
@@ -432,6 +482,8 @@ function SlotRaceNodeChart({
   slotDataRef.current = slotData
   const slotLeadersRef = useRef(slotLeaders)
   slotLeadersRef.current = slotLeaders
+  const feedsRef = useRef(feeds)
+  feedsRef.current = feeds
   const setHoverRef = useRef<((idx: number | null, vx: number, vy: number) => void) | null>(null)
   const hoveredIdxRef = useRef<number | null>(null)
   const animOffsetRef = useRef(0)
@@ -448,6 +500,7 @@ function SlotRaceNodeChart({
   // Stable id for this chart instance — used to claim/check activeChartId ownership.
   const chartIdRef = useRef(`chart-${Math.random()}`)
   const lastNotifiedSlotRef = useRef<number | null>(null)
+  const lastNotifiedFeedRef = useRef<string | null | undefined>(undefined)
 
   const onHoverRef = useRef(onHover)
   onHoverRef.current = onHover
@@ -468,14 +521,38 @@ function SlotRaceNodeChart({
       const slot = slotDataRef.current[pendingIdx]
       if (!slot) return
       const slotNum = Number(slot['slot'])
-      if (slotNum === lastNotifiedSlotRef.current) return
-      lastNotifiedSlotRef.current = slotNum
       const leader = slotLeadersRef.current?.[String(slot['slot'])]
       const feedData: Record<string, number | null> = {}
       for (const key of Object.keys(slot)) {
         if (key !== 'slot') feedData[key] = slot[key] as number | null
       }
-      onHoverRef.current?.({ slot: slotNum, leader, feedData })
+
+      // Compute which feed segment is under the cursor from Y position
+      let hoveredFeed: string | null = null
+      const plot = plotRef.current
+      if (plot && lastHoverVyRef.current !== null) {
+        const rect = plot.over.getBoundingClientRect()
+        const canvasY = lastHoverVyRef.current - rect.top
+        if (canvasY >= 0 && canvasY <= rect.height) {
+          const yVal = plot.posToVal(canvasY, 'y')
+          let cumulative = 0
+          for (const f of feedsRef.current) {
+            const val = (slot[f] as number | null) ?? 0
+            cumulative += val
+            if (yVal <= cumulative) {
+              hoveredFeed = f
+              break
+            }
+          }
+        }
+      }
+
+      // Skip if both slot and hovered feed are unchanged
+      if (slotNum === lastNotifiedSlotRef.current && hoveredFeed === lastNotifiedFeedRef.current) return
+      lastNotifiedSlotRef.current = slotNum
+      lastNotifiedFeedRef.current = hoveredFeed
+
+      onHoverRef.current?.({ slot: slotNum, leader, feedData, hoveredFeed })
     })
   }
 
@@ -697,6 +774,7 @@ function SlotRaceNodeChart({
         activeChartId = null
         lastHoverVxRef.current = null
         lastNotifiedSlotRef.current = null
+        lastNotifiedFeedRef.current = undefined
         hoveredIdxRef.current = null
         plotRef.current?.redraw(false)
       }
@@ -947,6 +1025,7 @@ function RecentSlotsChart({
   const infoSlotRef = useRef<HTMLSpanElement>(null)
   const infoLeaderRef = useRef<HTMLSpanElement>(null)
   const infoFeedValueRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+  const infoFeedLegendItemRefs = useRef<Map<string, HTMLDivElement>>(new Map())
   const defaultInfoRef = useRef<SlotHoverInfo | null>(null)
   const isHoveredRef = useRef(false)
 
@@ -964,6 +1043,20 @@ function RecentSlotsChart({
       infoLeaderRef.current.textContent = parts.join('  ·  ')
     }
     for (const [f, span] of infoFeedValueRefs.current) span.textContent = `${(info.feedData[f] ?? 0).toFixed(1)}%`
+    // Emphasize hovered feed in legend
+    const hf = info.hoveredFeed
+    for (const [f, el] of infoFeedLegendItemRefs.current) {
+      if (hf == null) {
+        el.style.opacity = ''
+        el.style.fontWeight = ''
+      } else if (f === hf) {
+        el.style.opacity = '1'
+        el.style.fontWeight = '600'
+      } else {
+        el.style.opacity = '0.4'
+        el.style.fontWeight = ''
+      }
+    }
   }, [])
 
   const updateInfoBar = useCallback((info: SlotHoverInfo | null) => {
@@ -1526,9 +1619,9 @@ function RecentSlotsChart({
           </div>
         </div>
         {!bucketed && (
-          <div className="flex items-center justify-end gap-3 mt-1 text-[10px] text-muted-foreground">
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1 text-[10px] text-muted-foreground">
             {feeds.map((f) => (
-              <div key={f} className="flex items-center gap-1">
+              <div key={f} ref={el => { if (el) infoFeedLegendItemRefs.current.set(f, el) }} className="flex items-center gap-1">
                 <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
                 {FEED_LABELS[f] ?? f}
                 <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5">—</span>
@@ -1537,7 +1630,7 @@ function RecentSlotsChart({
           </div>
         )}
         {bucketed && (
-          <div className="flex items-center justify-end gap-3 mt-1">
+          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1">
             {feeds.map((f) => (
               <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
                 <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
