@@ -1,6 +1,5 @@
 import { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { useDrag } from '@use-gesture/react'
-import { inertia } from 'popmotion'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
 import { useSearchParams, Link } from 'react-router-dom'
 import { Trophy, Loader2, ChevronsRight } from 'lucide-react'
@@ -1085,6 +1084,10 @@ function RecentSlotsChart({
   const isDraggingRef = useRef(isDragging)
   isDraggingRef.current = isDragging
   const [overscrollPx, setOverscrollPx] = useState(0)
+  // Sub-slot fractional offset applied as CSS translate during inertia so bars glide
+  // smoothly between slot boundaries without triggering activeSlots recomputation.
+  const [inertiaFracPx, setInertiaFracPx] = useState(0)
+  const [isInertia, setIsInertia] = useState(false)
   // scrollOffset: 0→slotPx at constant velocity, driven by a single rAF loop that also
   // pops the drain queue at rollover. Both setScrollOffset+setLiveEdge fire in the same
   // rAF callback so React batches them into one render — the rollover is seamless.
@@ -1104,6 +1107,8 @@ function RecentSlotsChart({
   const scrollToLive = () => {
     momentumStopRef.current?.stop()
     momentumStopRef.current = null
+    setInertiaFracPx(0)
+    setIsInertia(false)
 
     if (scrollToLiveAnimRef.current !== null) {
       cancelAnimationFrame(scrollToLiveAnimRef.current)
@@ -1219,6 +1224,7 @@ function RecentSlotsChart({
       if (active) {
         momentumStopRef.current?.stop()
         momentumStopRef.current = null
+        setInertiaFracPx(0)
 
         const nums = slotNums()
         const liveEdge = liveEdgeRef.current || (nums.at(-1) ?? 0)
@@ -1277,30 +1283,64 @@ function RecentSlotsChart({
         const slotVelocityPerSecond = -(vx * dirX) / px() * 1000
 
         if (Math.abs(slotVelocityPerSecond) > 1) {
-          momentumStopRef.current = inertia({
-            from: currentEnd,
-            velocity: slotVelocityPerSecond,
-            power: 0.8,
-            timeConstant: 600,
-            restDelta: 0.5,
-            min: minEnd,
-            max: liveEdge,
-            // No bounce — inertia decelerates cleanly to the boundary.
-            // The CSS elastic during drag already provides the tactile edge feel.
-            modifyTarget: (t: number) => Math.max(minEnd, Math.min(liveEdge, t)),
-            onUpdate: (value: number) => {
-              const clamped = Math.max(minEnd, Math.min(liveEdge, value))
-              viewEndSlotRef.current = clamped
-              setViewEndSlot(clamped)
-            },
-            onComplete: () => {
+          // Custom rAF-based inertia with sub-slot CSS translate for smooth deceleration.
+          // The fractional offset (inertiaFracPx) is updated every frame — since it's not
+          // in activeSlots deps, those re-renders only update the CSS transform (cheap).
+          // setViewEndSlot only fires at slot boundaries (expensive but infrequent).
+          const timeConstant = 600
+          const power = 0.8
+          const target = Math.max(minEnd, Math.min(liveEdge,
+            currentEnd + slotVelocityPerSecond / 1000 * power * timeConstant))
+          const from = currentEnd
+          const startTime = performance.now()
+          let lastCommitted = Math.floor(currentEnd)
+          let rafHandle: number | null = null
+
+          const tick = () => {
+            const elapsed = performance.now() - startTime
+            const decay = Math.exp(-elapsed / timeConstant)
+            const value = target + (from - target) * decay
+            const clamped = Math.max(minEnd, Math.min(liveEdge, value))
+
+            const slotPxNow = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCountRef.current)
+            const committed = Math.floor(clamped)
+            const fracPx = -(clamped - committed) * slotPxNow
+
+            viewEndSlotRef.current = clamped
+
+            // Only re-render with new slot data at boundaries; sub-slot moves use cheap fracPx re-render
+            if (committed !== lastCommitted) {
+              lastCommitted = committed
+              setViewEndSlot(committed)
+            }
+            setInertiaFracPx(fracPx)
+
+            // Stop when close enough to target
+            const remainingSlots = Math.abs(clamped - target)
+            const velocitySlotsSec = Math.abs((from - target) / timeConstant * decay * 1000)
+            if (remainingSlots < 0.5 || velocitySlotsSec < 0.5) {
+              const finalSlot = Math.round(clamped)
+              viewEndSlotRef.current = finalSlot
+              setViewEndSlot(finalSlot)
+              setInertiaFracPx(0)
+              setIsInertia(false)
               momentumStopRef.current = null
-              // If inertia landed at the live edge, transition smoothly to live.
-              if (viewEndSlotRef.current !== null && viewEndSlotRef.current >= liveEdgeRef.current - 1) {
-                scrollToLive()
-              }
-            },
-          })
+              if (finalSlot >= liveEdgeRef.current - 1) scrollToLive()
+              return
+            }
+
+            rafHandle = requestAnimationFrame(tick)
+          }
+
+          setIsInertia(true)
+          rafHandle = requestAnimationFrame(tick)
+          momentumStopRef.current = {
+            stop: () => {
+              if (rafHandle !== null) cancelAnimationFrame(rafHandle)
+              setInertiaFracPx(0)
+              setIsInertia(false)
+            }
+          }
         }
       }
     },
@@ -1670,8 +1710,8 @@ function RecentSlotsChart({
             <div
               className="flex"
               style={{
-                transform: `translateX(${overscrollPx - (live && viewEndSlot === null && !isDragging ? scrollOffset : 0)}px)`,
-                transition: (isDragging || (live && viewEndSlot === null)) ? undefined : 'transform 0.15s cubic-bezier(0.2, 0, 0, 1)',
+                transform: `translateX(${overscrollPx + inertiaFracPx - (live && viewEndSlot === null && !isDragging ? scrollOffset : 0)}px)`,
+                transition: (isDragging || isInertia || (live && viewEndSlot === null)) ? undefined : 'transform 0.15s cubic-bezier(0.2, 0, 0, 1)',
                 willChange: 'transform',
               }}
             >
