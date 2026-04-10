@@ -294,7 +294,7 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
                 {FEED_LABELS[f] ?? f}
                 <span
                   ref={el => { if (el) legendValueRefs.current.set(f, el) }}
-                  className="font-mono text-foreground ml-0.5"
+                  className="font-mono text-foreground ml-0.5 inline-block w-[4ch] text-right"
                 >{defaultVal}</span>
               </div>
             )
@@ -1667,7 +1667,7 @@ function RecentSlotsChart({
               <div key={f} ref={el => { if (el) infoFeedLegendItemRefs.current.set(f, el) }} className="flex items-center gap-1">
                 <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
                 {FEED_LABELS[f] ?? f}
-                <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5">—</span>
+                <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5 inline-block w-[4ch] text-right">—</span>
               </div>
             ))}
           </div>
