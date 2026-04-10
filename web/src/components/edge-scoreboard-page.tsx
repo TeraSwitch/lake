@@ -1124,14 +1124,19 @@ function RecentSlotsChart({
         if (rawEnd < minEnd) {
           // Past the left edge: anchor data at minEnd (no content change), grow CSS transform.
           const rawOverflowPx = (minEnd - rawEnd) * px()
-          setOverscrollPx(Math.min(80, rawOverflowPx * 0.3))
+          setOverscrollPx(Math.min(350, rawOverflowPx * 0.35))
           viewEndSlotRef.current = minEnd
           setViewEndSlot(minEnd)
+        } else if (rawEnd > liveEdge) {
+          // Past the right (live) edge: anchor at liveEdge, grow CSS transform leftward.
+          const rawOverflowPx = (rawEnd - liveEdge) * px()
+          setOverscrollPx(-Math.min(350, rawOverflowPx * 0.35))
+          viewEndSlotRef.current = liveEdge
+          setViewEndSlot(liveEdge)
         } else {
           setOverscrollPx(0)
-          const newEnd = Math.min(liveEdge, rawEnd)
-          viewEndSlotRef.current = newEnd
-          setViewEndSlot(newEnd)
+          viewEndSlotRef.current = rawEnd
+          setViewEndSlot(rawEnd)
         }
         setIsDragging(true)
       }
