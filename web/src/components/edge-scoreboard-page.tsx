@@ -1515,14 +1515,6 @@ function RecentSlotsChart({
     return { nodeCharts: bucketedNodeCharts, feeds, slotCount: displayBucketStarts.length, bucketSize: displayBucketSize }
   }, [slotBuckets, slotBucketSize, nodes, window])
 
-  if (!slots.length)
-    return (
-      <div className="rounded-lg border border-border bg-card p-4">
-        <h3 className="text-sm font-medium mb-4">Recent Edge Leader Slots — Win Rate per Slot</h3>
-        <div className="text-sm text-muted-foreground text-center py-12">No recent slot data available.</div>
-      </div>
-    )
-
   const activeData = bucketed ? bucketedChartData : chartData
   const { nodeCharts, feeds, slotCount } = activeData
   const activeBucketSize = bucketed ? bucketedChartData.bucketSize : undefined
@@ -1550,6 +1542,14 @@ function RecentSlotsChart({
     defaultInfoRef.current = info
     if (!isHoveredRef.current) applyInfoBar(info)
   }, [activeSlots, feeds, slotLeaders, liveLeaders, live, bucketed, applyInfoBar])
+
+  if (!slots.length)
+    return (
+      <div className="rounded-lg border border-border bg-card p-4">
+        <h3 className="text-sm font-medium mb-4">Recent Edge Leader Slots — Win Rate per Slot</h3>
+        <div className="text-sm text-muted-foreground text-center py-12">No recent slot data available.</div>
+      </div>
+    )
 
   return (
     <div

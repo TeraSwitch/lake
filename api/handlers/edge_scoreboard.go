@@ -171,15 +171,15 @@ func (a *API) GetEdgeScoreboard(w http.ResponseWriter, r *http.Request) {
 
 	var sinceSlot uint64
 	if s := r.URL.Query().Get("since_slot"); s != "" {
-		fmt.Sscanf(s, "%d", &sinceSlot)
+		_, _ = fmt.Sscanf(s, "%d", &sinceSlot)
 	}
 	var beforeSlot uint64
 	if s := r.URL.Query().Get("before_slot"); s != "" {
-		fmt.Sscanf(s, "%d", &beforeSlot)
+		_, _ = fmt.Sscanf(s, "%d", &beforeSlot)
 	}
 	slotLimit := 200
 	if l := r.URL.Query().Get("limit"); l != "" {
-		fmt.Sscanf(l, "%d", &slotLimit)
+		_, _ = fmt.Sscanf(l, "%d", &slotLimit)
 		if slotLimit < 1 || slotLimit > 1000 {
 			slotLimit = 200
 		}
