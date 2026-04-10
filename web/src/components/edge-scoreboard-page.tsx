@@ -479,18 +479,15 @@ function SlotRaceNodeChart({
     })
   }
 
-  const [hover, setHover] = useState<{ idx: number; vx: number; vy: number } | null>(null)
   setHoverRef.current = (idx, vx, vy) => {
     if (idx == null) {
-      // Don't clear hover here — translateX frequently causes phantom mouseleave events
-      // (u.over edge crosses the cursor) that immediately resolve. The document mousemove
-      // listener handles genuine leaves. Clearing here causes visible flash.
+      // Don't clear here — phantom mouseleave events resolve immediately.
     } else {
       activeChartId = chartIdRef.current  // claim ownership
       lastHoverVxRef.current = vx
       lastHoverVyRef.current = vy
+      hoveredIdxRef.current = idx
       notifyHover(idx)
-      setHover({ idx, vx, vy })
     }
   }
 
@@ -684,10 +681,6 @@ function SlotRaceNodeChart({
     hoveredIdxRef.current = idx
     plot.redraw(false)
     notifyHover(idx)
-    setHover(prev =>
-      prev && prev.idx === idx ? prev  // avoid spurious re-render when nothing changed
-        : { idx, vx: lastHoverVxRef.current!, vy: lastHoverVyRef.current! }
-    )
   }, [liveScrollOffset])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Release ownership and clear hover when mouse moves to an element outside this chart.
@@ -698,7 +691,8 @@ function SlotRaceNodeChart({
         activeChartId = null
         lastHoverVxRef.current = null
         lastNotifiedSlotRef.current = null
-        setHover(null)
+        hoveredIdxRef.current = null
+        plotRef.current?.redraw(false)
       }
     }
     document.addEventListener('mousemove', onDocMove, { passive: true })
@@ -948,6 +942,7 @@ function RecentSlotsChart({
   const infoLeaderRef = useRef<HTMLSpanElement>(null)
   const infoFeedValueRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
   const defaultInfoRef = useRef<SlotHoverInfo | null>(null)
+  const isHoveredRef = useRef(false)
 
   const applyInfoBar = useCallback((info: SlotHoverInfo | null) => {
     if (!info) return
@@ -966,7 +961,13 @@ function RecentSlotsChart({
   }, [])
 
   const updateInfoBar = useCallback((info: SlotHoverInfo | null) => {
-    applyInfoBar(info ?? defaultInfoRef.current)
+    if (info) {
+      isHoveredRef.current = true
+      applyInfoBar(info)
+    } else {
+      isHoveredRef.current = false
+      applyInfoBar(defaultInfoRef.current)
+    }
   }, [applyInfoBar])
 
   // Ref to the chart rows container — used to clear hover info when mouse leaves the area.
@@ -1405,7 +1406,7 @@ function RecentSlotsChart({
     const leader = leaders?.[String(slotNum)]
     const info: SlotHoverInfo = { slot: slotNum, leader, feedData }
     defaultInfoRef.current = info
-    applyInfoBar(info)
+    if (!isHoveredRef.current) applyInfoBar(info)
   }, [activeSlots, feeds, slotLeaders, liveLeaders, live, bucketed, applyInfoBar])
 
   return (
