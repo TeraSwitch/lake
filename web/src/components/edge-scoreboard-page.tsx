@@ -667,6 +667,10 @@ function SlotRaceNodeChart({
     const plot = plotRef.current
     if (!plot || lastHoverVxRef.current === null) return
     if (activeChartId !== chartIdRef.current) {
+      if (hoveredIdxRef.current !== null) {
+        hoveredIdxRef.current = null
+        plot.redraw(false)
+      }
       lastHoverVxRef.current = null
       return
     }
@@ -678,6 +682,8 @@ function SlotRaceNodeChart({
     const xVal = plot.posToVal(canvasX, 'x')
     const idx = Math.round(xVal)
     if (idx < 0 || idx >= slotDataRef.current.length) return
+    // Only redraw when the bar index actually changes — no floating-point oscillation possible.
+    if (idx === hoveredIdxRef.current) return
     hoveredIdxRef.current = idx
     plot.redraw(false)
     notifyHover(idx)
