@@ -461,7 +461,7 @@ function SlotRaceNodeChart({
   feeds,
   slotLeaders,
   animated = true,
-  dragging: _dragging = false,
+  dragging = false,
   liveScrollOffset = 0,
   viewSlotCount,
   onHover,
@@ -489,6 +489,8 @@ function SlotRaceNodeChart({
   const rafRef = useRef<number | null>(null)
   const animatedRef = useRef(animated)
   animatedRef.current = animated
+  const draggingRef = useRef(dragging)
+  draggingRef.current = dragging
   const prevRightSlotRef = useRef<number | null>(null)
   // Track cursor position so we can recompute the hovered idx as the chart scrolls
   // under a stationary mouse (translateX moves the canvas, uPlot doesn't re-fire setCursor).
@@ -591,6 +593,7 @@ function SlotRaceNodeChart({
       axes: [{ show: false }, { show: false }],
       padding: [0, 0, 0, 0],
       cursor: { points: { show: false }, x: false, y: false },
+      select: { show: false, left: 0, top: 0, width: 0, height: 0 },
       legend: { show: false },
       hooks: {
         draw: [
@@ -668,8 +671,8 @@ function SlotRaceNodeChart({
     }
     plotRef.current.over.addEventListener('mousemove', onOverMove)
 
-    const canvas = containerRef.current.querySelector('canvas')
-    if (canvas) canvas.style.borderRadius = '4px'
+    // Don't set borderRadius on the canvas — the parent div's overflow-hidden+rounded
+    // already clips the corners, and canvas borderRadius causes GPU compositing seams.
 
     const ro = new ResizeObserver((entries) => {
       if (plotRef.current) plotRef.current.setSize({ width: entries[0].contentRect.width, height })
@@ -699,9 +702,9 @@ function SlotRaceNodeChart({
     const rightSlotChanged = rightSlot !== prevRightSlotRef.current
     prevRightSlotRef.current = rightSlot
 
-    // In live tailing mode the outer drain translateX handles all movement — skip the
-    // inner canvas animation to avoid the two animations fighting each other.
-    if (!animatedRef.current || !rightSlotChanged) {
+    // Skip canvas slide animation during drag (the outer translateX handles position)
+    // and in live tailing mode (the drain translateX handles movement).
+    if (!animatedRef.current || !rightSlotChanged || draggingRef.current) {
       animOffsetRef.current = 0
       plot.redraw(false)
       return
