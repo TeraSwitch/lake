@@ -1091,6 +1091,7 @@ function RecentSlotsChart({
   // smoothly between slot boundaries without triggering activeSlots recomputation.
   const [inertiaFracPx, setInertiaFracPx] = useState(0)
   const [isInertia, setIsInertia] = useState(false)
+  const [isScrollingToLive, setIsScrollingToLive] = useState(false)
   // scrollOffset: 0→slotPx at constant velocity, driven by a single rAF loop that also
   // pops the drain queue at rollover. Both setScrollOffset+setLiveEdge fire in the same
   // rAF callback so React batches them into one render — the rollover is seamless.
@@ -1139,6 +1140,8 @@ function RecentSlotsChart({
       return
     }
 
+    setIsScrollingToLive(true)
+
     // Pin the current view BEFORE activating live mode so the content doesn't jump
     // when the drain first fires and liveEdge advances past the current buffer head.
     if (viewEndSlotRef.current !== effectiveStart) {
@@ -1154,6 +1157,7 @@ function RecentSlotsChart({
       viewEndSlotRef.current = null
       syncLiveEdge()
       setViewEndSlot(null)
+      setIsScrollingToLive(false)
       return
     }
 
@@ -1175,6 +1179,7 @@ function RecentSlotsChart({
             viewEndSlotRef.current = null
             syncLiveEdge()
             setViewEndSlot(null)
+            setIsScrollingToLive(false)
             return
           }
           targetSlot = liveEdge
@@ -1185,6 +1190,7 @@ function RecentSlotsChart({
           viewEndSlotRef.current = null
           syncLiveEdge()
           setViewEndSlot(null)
+          setIsScrollingToLive(false)
           return
         } else {
           scrollToLiveAnimRef.current = requestAnimationFrame(tick)
@@ -1209,6 +1215,7 @@ function RecentSlotsChart({
         viewEndSlotRef.current = null
         syncLiveEdge()
         setViewEndSlot(null)
+        setIsScrollingToLive(false)
       }
     }
 
@@ -1715,7 +1722,7 @@ function RecentSlotsChart({
             >
               {bucketed
                 ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
-                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging || isInertia} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} onHover={updateInfoBar} />}
+                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging || isInertia || isScrollingToLive} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} onHover={updateInfoBar} />}
             </div>
             </div>{/* end mask wrapper */}
           </div>
