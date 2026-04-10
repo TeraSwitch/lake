@@ -284,7 +284,7 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="mb-4">
         <h3 className="text-sm font-medium">Win Rate by Node</h3>
-        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1">
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-3">
           {chartData.feeds.map((f) => {
             const defaultVal = `${chartData.feedAgg[f].toFixed(1)}%`
             legendDefaultsRef.current.set(f, defaultVal)
@@ -302,7 +302,7 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
         </div>
       </div>
       {/* Spacer matching the slot chart's info bar height so rows align horizontally */}
-      <div className="h-5 mt-0.5" />
+      <div className="h-4" />
       {chartData.nodeRows.map((nr) => (
         <div key={nr.node.host} style={{ height: NODE_ROW_HEIGHT }} className="flex items-center">
           <NodeLabel node={nr.node} label={nodeDisplayLabel(nr.node, nodes)} />
@@ -1570,7 +1570,7 @@ function RecentSlotsChart({
         <div className="flex items-center justify-between">
           <h3 className="text-sm font-medium flex items-center gap-2">
             {bucketed ? 'Win Rate Trend' : 'Win Rate per Slot'}
-            {live && !bucketed && (
+            {live && (
               <span className="relative flex items-center">
                 {isPrefetching ? (
                   <Loader2 size={12} className="animate-spin text-emerald-500/50" />
@@ -1584,7 +1584,7 @@ function RecentSlotsChart({
                 )}
               </span>
             )}
-            {!bucketed && (() => {
+            {(() => {
               const visibleNums = [...new Set(activeSlots.map(r => r.slot))].sort((a, b) => a - b)
               const minSlot = visibleNums[0]
               const maxSlot = visibleNums.at(-1)
@@ -1643,7 +1643,7 @@ function RecentSlotsChart({
             )}
             <div className="inline-flex rounded-md border border-border overflow-hidden text-xs h-[26px]">
               <button
-                onClick={() => { setBucketed(false); setLive(false) }}
+                onClick={() => { setBucketed(false); scrollToLive() }}
                 className={cn(
                   'px-2.5 transition-colors',
                   !bucketed ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-muted hover:text-foreground'
@@ -1663,35 +1663,23 @@ function RecentSlotsChart({
             </div>
           </div>
         </div>
-        {!bucketed && (
-          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1 text-[10px] text-muted-foreground">
-            {feeds.map((f) => (
-              <div key={f} ref={el => { if (el) infoFeedLegendItemRefs.current.set(f, el) }} className="flex items-center gap-1">
-                <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
-                {FEED_LABELS[f] ?? f}
-                <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5 inline-block w-[4ch] text-right">—</span>
-              </div>
-            ))}
-          </div>
-        )}
-        {bucketed && (
-          <>
-            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1">
-              {feeds.map((f) => (
-                <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                  <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
-                  {FEED_LABELS[f] ?? f}
-                </div>
-              ))}
+        <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-3 text-[10px] text-muted-foreground">
+          {feeds.map((f) => (
+            <div key={f} ref={el => { if (el) infoFeedLegendItemRefs.current.set(f, el) }} className="flex items-center gap-1">
+              <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
+              {FEED_LABELS[f] ?? f}
+              <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5 inline-block w-[4ch] text-right">—</span>
             </div>
-            {/* Spacer matching the slot info bar height so bars align with WinRateChart */}
-            <div className="h-5 mt-0.5" />
-          </>
+          ))}
+        </div>
+        {bucketed && (
+          /* Spacer matching the slot info bar height so bars align with WinRateChart */
+          <div className="h-1" />
         )}
       </div>
       {/* Slot info bar — always visible, DOM-managed to avoid re-render flicker */}
       {!bucketed && (
-        <div className="h-5 flex items-center gap-2 px-1 text-[10px] overflow-hidden mt-0.5 justify-end">
+        <div className="h-4 flex items-center gap-2 px-1 text-[10px] overflow-hidden justify-end">
           <span ref={infoLeaderRef} className="text-muted-foreground truncate" />
           <span ref={infoSlotRef} className="font-mono text-foreground/80 shrink-0" />
         </div>
