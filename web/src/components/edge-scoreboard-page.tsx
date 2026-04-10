@@ -409,6 +409,7 @@ function SlotRaceNodeChart({
   animated = true,
   dragging = false,
   liveScrollOffset = 0,
+  viewSlotCount,
 }: {
   slotData: Array<Record<string, number | null>>
   feeds: string[]
@@ -416,6 +417,7 @@ function SlotRaceNodeChart({
   animated?: boolean
   dragging?: boolean
   liveScrollOffset?: number
+  viewSlotCount: number
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -459,13 +461,13 @@ function SlotRaceNodeChart({
     }
   }
 
-  // Re-initialize uPlot only when feeds change. Slot count is always LIVE_BUFFER_SIZE so
-  // the scale is fixed — draw hook reads slotDataRef.current directly and handles any count.
+  // Re-initialize uPlot when feeds or viewSlotCount change. The scale is fixed to viewSlotCount
+  // slots — draw hook reads slotDataRef.current directly and handles any count.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => {
     if (!containerRef.current || !slotData.length) return
 
-    const n = LIVE_BUFFER_SIZE
+    const n = viewSlotCount
     const height = NODE_CHART_HEIGHT
 
     const xData = Float64Array.from({ length: n }, (_, i) => i)
@@ -580,7 +582,7 @@ function SlotRaceNodeChart({
       plotRef.current?.destroy()
       plotRef.current = null
     }
-  }, [feeds])
+  }, [feeds, viewSlotCount])
 
   // Animate bars sliding in from the right on data refresh.
   useEffect(() => {
@@ -736,7 +738,7 @@ function SlotRaceNodeChart({
 const LIVE_BUFFER_SIZE = 200
 const MAX_BUFFER_SLOTS = 2000
 
-// Returns the LIVE_BUFFER_SIZE slots whose right edge is at `endSlot`.
+// Returns the windowSize slots whose right edge is at `endSlot`.
 // When endSlot is null, uses `liveEdge` as the anchor (the drain-controlled live edge).
 // liveEdge=0 means "no anchor" — uses the buffer's newest slot (non-live mode).
 function computeViewByEnd(
@@ -744,6 +746,7 @@ function computeViewByEnd(
   endSlot: number | null,
   liveEdge?: number,
   extraLeft: number = 0,
+  windowSize: number = LIVE_BUFFER_SIZE,
 ): EdgeScoreboardSlotRace[] {
   const slotNums = [...new Set(buffer.map(r => r.slot))].sort((a, b) => a - b)
   if (!slotNums.length) return []
@@ -753,7 +756,7 @@ function computeViewByEnd(
   if (anchor != null) {
     while (rightIdx > 0 && slotNums[rightIdx] > anchor) rightIdx--
   }
-  const leftIdx = Math.max(0, rightIdx - LIVE_BUFFER_SIZE + 1 - extraLeft)
+  const leftIdx = Math.max(0, rightIdx - windowSize + 1 - extraLeft)
   const keep = new Set(slotNums.slice(leftIdx, rightIdx + 1))
   return buffer.filter(r => keep.has(r.slot))
 }
@@ -770,6 +773,8 @@ function RecentSlotsChart({
   setBucketed,
   live,
   setLive,
+  viewSlotCount,
+  setViewSlotCount,
 }: {
   slots: EdgeScoreboardSlotRace[]
   nodes: EdgeScoreboardNode[]
@@ -782,6 +787,8 @@ function RecentSlotsChart({
   setBucketed: (v: boolean) => void
   live: boolean
   setLive: (v: boolean) => void
+  viewSlotCount: number
+  setViewSlotCount: (n: number) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
 
@@ -846,7 +853,7 @@ function RecentSlotsChart({
       // multiple cache refresh cycles (30s each) regardless of poll timing jitter.
       // With leadersOnly=false (default), 500 all-Solana slots ≈ 3 min behind head.
       const INITIAL_QUEUE_SLOTS = 500
-      const splitIdx = Math.max(LIVE_BUFFER_SIZE, nums.length - INITIAL_QUEUE_SLOTS)
+      const splitIdx = Math.max(viewSlotCount, nums.length - INITIAL_QUEUE_SLOTS)
       const immediate = nums.slice(0, splitIdx)
       const toQueue = nums.slice(splitIdx)
       const immediateSlot = immediate.at(-1) ?? 0
@@ -885,7 +892,7 @@ function RecentSlotsChart({
       // burst of rapid drains on return (rAF is throttled in background tabs).
       const dt = lastTime === null ? 0 : Math.min(now - lastTime, 400)
       lastTime = now
-      const slotPx = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / LIVE_BUFFER_SIZE)
+      const slotPx = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCount)
       const inTail = !isDraggingRef.current && viewEndSlotRef.current === null
       if (inTail) {
         // Only advance when there's something to drain — prevents scroll from oscillating
@@ -1086,7 +1093,7 @@ function RecentSlotsChart({
   useDrag(
     ({ movement: [mx], velocity: [vx], direction: [dirX], first, last, active }) => {
       const slotNums = () => [...new Set(slotBufferRef.current.map(r => r.slot))].sort((a, b) => a - b)
-      const px = () => Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / LIVE_BUFFER_SIZE)
+      const px = () => Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCount)
 
       if (active) {
         momentumStopRef.current?.stop()
@@ -1095,7 +1102,7 @@ function RecentSlotsChart({
         const nums = slotNums()
         const liveEdge = liveEdgeRef.current || (nums.at(-1) ?? 0)
         const oldestSlot = nums[0] ?? 0
-        const minEnd = oldestSlot + LIVE_BUFFER_SIZE - 1
+        const minEnd = oldestSlot + viewSlotCount - 1
 
         if (first) {
           // Capture the slot position at drag start so rawEnd = startSlot - totalMovement/px.
@@ -1130,7 +1137,7 @@ function RecentSlotsChart({
         const nums = slotNums()
         const liveEdge = liveEdgeRef.current || (nums.at(-1) ?? 0)
         const oldestSlot = nums[0] ?? 0
-        const minEnd = oldestSlot + LIVE_BUFFER_SIZE - 1
+        const minEnd = oldestSlot + viewSlotCount - 1
         const currentEnd = viewEndSlotRef.current ?? liveEdge
 
         // If the user released at/past the live edge, animate smoothly into live.
@@ -1188,7 +1195,7 @@ function RecentSlotsChart({
     const slotNums = [...new Set(buffer.map(r => r.slot))].sort((a, b) => a - b)
     const oldestSlot = slotNums[0]
     // Trigger when the left edge of the view is within 150 slots of the oldest data
-    if (viewEndSlot > oldestSlot + LIVE_BUFFER_SIZE + 150) return
+    if (viewEndSlot > oldestSlot + viewSlotCount + 150) return
     if (prefetchedBoundariesRef.current.has(oldestSlot)) return
     prefetchingRef.current = true
     setIsPrefetching(true)
@@ -1214,9 +1221,9 @@ function RecentSlotsChart({
     if (bucketed) return slots
     const buf = slotBufferRef.current
     if (!buf.length) return live ? [] : slots
-    return computeViewByEnd(buf, viewEndSlot, liveEdge)
+    return computeViewByEnd(buf, viewEndSlot, liveEdge, 0, viewSlotCount)
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [bucketed, liveEdge, viewEndSlot, live, slots])
+  }, [bucketed, liveEdge, viewEndSlot, live, slots, viewSlotCount])
 
   const chartData = useMemo(() => {
     if (!activeSlots.length || !nodes.length) return { nodeCharts: [], feeds: [] as string[], slotCount: 0 }
@@ -1500,12 +1507,31 @@ function RecentSlotsChart({
             >
               {bucketed
                 ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
-                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} />}
+                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} />}
             </div>
             </div>{/* end mask wrapper */}
           </div>
         ))}
       </div>
+      {!bucketed && (
+        <div className="flex items-center justify-end gap-1 mt-1">
+          <span className="text-[10px] text-muted-foreground mr-1">Slots</span>
+          {[50, 100, 200, 300].map(n => (
+            <button
+              key={n}
+              onClick={() => setViewSlotCount(n)}
+              className={cn(
+                'text-[10px] px-1.5 h-[18px] rounded transition-colors',
+                viewSlotCount === n
+                  ? 'bg-muted text-foreground'
+                  : 'text-muted-foreground hover:text-foreground'
+              )}
+            >
+              {n}
+            </button>
+          ))}
+        </div>
+      )}
       {bucketed && (
         <div className="text-xs text-muted-foreground text-center mt-1">
           {(() => {
@@ -1622,6 +1648,17 @@ export function EdgeScoreboardPage() {
       const p = new URLSearchParams(prev)
       if (v) p.set('trend', '1')
       else p.delete('trend')
+      return p
+    })
+  }
+
+  const rawSlotCount = parseInt(searchParams.get('slot_count') ?? '100')
+  const viewSlotCount = [50, 100, 200, 300].includes(rawSlotCount) ? rawSlotCount : 100
+  const setViewSlotCount = (n: number) => {
+    setSearchParams((prev) => {
+      const p = new URLSearchParams(prev)
+      if (n === 100) p.delete('slot_count')
+      else p.set('slot_count', String(n))
       return p
     })
   }
@@ -1913,7 +1950,7 @@ export function EdgeScoreboardPage() {
         {data?.nodes && (
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
             <WinRateChart nodes={data.nodes} />
-            <RecentSlotsChart slots={stableRecent?.slots ?? data.recent_slots ?? []} nodes={data.nodes} slotLeaders={stableRecent?.leaders} leadersOnly={leadersOnly} slotBuckets={data.slot_buckets} slotBucketSize={data.slot_bucket_size} window={activeWindow} bucketed={bucketed} setBucketed={setBucketed} live={live} setLive={setLive} />
+            <RecentSlotsChart slots={stableRecent?.slots ?? data.recent_slots ?? []} nodes={data.nodes} slotLeaders={stableRecent?.leaders} leadersOnly={leadersOnly} slotBuckets={data.slot_buckets} slotBucketSize={data.slot_bucket_size} window={activeWindow} bucketed={bucketed} setBucketed={setBucketed} live={live} setLive={setLive} viewSlotCount={viewSlotCount} setViewSlotCount={setViewSlotCount} />
           </div>
         )}
 
