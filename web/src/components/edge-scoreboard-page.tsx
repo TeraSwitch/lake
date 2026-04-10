@@ -1,5 +1,4 @@
-import { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react'
-import { createPortal } from 'react-dom'
+import { useState, useMemo, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { useDrag } from '@use-gesture/react'
 import { inertia } from 'popmotion'
 import { useQuery, keepPreviousData } from '@tanstack/react-query'
@@ -397,6 +396,12 @@ function BucketedNodeChart({ data, feeds, bucketSize }: { data: Array<Record<str
   )
 }
 
+type SlotHoverInfo = {
+  slot: number
+  leader?: EdgeScoreboardLeader
+  feedData: Record<string, number | null>
+}
+
 // Module-level ref: only one chart instance can own hover at a time.
 // When a chart gets a valid setCursor, it claims ownership. The scroll-restore
 // effect only fires for the owner, so moving to another row clears the previous one.
@@ -410,6 +415,7 @@ function SlotRaceNodeChart({
   dragging = false,
   liveScrollOffset = 0,
   viewSlotCount,
+  onHover,
 }: {
   slotData: Array<Record<string, number | null>>
   feeds: string[]
@@ -418,6 +424,7 @@ function SlotRaceNodeChart({
   dragging?: boolean
   liveScrollOffset?: number
   viewSlotCount: number
+  onHover?: (info: SlotHoverInfo | null) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const plotRef = useRef<uPlot | null>(null)
@@ -438,14 +445,41 @@ function SlotRaceNodeChart({
   const scrollOffsetAtLastCursorRef = useRef(0)
   const liveScrollOffsetRef = useRef(liveScrollOffset)
   liveScrollOffsetRef.current = liveScrollOffset
-  // Raw mouse clientX/Y — updated by mousemove on u.over so tooltip position uses actual
-  // mouse coords rather than rect.left + cursor.left (which drifts as canvas translates).
-  const mouseClientXRef = useRef<number>(0)
-  const mouseClientYRef = useRef<number>(0)
   const lastHoverVxRef = useRef<number | null>(null)
   const lastHoverVyRef = useRef<number | null>(null)
   // Stable id for this chart instance — used to claim/check activeChartId ownership.
   const chartIdRef = useRef(`chart-${Math.random()}`)
+  const lastNotifiedSlotRef = useRef<number | null>(null)
+
+  const onHoverRef = useRef(onHover)
+  onHoverRef.current = onHover
+
+  // Coalesce notifyHover calls within a single rAF frame so competing paths
+  // (setCursor and scroll-restore) don't race each other with different indices.
+  // Only the last scheduled index per frame reaches updateInfoBar.
+  const pendingNotifyIdxRef = useRef<number | null>(null)
+  const notifyRafRef = useRef<number | null>(null)
+  const notifyHover = (idx: number) => {
+    pendingNotifyIdxRef.current = idx
+    if (notifyRafRef.current !== null) return  // already scheduled; last write wins
+    notifyRafRef.current = requestAnimationFrame(() => {
+      notifyRafRef.current = null
+      const pendingIdx = pendingNotifyIdxRef.current
+      pendingNotifyIdxRef.current = null
+      if (pendingIdx === null) return
+      const slot = slotDataRef.current[pendingIdx]
+      if (!slot) return
+      const slotNum = Number(slot['slot'])
+      if (slotNum === lastNotifiedSlotRef.current) return
+      lastNotifiedSlotRef.current = slotNum
+      const leader = slotLeadersRef.current?.[String(slot['slot'])]
+      const feedData: Record<string, number | null> = {}
+      for (const key of Object.keys(slot)) {
+        if (key !== 'slot') feedData[key] = slot[key] as number | null
+      }
+      onHoverRef.current?.({ slot: slotNum, leader, feedData })
+    })
+  }
 
   const [hover, setHover] = useState<{ idx: number; vx: number; vy: number } | null>(null)
   setHoverRef.current = (idx, vx, vy) => {
@@ -457,6 +491,7 @@ function SlotRaceNodeChart({
       activeChartId = chartIdRef.current  // claim ownership
       lastHoverVxRef.current = vx
       lastHoverVyRef.current = vy
+      notifyHover(idx)
       setHover({ idx, vx, vy })
     }
   }
@@ -549,9 +584,7 @@ function SlotRaceNodeChart({
             u.redraw(false)
             lastCursorLeftRef.current = u.cursor.left ?? null
             scrollOffsetAtLastCursorRef.current = liveScrollOffsetRef.current
-            // Use raw mouse coords (not rect.left + cursor.left) so tooltip position is
-            // stable as the canvas translates — rect.left shifts with translateX.
-            setHoverRef.current?.(idx, mouseClientXRef.current, mouseClientYRef.current)
+            setHoverRef.current?.(idx, 0, 0)
           },
         ],
       },
@@ -560,10 +593,7 @@ function SlotRaceNodeChart({
     plotRef.current?.destroy()
     plotRef.current = new uPlot(opts, uData, containerRef.current)
 
-    // Track raw mouse position so tooltip uses clientX/Y, not rect.left + cursor.left.
     const onOverMove = (e: MouseEvent) => {
-      mouseClientXRef.current = e.clientX
-      mouseClientYRef.current = e.clientY
       lastHoverVxRef.current = e.clientX
       lastHoverVyRef.current = e.clientY
     }
@@ -665,11 +695,12 @@ function SlotRaceNodeChart({
     if (currentIdx !== null && Math.abs(xVal - currentIdx) < 0.4) return
     hoveredIdxRef.current = idx
     plot.redraw(false)
+    notifyHover(idx)
     setHover(prev =>
       prev && prev.idx === idx ? prev  // avoid spurious re-render when nothing changed
         : { idx, vx: lastHoverVxRef.current!, vy: lastHoverVyRef.current! }
     )
-  }, [liveScrollOffset])
+  }, [liveScrollOffset])  // eslint-disable-line react-hooks/exhaustive-deps
 
   // Release ownership and clear hover when mouse moves to an element outside this chart.
   useEffect(() => {
@@ -679,6 +710,7 @@ function SlotRaceNodeChart({
         activeChartId = null
         lastHoverVxRef.current = null
         lastCursorLeftRef.current = null
+        lastNotifiedSlotRef.current = null
         setHover(null)
       }
     }
@@ -686,55 +718,9 @@ function SlotRaceNodeChart({
     return () => document.removeEventListener('mousemove', onDocMove)
   }, [])
 
-  const hoveredSlot = hover != null ? slotData[hover.idx] : null
-  const hoveredLeader = hoveredSlot ? slotLeadersRef.current?.[String(hoveredSlot['slot'])] : undefined
-  const mx = mouseClientXRef.current
-  const my = mouseClientYRef.current
-  const xPos = mx + 10 + 180 > window.innerWidth ? mx - 190 : mx + 10
-
   return (
     <div className="relative flex-1 min-w-0 overflow-hidden rounded">
       <div ref={containerRef} />
-      {hover && hoveredSlot && !dragging && createPortal(
-        <div
-          className="fixed z-50 bg-[#1a1a2e] border border-[#333] rounded-md px-3 py-2 text-xs shadow-lg pointer-events-none"
-          style={{ left: xPos, top: Math.max(0, my - 60) }}
-        >
-          <div className="font-mono font-semibold text-[#e5e5e5] mb-1.5">
-            {`Slot ${Number(hoveredSlot['slot']).toLocaleString()}`}
-          </div>
-          {hoveredLeader && (
-            <div className="mb-1.5 pb-1.5 border-b border-[#333] text-[#999]">
-              {hoveredLeader.name && <div className="text-[#e5e5e5]">{hoveredLeader.name}</div>}
-              <div className="font-mono text-[#aaa]">{hoveredLeader.pubkey.slice(0, 8)}...{hoveredLeader.pubkey.slice(-4)}</div>
-              {hoveredLeader.ip && <div><span className="text-[#666]">IP </span><span className="font-mono">{hoveredLeader.ip}</span></div>}
-              {hoveredLeader.asn_org && <div><span className="text-[#666]">Host </span>{hoveredLeader.asn_org}</div>}
-              {hoveredLeader.city && <div><span className="text-[#666]">Loc </span>{hoveredLeader.city}{hoveredLeader.country ? `, ${hoveredLeader.country}` : ''}</div>}
-            </div>
-          )}
-          <table className="border-spacing-0">
-            <thead>
-              <tr className="text-[#777]">
-                <th className="pr-3 py-0.5 text-left font-normal">Feed</th>
-                <th className="py-0.5 text-right font-normal">Win %</th>
-              </tr>
-            </thead>
-            <tbody>
-              {feeds.map((f) => (
-                <tr key={f}>
-                  <td className="pr-3 py-0.5 font-semibold" style={{ color: FEED_COLORS[f] ?? '#6b7280' }}>
-                    {FEED_LABELS[f] ?? f}
-                  </td>
-                  <td className="py-0.5 text-right font-mono text-[#e5e5e5]">
-                    {(hoveredSlot[f] ?? 0).toFixed(1)}%
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>,
-        document.body
-      )}
     </div>
   )
 }
@@ -966,6 +952,54 @@ function RecentSlotsChart({
   const momentumStopRef = useRef<{ stop: () => void } | null>(null)
   const liveRef = useRef(live)
   liveRef.current = live
+  // Info bar DOM refs — updated directly to avoid React re-render flicker.
+  const infoSlotRef = useRef<HTMLSpanElement>(null)
+  const infoNameRef = useRef<HTMLSpanElement>(null)
+  const infoPubkeyRef = useRef<HTMLSpanElement>(null)
+  const infoIpRef = useRef<HTMLSpanElement>(null)
+  const infoAsnRef = useRef<HTMLSpanElement>(null)
+  const infoLocRef = useRef<HTMLSpanElement>(null)
+  const infoFeedContainerRef = useRef<HTMLSpanElement>(null)
+  const infoPlaceholderRef = useRef<HTMLSpanElement>(null)
+  const infoFeedValueRefs = useRef<Map<string, HTMLSpanElement>>(new Map())
+
+  const updateInfoBar = useCallback((info: SlotHoverInfo | null) => {
+    const show = (el: HTMLElement | null, text?: string) => {
+      if (!el) return
+      if (text !== undefined) el.textContent = text
+      el.style.display = ''
+    }
+    const hide = (el: HTMLElement | null) => { if (el) el.style.display = 'none' }
+    if (info) {
+      hide(infoPlaceholderRef.current)
+      show(infoSlotRef.current, `Slot ${info.slot.toLocaleString()}`)
+      info.leader?.name ? show(infoNameRef.current, info.leader.name) : hide(infoNameRef.current)
+      info.leader ? show(infoPubkeyRef.current, `${info.leader.pubkey.slice(0, 8)}…${info.leader.pubkey.slice(-4)}`) : hide(infoPubkeyRef.current)
+      info.leader?.ip ? show(infoIpRef.current, info.leader.ip) : hide(infoIpRef.current)
+      info.leader?.asn_org ? show(infoAsnRef.current, info.leader.asn_org) : hide(infoAsnRef.current)
+      info.leader?.city ? show(infoLocRef.current, `${info.leader.city}${info.leader.country ? `, ${info.leader.country}` : ''}`) : hide(infoLocRef.current)
+      for (const [f, span] of infoFeedValueRefs.current) span.textContent = `${(info.feedData[f] ?? 0).toFixed(1)}%`
+      show(infoFeedContainerRef.current)
+    } else {
+      hide(infoSlotRef.current); hide(infoNameRef.current); hide(infoPubkeyRef.current)
+      hide(infoIpRef.current); hide(infoAsnRef.current); hide(infoLocRef.current)
+      hide(infoFeedContainerRef.current)
+      show(infoPlaceholderRef.current)
+    }
+  }, [])
+
+  // Ref to the chart rows container — used to clear hover info when mouse leaves the area.
+  const chartRowsRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    const onDocMove = (e: MouseEvent) => {
+      if (chartRowsRef.current && !chartRowsRef.current.contains(e.target as Node)) {
+        updateInfoBar(null)
+      }
+    }
+    document.addEventListener('mousemove', onDocMove, { passive: true })
+    return () => document.removeEventListener('mousemove', onDocMove)
+  }, [updateInfoBar])
+
   const [isDragging, setIsDragging] = useState(false)
   const isDraggingRef = useRef(isDragging)
   isDraggingRef.current = isDragging
@@ -1488,7 +1522,27 @@ function RecentSlotsChart({
           ))}
         </div>
       </div>
-      <div className="relative">
+      {/* Slot hover info bar — DOM-managed directly to avoid React re-render flicker */}
+      {!bucketed && (
+        <div className="h-7 flex items-center gap-3 px-1 text-xs text-muted-foreground overflow-hidden">
+          <span ref={infoSlotRef} className="font-mono text-foreground shrink-0" style={{ display: 'none' }} />
+          <span ref={infoNameRef} className="text-foreground/80 shrink-0" style={{ display: 'none' }} />
+          <span ref={infoPubkeyRef} className="font-mono text-muted-foreground/60 shrink-0" style={{ display: 'none' }} />
+          <span ref={infoIpRef} className="font-mono shrink-0" style={{ display: 'none' }} />
+          <span ref={infoAsnRef} className="shrink-0" style={{ display: 'none' }} />
+          <span ref={infoLocRef} className="shrink-0" style={{ display: 'none' }} />
+          <span ref={infoFeedContainerRef} className="flex items-center gap-2 ml-auto shrink-0" style={{ display: 'none' }}>
+            {feeds.map(f => (
+              <span key={f} className="flex items-center gap-1">
+                <span className="font-semibold" style={{ color: FEED_COLORS[f] ?? '#6b7280' }}>{FEED_LABELS[f] ?? f}</span>
+                <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground">—</span>
+              </span>
+            ))}
+          </span>
+          <span ref={infoPlaceholderRef} className="text-muted-foreground/30 text-[10px]">Hover a slot to see details</span>
+        </div>
+      )}
+      <div ref={chartRowsRef} className="relative">
         {/* Left-edge indicator: fixed at the chart boundary, shows while overscrolling or fetching */}
         {!bucketed && (overscrollPx > 0 || isPrefetching) && (
           <div className="absolute left-[130px] inset-y-0 flex items-center pointer-events-none z-10">
@@ -1518,7 +1572,7 @@ function RecentSlotsChart({
             >
               {bucketed
                 ? <BucketedNodeChart data={nc.data} feeds={feeds} bucketSize={activeBucketSize} />
-                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} />}
+                : <SlotRaceNodeChart slotData={nc.data} feeds={feeds} slotLeaders={live && !bucketed ? (liveLeaders ?? slotLeaders) : slotLeaders} animated={viewEndSlot !== null} dragging={isDragging} liveScrollOffset={live && viewEndSlot === null && !isDragging ? scrollOffset : 0} viewSlotCount={viewSlotCount} onHover={updateInfoBar} />}
             </div>
             </div>{/* end mask wrapper */}
           </div>
