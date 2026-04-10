@@ -27,7 +27,7 @@ function isValidWindow(v: string | null): v is TimeWindow {
 }
 
 function formatPct(v: number): string {
-  return `${v.toFixed(1)}%`
+  return v >= 100 ? '100%' : `${v.toFixed(1)}%`
 }
 
 function formatMs(v: number): string {
@@ -286,7 +286,7 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
         <h3 className="text-sm font-medium">Win Rate by Node</h3>
         <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-3">
           {chartData.feeds.map((f) => {
-            const defaultVal = `${chartData.feedAgg[f].toFixed(1)}%`
+            const defaultVal = formatPct(chartData.feedAgg[f])
             legendDefaultsRef.current.set(f, defaultVal)
             return (
               <div key={f} ref={el => { if (el) legendItemRefs.current.set(f, el) }} className="flex items-center gap-1 text-[10px] text-muted-foreground">
@@ -327,7 +327,7 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
                     itemEl.style.opacity = '1'
                     itemEl.style.fontWeight = '600'
                   } else {
-                    itemEl.style.opacity = '0.4'
+                    itemEl.style.opacity = '0.55'
                     itemEl.style.fontWeight = ''
                   }
                 }
@@ -1049,20 +1049,14 @@ function RecentSlotsChart({
       if (l?.city) parts.push(`${l.city}${l.country ? `, ${l.country}` : ''}`)
       infoLeaderRef.current.textContent = parts.join('  ·  ')
     }
-    for (const [f, span] of infoFeedValueRefs.current) span.textContent = `${(info.feedData[f] ?? 0).toFixed(1)}%`
-    // Emphasize hovered feed in legend
-    const hf = info.hoveredFeed
+    for (const [f, span] of infoFeedValueRefs.current) { const v = info.feedData[f] ?? 0; span.textContent = v >= 100 ? '100%' : `${v.toFixed(1)}%` }
+    // Always emphasize the winning feed (highest value at this slot)
+    const winnerFeed = Object.entries(info.feedData).reduce<string | null>(
+      (best, [f, v]) => (v != null && (best == null || v > (info.feedData[best] ?? 0)) ? f : best), null
+    )
     for (const [f, el] of infoFeedLegendItemRefs.current) {
-      if (hf == null) {
-        el.style.opacity = ''
-        el.style.fontWeight = ''
-      } else if (f === hf) {
-        el.style.opacity = '1'
-        el.style.fontWeight = '500'
-      } else {
-        el.style.opacity = '0.55'
-        el.style.fontWeight = ''
-      }
+      el.style.opacity = ''
+      el.style.fontWeight = f === winnerFeed ? '500' : ''
     }
   }, [])
 
