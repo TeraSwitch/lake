@@ -875,6 +875,12 @@ function RecentSlotsChart({
   const [viewEndSlot, setViewEndSlot] = useState<number | null>(null)
   const viewEndSlotRef = useRef<number | null>(null)
 
+  // Refs so the live effect can read current prop values without re-running.
+  const slotsRef = useRef(slots)
+  slotsRef.current = slots
+  const slotLeadersRef = useRef(slotLeaders)
+  slotLeadersRef.current = slotLeaders
+
   useEffect(() => {
     if (!live || bucketed) {
       liveMaxSlotRef.current = 0
@@ -901,21 +907,11 @@ function RecentSlotsChart({
       return { map, nums: nums.sort((a, b) => a - b) }
     }
 
-    const loadSlots = (data: Awaited<ReturnType<typeof fetchEdgeScoreboard>>, prevMax: number) => {
-      const { map, nums } = bySlotOrdered(data.recent_slots)
-      const newNums = prevMax > 0 ? nums.filter(n => n > prevMax) : nums
-      if (!newNums.length) return
-      liveMaxSlotRef.current = nums.at(-1) ?? liveMaxSlotRef.current
-      liveQueueRef.current.push(...newNums.map(s => map.get(s)!))
-      if (data.slot_leaders) setLiveLeaders(prev => ({ ...prev, ...data.slot_leaders }))
-    }
-    fetchEdgeScoreboard(window, leadersOnly).then(data => {
-      if (cancelled) return
-      const { map, nums } = bySlotOrdered(data.recent_slots)
+    // Seed the live buffer from a set of slot races (initial load path).
+    const seedBuffer = (races: EdgeScoreboardSlotRace[], leaders?: Record<string, EdgeScoreboardLeader>) => {
+      const { map, nums } = bySlotOrdered(races)
       liveMaxSlotRef.current = nums.at(-1) ?? 0
-      // Pre-queue 500 slots (~3 min of drain at 400ms/slot) so the animation runs through
-      // multiple cache refresh cycles (30s each) regardless of poll timing jitter.
-      // With leadersOnly=false (default), 500 all-Solana slots ≈ 3 min behind head.
+      // Pre-queue 500 slots (~3 min of drain) so animation continues between polls.
       const INITIAL_QUEUE_SLOTS = 500
       const splitIdx = Math.max(viewSlotCount, nums.length - INITIAL_QUEUE_SLOTS)
       const immediate = nums.slice(0, splitIdx)
@@ -925,8 +921,28 @@ function RecentSlotsChart({
       liveEdgeRef.current = immediateSlot
       setLiveEdge(immediateSlot)
       liveQueueRef.current = toQueue.map(s => map.get(s)!)
-      if (data.slot_leaders) setLiveLeaders(data.slot_leaders)
-    }).catch(() => {})
+      if (leaders) setLiveLeaders(leaders)
+    }
+
+    const loadSlots = (data: Awaited<ReturnType<typeof fetchEdgeScoreboard>>, prevMax: number) => {
+      const { map, nums } = bySlotOrdered(data.recent_slots)
+      const newNums = prevMax > 0 ? nums.filter(n => n > prevMax) : nums
+      if (!newNums.length) return
+      liveMaxSlotRef.current = nums.at(-1) ?? liveMaxSlotRef.current
+      liveQueueRef.current.push(...newNums.map(s => map.get(s)!))
+      if (data.slot_leaders) setLiveLeaders(prev => ({ ...prev, ...data.slot_leaders }))
+    }
+
+    // Seed immediately from the React Query data if already available, otherwise fetch.
+    // This eliminates a duplicate network round-trip on initial load and when re-entering live mode.
+    if (slotsRef.current.length > 0) {
+      seedBuffer(slotsRef.current, slotLeadersRef.current)
+    } else {
+      fetchEdgeScoreboard(window, leadersOnly).then(data => {
+        if (cancelled) return
+        seedBuffer(data.recent_slots, data.slot_leaders ?? undefined)
+      }).catch(() => {})
+    }
 
     // Poll the page cache every 10s. The cache refreshes every 30s, yielding ~75 new slots
     // each time. At 400ms/slot drain rate, 75 slots take ~30s — keeping animation continuous
@@ -1013,6 +1029,30 @@ function RecentSlotsChart({
       liveEdgeRef.current = 0
     }
   }, [live, bucketed, window, leadersOnly])
+
+  // If React Query data arrives after the live effect started but the live effect's
+  // own fetch hasn't returned yet, seed the buffer now so the chart isn't blank.
+  useEffect(() => {
+    if (!live || bucketed || !slots.length || slotBufferRef.current.length > 0 || liveEdgeRef.current > 0) return
+    const map = new Map<number, EdgeScoreboardSlotRace[]>()
+    const nums: number[] = []
+    for (const r of slots) {
+      if (!map.has(r.slot)) { map.set(r.slot, []); nums.push(r.slot) }
+      map.get(r.slot)!.push(r)
+    }
+    nums.sort((a, b) => a - b)
+    const INITIAL_QUEUE_SLOTS = 500
+    const splitIdx = Math.max(viewSlotCount, nums.length - INITIAL_QUEUE_SLOTS)
+    const immediate = nums.slice(0, splitIdx)
+    const toQueue = nums.slice(splitIdx)
+    const immediateSlot = immediate.at(-1) ?? 0
+    liveMaxSlotRef.current = nums.at(-1) ?? 0
+    slotBufferRef.current = immediate.flatMap(s => map.get(s)!)
+    liveEdgeRef.current = immediateSlot
+    setLiveEdge(immediateSlot)
+    liveQueueRef.current = toQueue.map(s => map.get(s)!)
+    if (slotLeaders) setLiveLeaders(slotLeaders)
+  }, [slots, live, bucketed, slotLeaders, viewSlotCount])
 
   // In non-live per-slot mode, keep the buffer in sync with the query result so
   // the scroll system works the same way as live mode.
