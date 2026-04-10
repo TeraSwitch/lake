@@ -436,9 +436,10 @@ function SlotRaceNodeChart({
   const scrollOffsetAtLastCursorRef = useRef(0)
   const liveScrollOffsetRef = useRef(liveScrollOffset)
   liveScrollOffsetRef.current = liveScrollOffset
-  // Viewport coords from last real mousemove — kept across mouseleave so we can restore hover
-  // when translateX temporarily moves u.over away from the cursor (browsers don't re-fire
-  // mousemove for a stationary pointer when an element slides back under it).
+  // Raw mouse clientX/Y — updated by mousemove on u.over so tooltip position uses actual
+  // mouse coords rather than rect.left + cursor.left (which drifts as canvas translates).
+  const mouseClientXRef = useRef<number>(0)
+  const mouseClientYRef = useRef<number>(0)
   const lastHoverVxRef = useRef<number | null>(null)
   const lastHoverVyRef = useRef<number | null>(null)
   // Stable id for this chart instance — used to claim/check activeChartId ownership.
@@ -447,10 +448,9 @@ function SlotRaceNodeChart({
   const [hover, setHover] = useState<{ idx: number; vx: number; vy: number } | null>(null)
   setHoverRef.current = (idx, vx, vy) => {
     if (idx == null) {
-      setHover(null)
-      // Don't clear lastHoverVx/Vy or release ownership here — translateX may have briefly
-      // moved u.over away from the cursor. The scroll effect will restore hover as long as
-      // this chart still owns activeChartId.
+      // Don't clear hover here — translateX frequently causes phantom mouseleave events
+      // (u.over edge crosses the cursor) that immediately resolve. The document mousemove
+      // listener handles genuine leaves. Clearing here causes visible flash.
     } else {
       activeChartId = chartIdRef.current  // claim ownership
       lastHoverVxRef.current = vx
@@ -547,10 +547,9 @@ function SlotRaceNodeChart({
             u.redraw(false)
             lastCursorLeftRef.current = u.cursor.left ?? null
             scrollOffsetAtLastCursorRef.current = liveScrollOffsetRef.current
-            const rect = u.over.getBoundingClientRect()
-            const vx = rect.left + (u.cursor.left ?? 0)
-            const vy = rect.top + (u.cursor.top ?? 0)
-            setHoverRef.current?.(idx, vx, vy)
+            // Use raw mouse coords (not rect.left + cursor.left) so tooltip position is
+            // stable as the canvas translates — rect.left shifts with translateX.
+            setHoverRef.current?.(idx, mouseClientXRef.current, mouseClientYRef.current)
           },
         ],
       },
@@ -558,6 +557,15 @@ function SlotRaceNodeChart({
 
     plotRef.current?.destroy()
     plotRef.current = new uPlot(opts, uData, containerRef.current)
+
+    // Track raw mouse position so tooltip uses clientX/Y, not rect.left + cursor.left.
+    const onOverMove = (e: MouseEvent) => {
+      mouseClientXRef.current = e.clientX
+      mouseClientYRef.current = e.clientY
+      lastHoverVxRef.current = e.clientX
+      lastHoverVyRef.current = e.clientY
+    }
+    plotRef.current.over.addEventListener('mousemove', onOverMove)
 
     const canvas = containerRef.current.querySelector('canvas')
     if (canvas) canvas.style.borderRadius = '4px'
@@ -674,7 +682,9 @@ function SlotRaceNodeChart({
 
   const hoveredSlot = hover != null ? slotData[hover.idx] : null
   const hoveredLeader = hoveredSlot ? slotLeadersRef.current?.[String(hoveredSlot['slot'])] : undefined
-  const xPos = hover != null && hover.vx + 10 + 180 > window.innerWidth ? hover.vx - 190 : (hover?.vx ?? 0) + 10
+  const mx = mouseClientXRef.current
+  const my = mouseClientYRef.current
+  const xPos = mx + 10 + 180 > window.innerWidth ? mx - 190 : mx + 10
 
   return (
     <div className="relative flex-1 min-w-0 overflow-hidden rounded">
@@ -682,7 +692,7 @@ function SlotRaceNodeChart({
       {hover && hoveredSlot && !dragging && createPortal(
         <div
           className="fixed z-50 bg-[#1a1a2e] border border-[#333] rounded-md px-3 py-2 text-xs shadow-lg pointer-events-none"
-          style={{ left: xPos, top: Math.max(0, hover.vy - 60) }}
+          style={{ left: xPos, top: Math.max(0, my - 60) }}
         >
           <div className="font-mono font-semibold text-[#e5e5e5] mb-1.5">
             {`Slot ${Number(hoveredSlot['slot']).toLocaleString()}`}
