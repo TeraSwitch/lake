@@ -1675,14 +1675,18 @@ function RecentSlotsChart({
           </div>
         )}
         {bucketed && (
-          <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1">
-            {feeds.map((f) => (
-              <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
-                <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
-                {FEED_LABELS[f] ?? f}
-              </div>
-            ))}
-          </div>
+          <>
+            <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-1">
+              {feeds.map((f) => (
+                <div key={f} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                  <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
+                  {FEED_LABELS[f] ?? f}
+                </div>
+              ))}
+            </div>
+            {/* Spacer matching the slot info bar height so bars align with WinRateChart */}
+            <div className="h-5 mt-0.5" />
+          </>
         )}
       </div>
       {/* Slot info bar — always visible, DOM-managed to avoid re-render flicker */}
