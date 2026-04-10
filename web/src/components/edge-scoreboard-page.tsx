@@ -820,10 +820,6 @@ function RecentSlotsChart({
       return { map, nums: nums.sort((a, b) => a - b) }
     }
 
-    // Initial fetch: uses the page cache (no custom params). The cache stores 1000 slots,
-    // giving ~500 slots of drain animation (~3.5 min) before the queue could run dry.
-    // INITIAL_QUEUE_SLOTS × 400ms/slot must cover at least one full cache refresh cycle (30s).
-    const INITIAL_QUEUE_SLOTS = 500
     const loadSlots = (data: Awaited<ReturnType<typeof fetchEdgeScoreboard>>, prevMax: number) => {
       const { map, nums } = bySlotOrdered(data.recent_slots)
       const newNums = prevMax > 0 ? nums.filter(n => n > prevMax) : nums
@@ -836,6 +832,10 @@ function RecentSlotsChart({
       if (cancelled) return
       const { map, nums } = bySlotOrdered(data.recent_slots)
       liveMaxSlotRef.current = nums.at(-1) ?? 0
+      // Pre-queue 500 slots (~3 min of drain at 400ms/slot) so the animation runs through
+      // multiple cache refresh cycles (30s each) regardless of poll timing jitter.
+      // With leadersOnly=false (default), 500 all-Solana slots ≈ 3 min behind head.
+      const INITIAL_QUEUE_SLOTS = 500
       const splitIdx = Math.max(LIVE_BUFFER_SIZE, nums.length - INITIAL_QUEUE_SLOTS)
       const immediate = nums.slice(0, splitIdx)
       const toQueue = nums.slice(splitIdx)
@@ -847,8 +847,9 @@ function RecentSlotsChart({
       if (data.slot_leaders) setLiveLeaders(data.slot_leaders)
     }).catch(() => {})
 
-    // Poll the page cache every 10s. The cache refreshes every 30s so most polls
-    // are instant cache hits; when the cache updates we get ~75 new slots to queue.
+    // Poll the page cache every 10s. The cache refreshes every 30s, yielding ~75 new slots
+    // each time. At 400ms/slot drain rate, 75 slots take ~30s — keeping animation continuous
+    // as long as there's always queue depth from the previous batch.
     const poll = () => {
       const prevMax = liveMaxSlotRef.current
       fetchEdgeScoreboard(window, leadersOnly).then(data => {
@@ -877,20 +878,26 @@ function RecentSlotsChart({
       const slotPx = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / LIVE_BUFFER_SIZE)
       const inTail = !isDraggingRef.current && viewEndSlotRef.current === null
       if (inTail) {
-        scrollOff += (slotPx / 400) * dt
-        if (scrollOff >= slotPx) {
-          const races = liveQueueRef.current.shift()
-          if (races) {
-            const newBuf = [...slotBufferRef.current, ...races]
-            const bufNums = [...new Set(newBuf.map(r => r.slot))].sort((a, b) => a - b)
-            const keepBuf = new Set(bufNums.slice(-MAX_BUFFER_SLOTS))
-            slotBufferRef.current = newBuf.filter(r => keepBuf.has(r.slot))
-            const slotNum = races[0]?.slot
-            scrollOff -= slotPx
-            if (slotNum) { liveEdgeRef.current = slotNum; setLiveEdge(slotNum) }
-          } else {
-            scrollOff = 0  // queue empty — hold position
+        // Only advance when there's something to drain — prevents scroll from oscillating
+        // back to 0 when the queue is empty (e.g. right after init or between polls).
+        if (liveQueueRef.current.length > 0) {
+          scrollOff += (slotPx / 400) * dt
+          if (scrollOff >= slotPx) {
+            const races = liveQueueRef.current.shift()
+            if (races) {
+              const newBuf = [...slotBufferRef.current, ...races]
+              const bufNums = [...new Set(newBuf.map(r => r.slot))].sort((a, b) => a - b)
+              const keepBuf = new Set(bufNums.slice(-MAX_BUFFER_SLOTS))
+              slotBufferRef.current = newBuf.filter(r => keepBuf.has(r.slot))
+              const slotNum = races[0]?.slot
+              scrollOff -= slotPx
+              if (slotNum) { liveEdgeRef.current = slotNum; setLiveEdge(slotNum) }
+            } else {
+              scrollOff = 0
+            }
           }
+        } else if (scrollOff !== 0) {
+          scrollOff = 0
         }
         setScrollOffset(scrollOff)
       } else {
