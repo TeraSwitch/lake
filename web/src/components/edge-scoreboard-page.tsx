@@ -1,4 +1,4 @@
-import { useState, useMemo, useRef, useEffect } from 'react'
+import { useState, useMemo, useRef, useEffect, useLayoutEffect } from 'react'
 import { createPortal } from 'react-dom'
 import { useDrag } from '@use-gesture/react'
 import { inertia } from 'popmotion'
@@ -509,10 +509,10 @@ function SlotRaceNodeChart({
                   const val = currentData[i][feed] ?? 0
                   if (!val) continue
                   const prev = cumulative[i]
-                  const x1 = Math.round(u.valToPos(i - 0.5, 'x', true))
-                  const x2 = Math.round(u.valToPos(i + 0.5, 'x', true))
-                  const y1 = Math.round(u.valToPos(prev + val, 'y', true))
-                  const y2 = Math.round(u.valToPos(prev, 'y', true))
+                  const x1 = Math.floor(u.valToPos(i - 0.5, 'x', true))
+                  const x2 = Math.ceil(u.valToPos(i + 0.5, 'x', true))
+                  const y1 = Math.floor(u.valToPos(prev + val, 'y', true))
+                  const y2 = Math.ceil(u.valToPos(prev, 'y', true))
                   if (y2 > y1 && x2 > x1) ctx.fillRect(x1, y1, x2 - x1, y2 - y1)
                   cumulative[i] += val
                 }
@@ -520,10 +520,10 @@ function SlotRaceNodeChart({
               // Highlight hovered column
               const hIdx = hoveredIdxRef.current
               if (hIdx != null && hIdx >= 0 && hIdx < currentN) {
-                const x1 = Math.round(u.valToPos(hIdx - 0.5, 'x', true))
-                const x2 = Math.round(u.valToPos(hIdx + 0.5, 'x', true))
-                const y1 = Math.round(u.valToPos(100, 'y', true))
-                const y2 = Math.round(u.valToPos(0, 'y', true))
+                const x1 = Math.floor(u.valToPos(hIdx - 0.5, 'x', true))
+                const x2 = Math.ceil(u.valToPos(hIdx + 0.5, 'x', true))
+                const y1 = Math.floor(u.valToPos(100, 'y', true))
+                const y2 = Math.ceil(u.valToPos(0, 'y', true))
                 const w = x2 - x1
                 const h = y2 - y1
                 ctx.fillStyle = 'rgba(255, 255, 255, 0.12)'
@@ -585,7 +585,11 @@ function SlotRaceNodeChart({
   }, [feeds, viewSlotCount])
 
   // Animate bars sliding in from the right on data refresh.
-  useEffect(() => {
+  // useLayoutEffect so the canvas redraws synchronously with the DOM before the browser paints.
+  // Without this, translateX (from scrollOffset state) updates in one frame and the canvas
+  // content updates in the next (useEffect fires after paint), causing a one-frame jitter that
+  // is especially visible with narrow bars (high slot counts like 200 or 300).
+  useLayoutEffect(() => {
     const plot = plotRef.current
     if (!plot || !slotData.length) return
 
@@ -791,6 +795,8 @@ function RecentSlotsChart({
   setViewSlotCount: (n: number) => void
 }) {
   const containerRef = useRef<HTMLDivElement>(null)
+  const viewSlotCountRef = useRef(viewSlotCount)
+  viewSlotCountRef.current = viewSlotCount
 
   // Live mode: fetch 300 slots on activate (show first 100 immediately, queue
   // the rest for animation), then poll every 5s with a since_slot cursor so
@@ -892,7 +898,7 @@ function RecentSlotsChart({
       // burst of rapid drains on return (rAF is throttled in background tabs).
       const dt = lastTime === null ? 0 : Math.min(now - lastTime, 400)
       lastTime = now
-      const slotPx = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCount)
+      const slotPx = Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCountRef.current)
       const inTail = !isDraggingRef.current && viewEndSlotRef.current === null
       if (inTail) {
         // Only advance when there's something to drain — prevents scroll from oscillating
@@ -1093,7 +1099,7 @@ function RecentSlotsChart({
   useDrag(
     ({ movement: [mx], velocity: [vx], direction: [dirX], first, last, active }) => {
       const slotNums = () => [...new Set(slotBufferRef.current.map(r => r.slot))].sort((a, b) => a - b)
-      const px = () => Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCount)
+      const px = () => Math.max(1, ((containerRef.current?.offsetWidth ?? 260) - 130) / viewSlotCountRef.current)
 
       if (active) {
         momentumStopRef.current?.stop()
