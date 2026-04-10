@@ -1887,9 +1887,8 @@ export function EdgeScoreboardPage() {
   }, [])
 
   const showTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const hideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, isFetching, error } = useQuery({
     queryKey: ['edge-scoreboard', activeWindow, leadersOnly],
     queryFn: () => fetchEdgeScoreboard(activeWindow, leadersOnly),
     refetchInterval: 30_000,
@@ -1906,11 +1905,13 @@ export function EdgeScoreboardPage() {
   }
   const latestRecentRef = useRef<RecentSlotsSnapshot | null>(null)
   const [stableRecent, setStableRecent] = useState<RecentSlotsSnapshot | null>(null)
-  // Reset snapshot when leadersOnly changes so the chart reflects the new filter immediately.
+  // Reset snapshot when leadersOnly or window changes so the chart reflects the new data immediately.
+  // Without this, the generated_at guard can silently drop updates when cached data for the new
+  // window has an older timestamp than the current snapshot (e.g. switching 1h→24h).
   useEffect(() => {
     latestRecentRef.current = null
     setStableRecent(null)
-  }, [leadersOnly])
+  }, [leadersOnly, activeWindow])
   useEffect(() => {
     if (!data?.generated_at || !data.recent_slots?.length) return
     const prev = latestRecentRef.current
@@ -2022,31 +2023,22 @@ export function EdgeScoreboardPage() {
     return () => clearTimeout(t)
   }, [isLoading])
 
-  // Show shimmer when switching views, but only if data takes >200ms to arrive.
-  // Fast cache hits skip the shimmer entirely.
+  // Show shimmer while fetching, debounced 200ms so instant cache hits skip it entirely.
+  // Shimmer stays on until isFetching clears — no fixed duration.
   useEffect(() => {
+    if (!isFetching) {
+      if (showTimerRef.current) { clearTimeout(showTimerRef.current); showTimerRef.current = null }
+      setShowShimmer(false)
+      return
+    }
     showTimerRef.current = setTimeout(() => {
       showTimerRef.current = null
       setShowShimmer(true)
-      hideTimerRef.current = setTimeout(() => {
-        hideTimerRef.current = null
-        setShowShimmer(false)
-      }, 1500)
     }, 200)
     return () => {
       if (showTimerRef.current) { clearTimeout(showTimerRef.current); showTimerRef.current = null }
-      if (hideTimerRef.current) { clearTimeout(hideTimerRef.current); hideTimerRef.current = null }
-      setShowShimmer(false)
     }
-  }, [activeWindow, leadersOnly])
-
-  // Cancel the debounce if data arrives before the 200ms threshold.
-  useEffect(() => {
-    if (showTimerRef.current) {
-      clearTimeout(showTimerRef.current)
-      showTimerRef.current = null
-    }
-  }, [data])
+  }, [isFetching])
 
   if (isLoading && showLoader && !data) return (
     <div className="flex-1 flex items-center justify-center bg-background">
