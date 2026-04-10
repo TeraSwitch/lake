@@ -441,8 +441,6 @@ function SlotRaceNodeChart({
   const prevRightSlotRef = useRef<number | null>(null)
   // Track cursor position so we can recompute the hovered idx as the chart scrolls
   // under a stationary mouse (translateX moves the canvas, uPlot doesn't re-fire setCursor).
-  const lastCursorLeftRef = useRef<number | null>(null)
-  const scrollOffsetAtLastCursorRef = useRef(0)
   const liveScrollOffsetRef = useRef(liveScrollOffset)
   liveScrollOffsetRef.current = liveScrollOffset
   const lastHoverVxRef = useRef<number | null>(null)
@@ -582,8 +580,6 @@ function SlotRaceNodeChart({
             }
             hoveredIdxRef.current = idx
             u.redraw(false)
-            lastCursorLeftRef.current = u.cursor.left ?? null
-            scrollOffsetAtLastCursorRef.current = liveScrollOffsetRef.current
             setHoverRef.current?.(idx, 0, 0)
           },
         ],
@@ -668,31 +664,23 @@ function SlotRaceNodeChart({
   }, [slotData])
 
   // When the chart scrolls (translateX shifts the canvas left), a stationary mouse effectively
-  // moves right in canvas coordinates. Recompute the hovered idx so the tooltip tracks the bar
-  // that is visually under the cursor without requiring the user to move the mouse.
-  // Also restores hover if translateX briefly pushed u.over's edge past the cursor (mouseleave
-  // fires but mousemove does NOT re-fire when the element slides back — browser limitation).
+  // moves right in canvas coordinates. Recompute the hovered idx from the current screen position
+  // of u.over so the tooltip tracks the bar that is visually under the cursor.
   useEffect(() => {
     const plot = plotRef.current
-    // Only restore hover if this chart still owns the active hover slot.
-    // If another chart got a valid setCursor (user moved to another row), activeChartId
-    // changed and we stop restoring — preventing multiple tooltips from showing at once.
-    if (!plot || lastCursorLeftRef.current === null || lastHoverVxRef.current === null) return
+    if (!plot || lastHoverVxRef.current === null) return
     if (activeChartId !== chartIdRef.current) {
-      // Lost ownership — clear stored state so we don't restore on future ticks
       lastHoverVxRef.current = null
-      lastCursorLeftRef.current = null
       return
     }
-    const delta = liveScrollOffset - scrollOffsetAtLastCursorRef.current
-    const adjustedLeft = lastCursorLeftRef.current + delta
-    const xVal = plot.posToVal(adjustedLeft, 'x')
+    // Compute canvas-relative x directly from clientX + live bounding rect.
+    // This is always exact regardless of drain events or scroll delta accumulation.
+    const rect = plot.over.getBoundingClientRect()
+    const canvasX = lastHoverVxRef.current - rect.left
+    if (canvasX < 0 || canvasX > rect.width) return
+    const xVal = plot.posToVal(canvasX, 'x')
     const idx = Math.round(xVal)
     if (idx < 0 || idx >= slotDataRef.current.length) return
-    // Dead zone: stay on the current bar unless the cursor has clearly moved past 40% of a
-    // bar width from the current center. Prevents flickering at bar boundaries.
-    const currentIdx = hoveredIdxRef.current
-    if (currentIdx !== null && Math.abs(xVal - currentIdx) < 0.4) return
     hoveredIdxRef.current = idx
     plot.redraw(false)
     notifyHover(idx)
@@ -709,7 +697,6 @@ function SlotRaceNodeChart({
       if (!containerRef.current.contains(e.target as Node)) {
         activeChartId = null
         lastHoverVxRef.current = null
-        lastCursorLeftRef.current = null
         lastNotifiedSlotRef.current = null
         setHover(null)
       }
