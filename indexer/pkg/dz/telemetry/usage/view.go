@@ -18,20 +18,28 @@ import (
 	"github.com/malbeclabs/lake/indexer/pkg/metrics"
 )
 
-// InfluxDBClient is an interface for querying InfluxDB 3 with SQL
+// InfluxDBClient is an interface for querying InfluxDB interface counter data.
 type InfluxDBClient interface {
-	// QuerySQL executes a SQL query and returns results as a slice of maps
-	QuerySQL(ctx context.Context, sqlQuery string) ([]map[string]any, error)
-	// Close closes the client and releases resources
+	// QueryIntfCounters fetches interface counter rows for [start, end).
+	// Returned rows contain: time (RFC3339Nano string), dzd_pubkey, host, intf,
+	// model_name, serial_number, and all counter field names
+	// (e.g. "in-octets", "out-octets", "in-errors", etc.)
+	QueryIntfCounters(ctx context.Context, start, end time.Time) ([]map[string]any, error)
+	// QueryBaselineCounter fetches the last non-null value of field for each
+	// (dzd_pubkey, intf) pair in the window [lookbackStart, windowStart).
+	// Returned rows contain: dzd_pubkey, intf, value.
+	QueryBaselineCounter(ctx context.Context, field string, lookbackStart, windowStart time.Time) ([]map[string]any, error)
+	// Close closes the client and releases resources.
 	Close() error
 }
 
-// SDKInfluxDBClient implements InfluxDBClient using the official InfluxDB 3 Go SDK
+// SDKInfluxDBClient implements InfluxDBClient using the official InfluxDB 3 Go SDK (Flight SQL).
+// It is kept for compatibility; prefer FluxInfluxDBClient for production use.
 type SDKInfluxDBClient struct {
 	client *influxdb3.Client
 }
 
-// NewSDKInfluxDBClient creates a new SDK-based InfluxDB client
+// NewSDKInfluxDBClient creates a new SDK-based InfluxDB client using Flight SQL.
 func NewSDKInfluxDBClient(host, token, database string) (*SDKInfluxDBClient, error) {
 	client, err := influxdb3.New(influxdb3.ClientConfig{
 		Host:     host,
@@ -44,7 +52,58 @@ func NewSDKInfluxDBClient(host, token, database string) (*SDKInfluxDBClient, err
 	return &SDKInfluxDBClient{client: client}, nil
 }
 
-func (c *SDKInfluxDBClient) QuerySQL(ctx context.Context, sqlQuery string) ([]map[string]any, error) {
+func (c *SDKInfluxDBClient) QueryIntfCounters(ctx context.Context, start, end time.Time) ([]map[string]any, error) {
+	sqlQuery := fmt.Sprintf(`
+		SELECT
+			time,
+			dzd_pubkey,
+			host,
+			intf,
+			model_name,
+			serial_number,
+			"carrier-transitions",
+			"in-broadcast-pkts",
+			"in-discards",
+			"in-errors",
+			"in-fcs-errors",
+			"in-multicast-pkts",
+			"in-octets",
+			"in-pkts",
+			"in-unicast-pkts",
+			"out-broadcast-pkts",
+			"out-discards",
+			"out-errors",
+			"out-multicast-pkts",
+			"out-octets",
+			"out-pkts",
+			"out-unicast-pkts"
+		FROM "intfCounters"
+		WHERE time >= '%s' AND time < '%s'
+	`, start.UTC().Format(time.RFC3339Nano), end.UTC().Format(time.RFC3339Nano))
+	return c.querySQL(ctx, sqlQuery)
+}
+
+func (c *SDKInfluxDBClient) QueryBaselineCounter(ctx context.Context, field string, lookbackStart, windowStart time.Time) ([]map[string]any, error) {
+	sqlQuery := fmt.Sprintf(`
+		SELECT
+			dzd_pubkey,
+			intf,
+			"%s" as value
+		FROM (
+			SELECT
+				dzd_pubkey,
+				intf,
+				"%s",
+				ROW_NUMBER() OVER (PARTITION BY dzd_pubkey, intf ORDER BY time DESC) as rn
+			FROM "intfCounters"
+			WHERE time >= '%s' AND time < '%s' AND "%s" IS NOT NULL
+		) ranked
+		WHERE rn = 1
+	`, field, field, lookbackStart.Format(time.RFC3339Nano), windowStart.Format(time.RFC3339Nano), field)
+	return c.querySQL(ctx, sqlQuery)
+}
+
+func (c *SDKInfluxDBClient) querySQL(ctx context.Context, sqlQuery string) ([]map[string]any, error) {
 	iterator, err := c.client.Query(ctx, sqlQuery)
 	if err != nil {
 		return nil, fmt.Errorf("failed to execute query: %w", err)
@@ -264,12 +323,13 @@ func (v *View) Refresh(ctx context.Context) (ingestionlog.RefreshResult, error) 
 			v.log.Info("telemetry/usage: queried baselines from clickhouse", "unique_keys", totalKeys, "duration", chDuration.String())
 			baselines = chBaselines
 		} else {
-			v.log.Debug("telemetry/usage: no baseline data in clickhouse (0 rows), will query influxdb", "duration", chDuration.String())
+			v.log.Warn("telemetry/usage: no baseline data in clickhouse (0 rows), will query influxdb — this triggers expensive 10-year scans", "duration", chDuration.String())
 		}
 	}
 
 	if baselines == nil {
-		v.log.Debug("telemetry/usage: querying baselines from influxdb (clickhouse returned 0 baselines)")
+		metrics.InfluxBaselineFallbackTotal.WithLabelValues(v.cfg.DZEnv).Inc()
+		v.log.Warn("telemetry/usage: querying baselines from influxdb (clickhouse returned 0 baselines)")
 		baselineCtx, baselineCancel := context.WithTimeout(ctx, 120*time.Second)
 		defer baselineCancel()
 
@@ -390,35 +450,8 @@ func (v *View) queryInfluxDB(ctx context.Context, startTime, endTime time.Time, 
 	// InfluxDB uses dzd_pubkey as a tag, which we extract and map to device_pk.
 	v.log.Debug("telemetry/usage: executing main influxdb query", "from", startTime.UTC(), "to", endTime.UTC())
 	queryStart := time.Now()
-	sqlQuery := fmt.Sprintf(`
-		SELECT
-			time,
-			dzd_pubkey,
-			host,
-			intf,
-			model_name,
-			serial_number,
-			"carrier-transitions",
-			"in-broadcast-pkts",
-			"in-discards",
-			"in-errors",
-			"in-fcs-errors",
-			"in-multicast-pkts",
-			"in-octets",
-			"in-pkts",
-			"in-unicast-pkts",
-			"out-broadcast-pkts",
-			"out-discards",
-			"out-errors",
-			"out-multicast-pkts",
-			"out-octets",
-			"out-pkts",
-			"out-unicast-pkts"
-		FROM "intfCounters"
-		WHERE time >= '%s' AND time < '%s'
-	`, startTime.UTC().Format(time.RFC3339Nano), endTime.UTC().Format(time.RFC3339Nano))
 
-	rows, err := v.cfg.InfluxDB.QuerySQL(ctx, sqlQuery)
+	rows, err := v.cfg.InfluxDB.QueryIntfCounters(ctx, startTime, endTime)
 	queryDuration := time.Since(queryStart)
 	metrics.RecordInfluxQuery(v.cfg.DZEnv, "interface_usage", queryDuration, len(rows), err)
 	if err != nil {
@@ -922,76 +955,48 @@ func (v *View) queryBaselineCounters(ctx context.Context, windowStart time.Time)
 		{"out-errors", baselines.OutErrors},
 	}
 
-	v.log.Debug("telemetry/usage: querying baseline counters from influxdb", "counters", len(counterFields))
-	var wg sync.WaitGroup
-	errCh := make(chan error, len(counterFields))
+	// For sparse counters, use a 10-year window directly (they're sparse, so rows are rare).
+	// NOTE: These queries are expensive on InfluxDB — run sequentially to avoid saturating
+	// the InfluxDB query budget (25m total in 30s). This path only runs when ClickHouse
+	// has no baseline data, which should be rare in steady state.
+	lookbackStart := windowStart.Add(-10 * 365 * 24 * time.Hour)
+	v.log.Warn("telemetry/usage: querying baseline counters from influxdb (sequential to avoid rate limits)",
+		"counters", len(counterFields),
+		"from", lookbackStart.UTC(),
+		"to", windowStart.UTC(),
+		"lookback", "10y",
+	)
 
-	for _, cf := range counterFields {
-		wg.Add(1)
-		go func(cf struct {
-			field    string
-			baseline map[string]*int64
-		}) {
-			defer wg.Done()
-			counterStart := time.Now()
-
-			// For sparse counters, just use 10-year window directly (they're sparse, so it's fast)
-			lookbackStart := windowStart.Add(-10 * 365 * 24 * time.Hour)
-			sqlQuery := fmt.Sprintf(`
-				SELECT
-					dzd_pubkey,
-					intf,
-					"%s" as value
-				FROM (
-					SELECT
-						dzd_pubkey,
-						intf,
-						"%s",
-						ROW_NUMBER() OVER (PARTITION BY dzd_pubkey, intf ORDER BY time DESC) as rn
-					FROM "intfCounters"
-					WHERE time >= '%s' AND time < '%s' AND "%s" IS NOT NULL
-				) ranked
-				WHERE rn = 1
-			`, cf.field, cf.field, lookbackStart.Format(time.RFC3339Nano), windowStart.Format(time.RFC3339Nano), cf.field)
-
-			rows, err := v.cfg.InfluxDB.QuerySQL(ctx, sqlQuery)
-			counterDuration := time.Since(counterStart)
-			queryType := "baseline_" + strings.ReplaceAll(cf.field, "-", "_")
-			metrics.RecordInfluxQuery(v.cfg.DZEnv, queryType, counterDuration, len(rows), err)
-			if err != nil {
-				v.log.Warn("telemetry/usage: failed to query baseline counter", "counter", cf.field, "error", err, "duration", counterDuration.String())
-				errCh <- fmt.Errorf("failed to query baseline for %s: %w", cf.field, err)
-				return
-			}
-
-			baselineCount := 0
-			for _, row := range rows {
-				devicePK := extractStringFromRow(row, "dzd_pubkey")
-				intf := extractStringFromRow(row, "intf")
-				if devicePK == nil || intf == nil {
-					continue
-				}
-				key := fmt.Sprintf("%s:%s", *devicePK, *intf)
-				value := extractInt64FromRow(row, "value")
-				if value != nil {
-					cf.baseline[key] = value
-					baselineCount++
-				}
-			}
-			v.log.Debug("telemetry/usage: completed baseline counter query", "counter", cf.field, "baselines", baselineCount, "duration", counterDuration.String())
-		}(cf)
-	}
-
-	wg.Wait()
-	close(errCh)
-
-	// Check for errors
 	hasErrors := false
-	for err := range errCh {
+	for _, cf := range counterFields {
+		counterStart := time.Now()
+
+		v.log.Debug("telemetry/usage: executing influxdb baseline counter query", "counter", cf.field, "from", lookbackStart.UTC(), "to", windowStart.UTC())
+		rows, err := v.cfg.InfluxDB.QueryBaselineCounter(ctx, cf.field, lookbackStart, windowStart)
+		counterDuration := time.Since(counterStart)
+		queryType := "baseline_" + strings.ReplaceAll(cf.field, "-", "_")
+		metrics.RecordInfluxQuery(v.cfg.DZEnv, queryType, counterDuration, len(rows), err)
 		if err != nil {
+			v.log.Warn("telemetry/usage: failed to query baseline counter", "counter", cf.field, "error", err, "duration", counterDuration.String())
 			hasErrors = true
-			v.log.Warn("telemetry/usage: baseline counter query error", "error", err)
+			continue
 		}
+
+		baselineCount := 0
+		for _, row := range rows {
+			devicePK := extractStringFromRow(row, "dzd_pubkey")
+			intf := extractStringFromRow(row, "intf")
+			if devicePK == nil || intf == nil {
+				continue
+			}
+			key := fmt.Sprintf("%s:%s", *devicePK, *intf)
+			value := extractInt64FromRow(row, "value")
+			if value != nil {
+				cf.baseline[key] = value
+				baselineCount++
+			}
+		}
+		v.log.Debug("telemetry/usage: completed baseline counter query", "counter", cf.field, "baselines", baselineCount, "duration", counterDuration.String())
 	}
 
 	if hasErrors {
