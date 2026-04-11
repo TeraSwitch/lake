@@ -289,7 +289,7 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
             const defaultVal = formatPct(chartData.feedAgg[f])
             legendDefaultsRef.current.set(f, defaultVal)
             return (
-              <div key={f} ref={el => { if (el) legendItemRefs.current.set(f, el) }} className="flex items-center gap-1 text-[10px] text-muted-foreground">
+              <div key={f} ref={el => { if (el) legendItemRefs.current.set(f, el) }} className="flex items-center gap-1 text-[10px] text-muted-foreground transition-opacity duration-150">
                 <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
                 {FEED_LABELS[f] ?? f}
                 <span
@@ -322,13 +322,8 @@ function WinRateChart({ nodes }: { nodes: EdgeScoreboardNode[] }) {
                 if (itemEl) {
                   if (!hovered || feed == null) {
                     itemEl.style.opacity = ''
-                    itemEl.style.fontWeight = ''
-                  } else if (f === feed) {
-                    itemEl.style.opacity = '1'
-                    itemEl.style.fontWeight = '600'
                   } else {
-                    itemEl.style.opacity = '0.55'
-                    itemEl.style.fontWeight = ''
+                    itemEl.style.opacity = f === feed ? '1' : '0.5'
                   }
                 }
               }
@@ -881,6 +876,11 @@ function RecentSlotsChart({
   const slotLeadersRef = useRef(slotLeaders)
   slotLeadersRef.current = slotLeaders
 
+  // Track query params from the last live-effect seed so we can detect when they change.
+  // When leadersOnly or window changes, slotsRef.current holds stale data (wrong filter),
+  // so we must fetch fresh instead of seeding from the cached query data.
+  const prevLiveParamsRef = useRef<{ leadersOnly?: boolean; window?: string }>({})
+
   useEffect(() => {
     if (!live || bucketed) {
       liveMaxSlotRef.current = 0
@@ -935,7 +935,11 @@ function RecentSlotsChart({
 
     // Seed immediately from the React Query data if already available, otherwise fetch.
     // This eliminates a duplicate network round-trip on initial load and when re-entering live mode.
-    if (slotsRef.current.length > 0) {
+    // If leadersOnly or window changed, slotsRef.current holds stale data (wrong filter),
+    // so we must fetch fresh to avoid seeding the buffer with mismatched slots.
+    const liveParamsChanged = prevLiveParamsRef.current.leadersOnly !== leadersOnly || prevLiveParamsRef.current.window !== window
+    prevLiveParamsRef.current = { leadersOnly, window }
+    if (!liveParamsChanged && slotsRef.current.length > 0) {
       seedBuffer(slotsRef.current, slotLeadersRef.current)
     } else {
       fetchEdgeScoreboard(window, leadersOnly).then(data => {
@@ -1095,7 +1099,7 @@ function RecentSlotsChart({
       (best, [f, v]) => (v != null && (best == null || v > (info.feedData[best] ?? 0)) ? f : best), null
     )
     for (const [f, el] of infoFeedLegendItemRefs.current) {
-      el.style.opacity = ''
+      el.style.opacity = winnerFeed ? (f === winnerFeed ? '1' : '0.5') : ''
       el.style.fontWeight = f === winnerFeed ? '500' : ''
     }
   }, [])
@@ -1644,10 +1648,11 @@ function RecentSlotsChart({
               const slotRange = minSlot && maxSlot && minSlot !== maxSlot
                 ? `${fmtSlot(minSlot)} – ${fmtSlot(maxSlot)}`
                 : minSlot ? `${fmtSlot(minSlot)}` : null
-              const timeNote = liveSlot && maxSlot
-                ? viewEndSlot !== null
-                  ? `${fmtAgo(liveSlot - minSlot)} – ${fmtAgo(liveSlot - maxSlot)}`
-                  : fmtAgo(liveSlot - maxSlot)
+              // Only show time-ago when paused (scrolled to a historical position).
+              // In live-tailing mode the value reflects animation queue depth, not data age
+              // (the page cache is only ~30s stale), so it's misleading to show it there.
+              const timeNote = liveSlot && maxSlot && viewEndSlot !== null
+                ? `${fmtAgo(liveSlot - minSlot)} – ${fmtAgo(liveSlot - maxSlot)}`
                 : null
               if (!slotRange) return null
               return (
@@ -1712,7 +1717,7 @@ function RecentSlotsChart({
         </div>
         <div className="flex flex-wrap items-center justify-end gap-x-3 gap-y-1 mt-3 text-[10px] text-muted-foreground">
           {feeds.map((f) => (
-            <div key={f} ref={el => { if (el) infoFeedLegendItemRefs.current.set(f, el) }} className="flex items-center gap-1">
+            <div key={f} ref={el => { if (el) infoFeedLegendItemRefs.current.set(f, el) }} className="flex items-center gap-1 transition-opacity duration-150">
               <span className="inline-block w-2 h-2 rounded-sm shrink-0" style={{ backgroundColor: FEED_COLORS[f] ?? '#6b7280' }} />
               {FEED_LABELS[f] ?? f}
               <span ref={el => { if (el) infoFeedValueRefs.current.set(f, el) }} className="font-mono text-foreground ml-0.5 inline-block w-[4ch] text-right">—</span>
