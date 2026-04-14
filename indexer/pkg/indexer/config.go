@@ -99,23 +99,20 @@ func (c *Config) Validate() error {
 		return errors.New("max concurrency must be greater than 0")
 	}
 
-	// Serviceability configuration.
-	if c.ServiceabilityRPC == nil {
-		return errors.New("serviceability rpc is required")
-	}
-
-	// Telemetry configuration.
-	if c.TelemetryRPC == nil {
-		return errors.New("telemetry rpc is required")
-	}
-	if c.DZEpochRPC == nil {
-		return errors.New("dz epoch rpc is required")
-	}
-	if c.InternetLatencyAgentPK.IsZero() {
-		return errors.New("internet latency agent public key is required")
-	}
-	if len(c.InternetDataProviders) == 0 {
-		return errors.New("internet data providers are required")
+	// Serviceability + Telemetry configuration (optional — nil when DZ ledger is disabled).
+	if c.ServiceabilityRPC != nil {
+		if c.TelemetryRPC == nil {
+			return errors.New("telemetry rpc is required when serviceability rpc is set")
+		}
+		if c.DZEpochRPC == nil {
+			return errors.New("dz epoch rpc is required when serviceability rpc is set")
+		}
+		if c.InternetLatencyAgentPK.IsZero() {
+			return errors.New("internet latency agent public key is required when serviceability rpc is set")
+		}
+		if len(c.InternetDataProviders) == 0 {
+			return errors.New("internet data providers are required when serviceability rpc is set")
+		}
 	}
 
 	// GeoIP requires Solana (needs gossip IPs from Solana cluster info).

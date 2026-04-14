@@ -34,8 +34,12 @@ type Activities struct {
 }
 
 // RefreshServiceability fetches the latest DZ serviceability state from RPC
-// and writes it to ClickHouse dimension tables.
+// and writes it to ClickHouse dimension tables. No-op if DZ ledger is not configured.
 func (a *Activities) RefreshServiceability(ctx context.Context) error {
+	if a.Serviceability == nil {
+		a.IngestionLog.WrapSkipped(ctx, "dzingest", "RefreshServiceability", a.Network)
+		return nil
+	}
 	return a.IngestionLog.Wrap(ctx, "dzingest", "RefreshServiceability", a.Network, func() (ingestionlog.RefreshResult, error) {
 		result, err := a.Serviceability.Refresh(ctx)
 		if err != nil {
@@ -62,8 +66,12 @@ func (a *Activities) RefreshShreds(ctx context.Context) error {
 }
 
 // RefreshTelemetryLatency fetches device link latency samples from RPC
-// and writes them to ClickHouse fact tables.
+// and writes them to ClickHouse fact tables. No-op if DZ ledger is not configured.
 func (a *Activities) RefreshTelemetryLatency(ctx context.Context) error {
+	if a.TelemLatency == nil {
+		a.IngestionLog.WrapSkipped(ctx, "dzingest", "RefreshTelemetryLatency", a.Network)
+		return nil
+	}
 	return a.IngestionLog.Wrap(ctx, "dzingest", "RefreshTelemetryLatency", a.Network, func() (ingestionlog.RefreshResult, error) {
 		result, err := a.TelemLatency.Refresh(ctx)
 		if err != nil {

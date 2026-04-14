@@ -30,6 +30,8 @@ import (
 	"github.com/malbeclabs/doublezero/tools/maxmind/pkg/metrodb"
 	"github.com/malbeclabs/doublezero/tools/solana/pkg/rpc"
 	"github.com/malbeclabs/lake/indexer/pkg/clickhouse"
+	dzsvc "github.com/malbeclabs/lake/indexer/pkg/dz/serviceability"
+	dztelemlatency "github.com/malbeclabs/lake/indexer/pkg/dz/telemetry/latency"
 	dztelemusage "github.com/malbeclabs/lake/indexer/pkg/dz/telemetry/usage"
 	"github.com/malbeclabs/lake/indexer/pkg/dzingest"
 	"github.com/malbeclabs/lake/indexer/pkg/indexer"
@@ -103,6 +105,8 @@ func run() error {
 	// Indexer configuration
 	dzEnvFlag := flag.String("dz-env", config.EnvMainnetBeta, "DZ ledger environment (devnet, testnet, mainnet-beta)")
 	solanaEnvFlag := flag.String("solana-env", config.SolanaEnvMainnetBeta, "solana environment (devnet, testnet, mainnet-beta)")
+	solanaEnabledFlag := flag.Bool("solana-enabled", false, "Enable Solana mainnet RPC, shreds subscription, and validators.app views (or set SOLANA_ENABLED=true env var)")
+	dzLedgerEnabledFlag := flag.Bool("dz-ledger-enabled", false, "Enable DZ ledger RPC views: serviceability + telemetry latency (or set DZ_LEDGER_ENABLED=true env var)")
 	refreshIntervalFlag := flag.Duration("cache-ttl", defaultRefreshInterval, "cache TTL duration")
 	maxConcurrencyFlag := flag.Int("max-concurrency", defaultMaxConcurrency, "maximum number of concurrent operations")
 	deviceUsageQueryWindowFlag := flag.Duration("device-usage-query-window", defaultDeviceUsageInfluxQueryWindow, "Query window for device usage (default: 1 hour)")
@@ -162,6 +166,12 @@ func run() error {
 	if envDZEnv := os.Getenv("DZ_ENV"); envDZEnv != "" {
 		*dzEnvFlag = envDZEnv
 	}
+	if os.Getenv("SOLANA_ENABLED") == "true" {
+		*solanaEnabledFlag = true
+	}
+	if os.Getenv("DZ_LEDGER_ENABLED") == "true" {
+		*dzLedgerEnabledFlag = true
+	}
 
 	// Override Neo4j flags with environment variables if set
 	if envNeo4jURI := os.Getenv("NEO4J_URI"); envNeo4jURI != "" {
@@ -220,9 +230,13 @@ func run() error {
 	}
 
 	// Solana, GeoIP, Neo4j, and ISIS are only enabled for mainnet-beta for now.
-	solanaEnabled := *dzEnvFlag == config.EnvMainnetBeta
-	geoipEnabled := *dzEnvFlag == config.EnvMainnetBeta
-	neo4jEnabled := *dzEnvFlag == config.EnvMainnetBeta
+	// Solana is additionally gated behind --solana-enabled so it can be turned
+	// off on mainnet-beta without code changes. GeoIP and Neo4j remain coupled
+	// to Solana (GeoIP depends on Solana cluster info for gossip IPs).
+	solanaEnabled := *dzEnvFlag == config.EnvMainnetBeta && *solanaEnabledFlag
+	geoipEnabled := solanaEnabled
+	neo4jEnabled := solanaEnabled
+	dzLedgerEnabled := *dzLedgerEnabledFlag
 
 	networkConfig, err := config.NetworkConfigForEnv(*dzEnvFlag)
 	if err != nil {
@@ -244,6 +258,7 @@ func run() error {
 		"commit", commit,
 		"solana_env", *solanaEnvFlag,
 		"solana_enabled", solanaEnabled,
+		"dz_ledger_enabled", dzLedgerEnabled,
 		"geoip_enabled", geoipEnabled,
 		"neo4j_enabled", neo4jEnabled,
 	)
@@ -292,14 +307,24 @@ func run() error {
 		}()
 	}
 
-	dzRPCClient := rpc.NewWithRetries(networkConfig.LedgerPublicRPCURL, nil)
-	defer dzRPCClient.Close()
-	serviceabilityClient := serviceability.New(dzRPCClient, networkConfig.ServiceabilityProgramID)
-	telemetryClient := telemetry.New(log, dzRPCClient, nil, networkConfig.TelemetryProgramID)
+	// DZ ledger RPC clients (serviceability + telemetry) are gated behind
+	// --dz-ledger-enabled so the indexer can run without the DoubleZero ledger.
+	var serviceabilityRPC dzsvc.ServiceabilityRPC
+	var telemetryRPC dztelemlatency.TelemetryRPC
+	var dzEpochRPC dztelemlatency.EpochRPC
+	if dzLedgerEnabled {
+		dzRPCClient := rpc.NewWithRetries(networkConfig.LedgerPublicRPCURL, nil)
+		defer dzRPCClient.Close()
+		serviceabilityRPC = serviceability.New(dzRPCClient, networkConfig.ServiceabilityProgramID)
+		telemetryRPC = telemetry.New(log, dzRPCClient, nil, networkConfig.TelemetryProgramID)
+		dzEpochRPC = dzRPCClient
+		log.Info("DZ ledger RPC clients initialized", "rpc_url", networkConfig.LedgerPublicRPCURL)
+	} else {
+		log.Info("DZ ledger RPC disabled (--dz-ledger-enabled=false)")
+	}
 
-	// Shreds subscription client (mainnet-beta and testnet only, not devnet).
-	// Mainnet uses Solana proper RPC; testnet uses the DZ ledger RPC.
-	shredsEnabled := *dzEnvFlag != config.EnvDevnet
+	// Shreds subscription client is Solana-side data — gated behind --solana-enabled.
+	shredsEnabled := solanaEnabled && *dzEnvFlag != config.EnvDevnet
 	var shredsClient *shreds.Client
 	var shredsRawRPC *solanarpc.Client
 	if shredsEnabled {
@@ -497,13 +522,13 @@ func run() error {
 		log.Info("Neo4j disabled", "neo4j_enabled", neo4jEnabled, "neo4j_uri_set", *neo4jURIFlag != "")
 	}
 
-	// Initialize validators.app client (optional, mainnet-beta only)
+	// Initialize validators.app client (optional, gated behind --solana-enabled)
 	var validatorsAppClient validatorsapp.Client
-	if *dzEnvFlag == config.EnvMainnetBeta && *validatorsAppAPIKeyFlag != "" {
+	if solanaEnabled && *validatorsAppAPIKeyFlag != "" {
 		validatorsAppClient = validatorsapp.NewHTTPClient("https://www.validators.app", *validatorsAppAPIKeyFlag)
 		log.Info("validators.app client initialized")
 	} else if *validatorsAppAPIKeyFlag != "" {
-		log.Info("validators.app disabled (mainnet-beta only)", "dz_env", *dzEnvFlag)
+		log.Info("validators.app disabled (--solana-enabled=false)", "dz_env", *dzEnvFlag)
 	}
 
 	// Initialize indexer (creates views but does not start refresh loops —
@@ -528,12 +553,12 @@ func run() error {
 		// GeoIP configuration
 		GeoIPResolver: geoIPResolver,
 
-		// Serviceability configuration
-		ServiceabilityRPC: serviceabilityClient,
+		// Serviceability configuration (nil when --dz-ledger-enabled=false)
+		ServiceabilityRPC: serviceabilityRPC,
 
-		// Telemetry configuration
-		TelemetryRPC:           telemetryClient,
-		DZEpochRPC:             dzRPCClient,
+		// Telemetry configuration (nil when --dz-ledger-enabled=false)
+		TelemetryRPC: telemetryRPC,
+		DZEpochRPC:   dzEpochRPC,
 		InternetLatencyAgentPK: networkConfig.InternetLatencyCollectorPK,
 		InternetDataProviders:  telemetryconfig.InternetTelemetryDataProviders,
 
@@ -659,8 +684,11 @@ func run() error {
 
 	// Start secondary network indexers (devnet, testnet).
 	// These run lightweight DZ ingest workflows (serviceability + telemetry only).
-	// Enabled by default; disable with --no-devnet / --no-testnet.
-	// Database names default to lake_devnet / lake_testnet but can be overridden via env vars.
+	// Gated behind --dz-ledger-enabled because they depend on DZ ledger RPC.
+	// Enabled by default when DZ ledger is enabled; disable with --no-devnet / --no-testnet.
+	if !dzLedgerEnabled {
+		log.Info("secondary network indexers disabled (--dz-ledger-enabled=false)")
+	}
 	type secondaryEnvConfig struct {
 		database       string
 		dzLedgerRPCURL string
@@ -700,10 +728,10 @@ func run() error {
 		cfg.noInflux = true
 		secondaryEnvs["testnet"] = cfg
 	}
-	if *noDevnetFlag {
+	if *noDevnetFlag || !dzLedgerEnabled {
 		delete(secondaryEnvs, "devnet")
 	}
-	if *noTestnetFlag {
+	if *noTestnetFlag || !dzLedgerEnabled {
 		delete(secondaryEnvs, "testnet")
 	}
 	for env, envCfg := range secondaryEnvs {

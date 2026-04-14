@@ -71,16 +71,20 @@ func New(ctx context.Context, cfg Config) (*Indexer, error) {
 		cfg.Logger.Info("Neo4j env lock verified", "dz_env", cfg.DZEnv)
 	}
 
-	// Initialize serviceability view
-	svcView, err := dzsvc.NewView(dzsvc.ViewConfig{
-		Logger:            cfg.Logger,
-		Clock:             cfg.Clock,
-		ServiceabilityRPC: cfg.ServiceabilityRPC,
-		RefreshInterval:   cfg.RefreshInterval,
-		ClickHouse:        cfg.ClickHouse,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create serviceability view: %w", err)
+	// Initialize serviceability view (optional, requires DZ ledger RPC)
+	var err error
+	var svcView *dzsvc.View
+	if cfg.ServiceabilityRPC != nil {
+		svcView, err = dzsvc.NewView(dzsvc.ViewConfig{
+			Logger:            cfg.Logger,
+			Clock:             cfg.Clock,
+			ServiceabilityRPC: cfg.ServiceabilityRPC,
+			RefreshInterval:   cfg.RefreshInterval,
+			ClickHouse:        cfg.ClickHouse,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create serviceability view: %w", err)
+		}
 	}
 
 	// Initialize shreds subscription view (optional, mainnet-beta + testnet only)
@@ -117,21 +121,24 @@ func New(ctx context.Context, cfg Config) (*Indexer, error) {
 		}
 	}
 
-	// Initialize telemetry view
-	telemView, err := dztelemlatency.NewView(dztelemlatency.ViewConfig{
-		Logger:                 cfg.Logger,
-		Clock:                  cfg.Clock,
-		TelemetryRPC:           cfg.TelemetryRPC,
-		EpochRPC:               cfg.DZEpochRPC,
-		MaxConcurrency:         cfg.MaxConcurrency,
-		InternetLatencyAgentPK: cfg.InternetLatencyAgentPK,
-		InternetDataProviders:  cfg.InternetDataProviders,
-		ClickHouse:             cfg.ClickHouse,
-		Serviceability:         svcView,
-		RefreshInterval:        cfg.RefreshInterval,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create telemetry view: %w", err)
+	// Initialize telemetry latency view (optional, requires DZ ledger RPC + serviceability)
+	var telemView *dztelemlatency.View
+	if cfg.TelemetryRPC != nil && svcView != nil {
+		telemView, err = dztelemlatency.NewView(dztelemlatency.ViewConfig{
+			Logger:                 cfg.Logger,
+			Clock:                  cfg.Clock,
+			TelemetryRPC:           cfg.TelemetryRPC,
+			EpochRPC:               cfg.DZEpochRPC,
+			MaxConcurrency:         cfg.MaxConcurrency,
+			InternetLatencyAgentPK: cfg.InternetLatencyAgentPK,
+			InternetDataProviders:  cfg.InternetDataProviders,
+			ClickHouse:             cfg.ClickHouse,
+			Serviceability:         svcView,
+			RefreshInterval:        cfg.RefreshInterval,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to create telemetry view: %w", err)
+		}
 	}
 
 	// Initialize solana view (optional)
@@ -149,9 +156,9 @@ func New(ctx context.Context, cfg Config) (*Indexer, error) {
 		}
 	}
 
-	// Initialize geoip view (optional, requires solana)
+	// Initialize geoip view (optional, requires solana + serviceability)
 	var geoipView *mcpgeoip.View
-	if cfg.GeoIPResolver != nil {
+	if cfg.GeoIPResolver != nil && svcView != nil {
 		geoIPStore, err := mcpgeoip.NewStore(mcpgeoip.StoreConfig{
 			Logger:     cfg.Logger,
 			ClickHouse: cfg.ClickHouse,
@@ -270,8 +277,8 @@ func (i *Indexer) Ready() bool {
 	if i.cfg.SkipReadyWait {
 		return true
 	}
-	svcReady := i.svc.Ready()
-	telemLatencyReady := i.telemLatency.Ready()
+	svcReady := i.svc == nil || i.svc.Ready()
+	telemLatencyReady := i.telemLatency == nil || i.telemLatency.Ready()
 	solReady := i.sol == nil || i.sol.Ready()
 	geoipReady := i.geoip == nil || i.geoip.Ready()
 	// Don't wait for telemUsage to be ready, it takes too long to refresh from scratch.
